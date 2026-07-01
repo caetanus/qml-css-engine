@@ -1,7 +1,10 @@
 #include "test_qml_css.h"
 
+#include "qmlcss/csshr.h"
 #include "qmlcss/csslayout.h"
 #include "qmlcss/csstheme.h"
+
+#include <QtQml/qqml.h>
 
 #include <QColor>
 #include <QFont>
@@ -737,6 +740,84 @@ void QmlCssTests::cssTextOverflowEllipsis()
 
     // Text.ElideRight maps to Qt::ElideRight == 1
     QCOMPARE(object->property("elide").toInt(), static_cast<int>(Qt::ElideRight));
+}
+
+// --- C++ CssHr (composition translation of CssHr.qml) ----------------------------------------
+//
+// Proves the C++ type registers via the classic API, instantiates from QML as `qmlcss.CssHr`,
+// resolves its top border through cssTheme.borderSide, and — crucially — that the child it
+// composes is the REAL QtQuick Shape (ShapePath + PathRectangle), carrying the resolved
+// colour/height full-width (not a repaint, and not a Rectangle).
+
+void QmlCssTests::cssHrCppComposesRealShape()
+{
+    // Classic one-line registration — no qmltyperegistrar / QML_ELEMENT machinery.
+    qmlRegisterType<CssHr>("qmlcss", 1, 0, "CssHr");
+
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(
+        "#rule { border-top: 3px solid #ff8800; }"));
+
+    QQmlEngine engine;
+    CssLayoutEngine layout(&theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layout);
+
+    QQmlComponent component(&engine);
+    // `import qmlcss` proves the C++ registration (not the qrc QML file).
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+
+        CssHr {
+            width: 120
+            cssId: "rule"
+        }
+    )", QUrl());
+
+    QScopedPointer<QObject> object(component.create());
+    QVERIFY2(object, qPrintable(component.errorString()));
+
+    auto *hr = qobject_cast<CssHr *>(object.data());
+    QVERIFY(hr);
+
+    // loadCss pushed the resolved style; the `line` binding read the top border off it.
+    const QVariantMap style = hr->property("style").toMap();
+    QCOMPARE(style.value(QStringLiteral("border-top")).toString(), QStringLiteral("3px solid #ff8800"));
+
+    const QVariantMap line = hr->property("line").toMap();
+    QCOMPARE(line.value(QStringLiteral("width")).toReal(), 3.0);
+    QCOMPARE(line.value(QStringLiteral("color")).value<QColor>(), QColor(QStringLiteral("#ff8800")));
+    QCOMPARE(line.value(QStringLiteral("visible")).toBool(), true);
+
+    // implicitHeight tracks the line width (max(1, width)).
+    QCOMPARE(hr->implicitHeight(), 3.0);
+
+    // The composed child must be a genuine QtQuick Shape (NOT a Rectangle), styled with the line
+    // colour/height and pinned full-width (the C++ anchor equivalent).
+    const QList<QQuickItem *> kids = hr->childItems();
+    QCOMPARE(kids.size(), 1);
+    QQuickItem *shape = kids.first();
+    QVERIFY(shape);
+    const QByteArray cls(shape->metaObject()->className());
+    QVERIFY2(cls.contains("QQuickShape"), cls);
+    QVERIFY2(!cls.contains("QQuickRectangle"), cls);
+    // fillColor / rectHeight are the aliases the composed Shape exposes onto its ShapePath /
+    // PathRectangle — the real fill colour and rounded-rect height.
+    QCOMPARE(shape->property("fillColor").value<QColor>(), QColor(QStringLiteral("#ff8800")));
+    QCOMPARE(shape->property("rectHeight").toReal(), 3.0);
+    QCOMPARE(shape->property("rectWidth").toReal(), 120.0);
+    QCOMPARE(shape->height(), 3.0);
+    QCOMPARE(shape->property("visible").toBool(), true);
+    QCOMPARE(shape->width(), 120.0); // followed the parent's width
+    QCOMPARE(shape->x(), 0.0);
+    QCOMPARE(shape->y(), 0.0);
+
+    // The ShapePath really carries a PathRectangle child (proves it is a genuine vector fill).
+    QObject *shapePath = shape->findChild<QObject *>();
+    QVERIFY(shapePath);
+    QVERIFY2(QByteArray(shapePath->metaObject()->className()).contains("QQuickShapePath"),
+             shapePath->metaObject()->className());
 }
 
 QTEST_MAIN(QmlCssTests)

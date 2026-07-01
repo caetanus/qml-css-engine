@@ -28,4 +28,7 @@ private slots:
     void cssTextDecorationUnderline();
     void cssTextWhiteSpaceNowrap();
     void cssTextOverflowEllipsis();
+
+    // C++ CssHr — composition translation of CssHr.qml.
+    void cssHrCppComposesRealShape();
 };
