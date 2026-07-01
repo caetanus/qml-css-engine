@@ -7,11 +7,17 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFont>
+#include <QFontDatabase>
 #include <QHash>
 #include <QJSValue>
 #include <QMetaMethod>
 #include <QMetaProperty>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QRegularExpression>
+#include <QStandardPaths>
 #include <QUrl>
 #include <algorithm>
 
@@ -462,6 +468,66 @@ QString extractKeyframes(const QString &css, QHash<QString, QVariantList> &out)
     return result;
 }
 
+// Parse a single `@font-face { ... }` body into { family, url }. Reuses parseDeclarationBlock for
+// the declarations; pulls the family name (quotes stripped) and the FIRST url() listed in `src`.
+CssFontFace parseFontFace(const QString &body)
+{
+    CssFontFace face;
+    const QVariantMap props = parseDeclarationBlock(body);
+
+    QString family = props.value(QStringLiteral("font-family")).toString().trimmed();
+    if ((family.startsWith(QLatin1Char('"')) && family.endsWith(QLatin1Char('"')))
+        || (family.startsWith(QLatin1Char('\'')) && family.endsWith(QLatin1Char('\''))))
+        family = family.mid(1, family.size() - 2).trimmed();
+    face.family = family;
+
+    const QString src = props.value(QStringLiteral("src")).toString();
+    static const QRegularExpression urlRe(QStringLiteral(R"(url\(\s*['"]?([^'")]+)['"]?\s*\))"));
+    const QRegularExpressionMatch m = urlRe.match(src);
+    if (m.hasMatch())
+        face.url = m.captured(1).trimmed();
+    return face;
+}
+
+// Extract `@font-face { ... }` blocks (brace-matched) into `out` and return the CSS with them
+// removed, so the ordinary rule parser never sees them (their `@font-face` "selector" would
+// otherwise be glued onto the following rule). Mirrors extractKeyframes.
+QString extractFontFaces(const QString &css, QList<CssFontFace> &out)
+{
+    QString result;
+    int i = 0;
+    while (i < css.length()) {
+        const int at = css.indexOf(QStringLiteral("@font-face"), i, Qt::CaseInsensitive);
+        if (at < 0) {
+            result += css.mid(i);
+            break;
+        }
+        result += css.mid(i, at - i);
+        int j = at + 10; // past "@font-face"
+        while (j < css.length() && css[j] != QLatin1Char('{'))
+            ++j;
+        if (j >= css.length())
+            break;
+        int depth = 0, k = j;
+        for (; k < css.length(); ++k) {
+            if (css[k] == QLatin1Char('{')) {
+                ++depth;
+            } else if (css[k] == QLatin1Char('}')) {
+                --depth;
+                if (depth == 0) {
+                    ++k;
+                    break;
+                }
+            }
+        }
+        const CssFontFace face = parseFontFace(css.mid(j + 1, k - j - 2));
+        if (!face.family.isEmpty() && !face.url.isEmpty())
+            out.append(face);
+        i = k;
+    }
+    return result;
+}
+
 QList<CssRule> parseCss(const QString &css)
 {
     QList<CssRule> rules;
@@ -507,16 +573,20 @@ QList<CssRule> parseCss(const QString &css)
 }
 
 bool selectorMatches(const CssSimpleSelector &sel, const QString &contextId, const QString &id,
-                     const QStringList &classes, const QString &pseudoElement)
+                     const QStringList &classes, const QString &pseudoElement, const QString &primitive)
 {
     // A pseudo-element rule (`::before`) only matches when that overlay is requested,
     // and an ordinary rule only matches when no overlay is requested.
     if (sel.pseudoElement != pseudoElement)
         return false;
-    // Element-only selectors (e.g. bare `label` from GTK CSS) have no id and no classes.
-    // Element-only top-level selectors are too broad for component styling; allow them only
-    // with an ancestor context (i.e. called via resolveWith), so they don't bleed globally.
-    if (!sel.universal && sel.id.isEmpty() && sel.classes.isEmpty() && contextId.isEmpty())
+    // A type selector (`button`, `input`) matches the element's primitive — the component
+    // exposes `cssPrimitive`, so the engine matches against it directly (no class needed).
+    if (!sel.element.isEmpty() && sel.element != primitive)
+        return false;
+    // A selector that constrains nothing at the top level (no id, class, or type) is too broad
+    // for component styling; allow it only with an ancestor context (i.e. via resolveWith).
+    if (!sel.universal && sel.id.isEmpty() && sel.classes.isEmpty() && sel.element.isEmpty()
+        && contextId.isEmpty())
         return false;
     if (!sel.id.isEmpty() && sel.id != id)
         return false;
@@ -637,10 +707,15 @@ void CssTheme::loadFromString(const QString &css)
     m_keyframes.clear();
     const QString afterKeyframes = extractKeyframes(cleaned, m_keyframes);
 
+    // Pull @font-face blocks aside (they nest declarations, like @keyframes) so the flat parser
+    // never sees them; each declares a web font to download + register with QFontDatabase.
+    QList<CssFontFace> fontFaces;
+    const QString afterFonts = extractFontFaces(afterKeyframes, fontFaces);
+
     // Pull @media blocks aside (and drop @supports/@container); parse the base rules plus each
     // media block's rules. rebuildRules() then assembles the active cascade for the viewport.
     QList<RawMediaBlock> rawMedia;
-    const QString body = extractAtRules(afterKeyframes, rawMedia);
+    const QString body = extractAtRules(afterFonts, rawMedia);
     m_baseRules = parseCss(body);
     m_mediaGroups.clear();
     for (const RawMediaBlock &blk : rawMedia)
@@ -652,6 +727,11 @@ void CssTheme::loadFromString(const QString &css)
     // Reverse slot: push freshly-resolved styles to every registered object so a theme
     // reload re-styles the live UI without any QML binding.
     reapplyAll();
+
+    // Load/download each @font-face (deduped by URL). Cached fonts register synchronously here;
+    // uncached ones arrive later and bump fontRevision, re-resolving the text that uses them.
+    for (const CssFontFace &face : fontFaces)
+        registerFontFace(face);
 }
 
 void CssTheme::rebuildRules()
@@ -663,6 +743,81 @@ void CssTheme::rebuildRules()
         if (mediaMatches(group.query, m_viewportWidth, m_viewportHeight))
             m_rules += group.rules;
     }
+}
+
+void CssTheme::registerFontData(const QByteArray &bytes)
+{
+    if (bytes.isEmpty())
+        return;
+    const int id = QFontDatabase::addApplicationFontFromData(bytes);
+    if (id < 0) {
+        qWarning() << "CssTheme @font-face: QFontDatabase rejected the font data";
+        return;
+    }
+    // The family is now installed in QFontDatabase, so resolveFontFamily() will find it. Bump the
+    // revision (text bindings observe it and re-resolve) and re-push styles to registered objects.
+    ++m_fontRevision;
+    emit fontRevisionChanged();
+    reapplyAll();
+}
+
+void CssTheme::registerFontFace(const CssFontFace &face)
+{
+    const QString url = face.url;
+    // Dedupe: a font is fetched/registered once, even though loadFromString runs on every reload.
+    if (url.isEmpty() || m_fontFacesSeen.contains(url))
+        return;
+    m_fontFacesSeen.insert(url);
+
+    const bool remote = url.startsWith(QLatin1String("http://")) || url.startsWith(QLatin1String("https://"));
+    if (!remote) {
+        // A local file:// or filesystem path — register straight from disk.
+        const QString path = url.startsWith(QLatin1String("file://")) ? QUrl(url).toLocalFile() : url;
+        QFile file(path);
+        if (file.open(QIODevice::ReadOnly))
+            registerFontData(file.readAll());
+        else
+            qWarning() << "CssTheme @font-face: cannot read local font" << path;
+        return;
+    }
+
+    // Disk cache keyed by a hash of the URL, so a launch never re-downloads (fast + offline).
+    const QByteArray key = QCryptographicHash::hash(url.toUtf8(), QCryptographicHash::Sha1).toHex();
+    const QString cacheDir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
+        + QStringLiteral("/webfonts");
+    QDir().mkpath(cacheDir);
+    const QString cachePath = cacheDir + QLatin1Char('/') + QString::fromLatin1(key);
+
+    QFile cached(cachePath);
+    if (cached.exists() && cached.open(QIODevice::ReadOnly)) {
+        registerFontData(cached.readAll());
+        return;
+    }
+
+    // Cache miss: download asynchronously (never block the UI thread). HTTP/2 is disabled to
+    // dodge the QNAM connection-reuse bug (see webfetch.cpp).
+    if (!m_nam)
+        m_nam = new QNetworkAccessManager(this);
+    QNetworkRequest request{ QUrl(url) };
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    request.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
+    QNetworkReply *reply = m_nam->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, cachePath] {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "CssTheme @font-face: download failed" << reply->url().toString()
+                       << reply->errorString();
+            return;
+        }
+        const QByteArray fontBytes = reply->readAll();
+        if (fontBytes.isEmpty())
+            return;
+        // Persist to the cache for next launch, then register.
+        QFile out(cachePath);
+        if (out.open(QIODevice::WriteOnly))
+            out.write(fontBytes);
+        registerFontData(fontBytes);
+    });
 }
 
 void CssTheme::setViewport(qreal width, qreal height)
@@ -716,19 +871,19 @@ static QStringList cssVariantToStringList(const QVariant &v)
 }
 
 QVariantMap CssTheme::resolveMerged(const QString &cssId, const QStringList &alternateIds,
-                                    const QStringList &classes) const
+                                    const QStringList &classes, const QString &primitive) const
 {
-    QVariantMap merged = resolve(QString(), classes);
+    QVariantMap merged = resolve(QString(), classes, QString(), primitive);
     // Waybar-compat aliases first (lowest priority), then the primary id wins on conflict.
     for (const QString &alt : alternateIds) {
         if (alt.isEmpty())
             continue;
-        const QVariantMap m = resolve(alt, classes);
+        const QVariantMap m = resolve(alt, classes, QString(), primitive);
         for (auto it = m.constBegin(); it != m.constEnd(); ++it)
             merged.insert(it.key(), it.value());
     }
     if (!cssId.isEmpty()) {
-        const QVariantMap primary = resolve(cssId, classes);
+        const QVariantMap primary = resolve(cssId, classes, QString(), primitive);
         for (auto it = primary.constBegin(); it != primary.constEnd(); ++it)
             merged.insert(it.key(), it.value());
     }
@@ -748,6 +903,8 @@ void CssTheme::applyCssTo(QObject *target) const
     QStringList classes = cssVariantToStringList(target->property("cssClass"));
     classes += cssVariantToStringList(target->property("cssState"));
     const QString cssPart = target->property("cssPart").toString();
+    // Type selectors (`button {}`) match this element's primitive.
+    const QString cssPrimitive = target->property("cssPrimitive").toString();
 
     // A part target (`#tray.item`, `#cpu.graph`) resolves ONLY that part — excluding the
     // bare `#id` base — so a sub-element doesn't inherit the container's own background.
@@ -757,7 +914,7 @@ void CssTheme::applyCssTo(QObject *target) const
         style = resolvePart(cssId, cssPart, classes);
     } else {
         const QStringList alternateIds = cssVariantToStringList(target->property("cssAlternateId"));
-        style = resolveMerged(cssId, alternateIds, classes);
+        style = resolveMerged(cssId, alternateIds, classes, cssPrimitive);
     }
 
     // Push the resolved map into the target's `style` sink; its renderer keys off it
@@ -820,9 +977,10 @@ void CssTheme::reapplyAll()
     }
 }
 
-QVariantMap CssTheme::resolve(const QString &id, const QStringList &classes, const QString &pseudoElement) const
+QVariantMap CssTheme::resolve(const QString &id, const QStringList &classes, const QString &pseudoElement,
+                              const QString &primitive) const
 {
-    return resolveImpl(QString(), id, classes, pseudoElement);
+    return resolveImpl(QString(), id, classes, pseudoElement, primitive);
 }
 
 QVariantMap CssTheme::resolveWith(const QString &contextId, const QString &id, const QStringList &classes,
@@ -832,7 +990,7 @@ QVariantMap CssTheme::resolveWith(const QString &contextId, const QString &id, c
 }
 
 QVariantMap CssTheme::resolveImpl(const QString &contextId, const QString &id, const QStringList &classes,
-                                  const QString &pseudoElement) const
+                                  const QString &pseudoElement, const QString &primitive) const
 {
     struct Match {
         int specificity;
@@ -848,7 +1006,7 @@ QVariantMap CssTheme::resolveImpl(const QString &contextId, const QString &id, c
         // Rules with no ancestor requirement match in all contexts.
         if (!rule.requiredAncestorId.isEmpty() && rule.requiredAncestorId != contextId)
             continue;
-        if (selectorMatches(rule.selector, contextId, id, classes, pseudoElement))
+        if (selectorMatches(rule.selector, contextId, id, classes, pseudoElement, primitive))
             matches.append({rule.selector.specificity, i, rule.properties, rule.importantProperties});
     }
 
@@ -954,6 +1112,175 @@ qreal CssTheme::parseFontSize(const QString &value, qreal fallbackPt) const
     if (unit == QLatin1String("em") || unit == QLatin1String("rem"))
         return num * fallbackPt;
     return num; // pt or unitless → points
+}
+
+namespace {
+QVector<qreal> cssBox(const QString &value)
+{
+    if (value.trimmed().isEmpty())
+        return { 0, 0, 0, 0 };
+    const QStringList parts = CssValueParser::splitTopLevelWhitespace(value.trimmed());
+    QVector<qreal> n;
+    for (int i = 0; i < parts.size() && i < 4; ++i) {
+        double v = 0;
+        n.push_back(CssValueParser::parseLengthPx(parts.at(i), &v) ? v : 0);
+    }
+    if (n.size() == 1) return { n[0], n[0], n[0], n[0] };
+    if (n.size() == 2) return { n[0], n[1], n[0], n[1] };
+    if (n.size() == 3) return { n[0], n[1], n[2], n[1] };
+    if (n.size() >= 4) return { n[0], n[1], n[2], n[3] };
+    return { 0, 0, 0, 0 };
+}
+
+QString sideName(int side)
+{
+    static const QString names[4] = {
+        QStringLiteral("top"), QStringLiteral("right"),
+        QStringLiteral("bottom"), QStringLiteral("left"),
+    };
+    return names[std::clamp(side, 0, 3)];
+}
+} // namespace
+
+int CssTheme::fontWeight(const QString &value) const
+{
+    const QString s = value.trimmed().toLower();
+    if (s.isEmpty() || s == QLatin1String("normal") || s == QLatin1String("400"))
+        return QFont::Normal;
+    if (s == QLatin1String("bold") || s == QLatin1String("700"))
+        return QFont::Bold;
+    if (s == QLatin1String("bolder"))
+        return QFont::ExtraBold;
+    if (s == QLatin1String("lighter"))
+        return QFont::Light;
+
+    bool ok = false;
+    const int n = s.toInt(&ok);
+    if (!ok) return QFont::Normal;
+    if (n <= 100) return QFont::Thin;
+    if (n <= 300) return QFont::Light;
+    if (n <= 400) return QFont::Normal;
+    if (n <= 500) return QFont::Medium;
+    if (n <= 600) return QFont::DemiBold;
+    if (n <= 700) return QFont::Bold;
+    if (n <= 800) return QFont::ExtraBold;
+    return QFont::Black;
+}
+
+bool CssTheme::isProportionalLineHeight(const QString &value) const
+{
+    const QString s = value.trimmed().toLower();
+    if (s.isEmpty() || s == QLatin1String("normal"))
+        return true;
+    static const QRegularExpression unitRe(QStringLiteral("[a-z%]"));
+    return !unitRe.match(s).hasMatch();
+}
+
+qreal CssTheme::parseLineHeight(const QString &value, qreal fallbackPx) const
+{
+    const QString s = value.trimmed().toLower();
+    if (s.isEmpty() || s == QLatin1String("normal"))
+        return 1.0;
+    if (isProportionalLineHeight(s)) {
+        bool ok = false;
+        const qreal n = s.toDouble(&ok);
+        return ok ? n : 1.0;
+    }
+    return parseLength(s, fallbackPx);
+}
+
+qreal CssTheme::boxSideLength(const QVariantMap &style, const QString &prefix, int side) const
+{
+    const QVector<qreal> box = cssBox(style.value(prefix).toString());
+    const QString key = prefix + QLatin1Char('-') + sideName(side);
+    const auto it = style.constFind(key);
+    if (it == style.constEnd())
+        return box.value(std::clamp(side, 0, 3), 0);
+    return parseLength(it->toString(), box.value(std::clamp(side, 0, 3), 0));
+}
+
+bool CssTheme::hasSideBorder(const QVariantMap &style) const
+{
+    static const QStringList sides = { QStringLiteral("top"), QStringLiteral("right"),
+                                      QStringLiteral("bottom"), QStringLiteral("left") };
+    for (const QString &side : sides) {
+        if (style.contains(QStringLiteral("border-") + side)
+            || style.contains(QStringLiteral("border-") + side + QStringLiteral("-width"))
+            || style.contains(QStringLiteral("border-") + side + QStringLiteral("-color"))
+            || style.contains(QStringLiteral("border-") + side + QStringLiteral("-style")))
+            return true;
+    }
+    return false;
+}
+
+QVariantMap CssTheme::borderSide(const QVariantMap &style, const QString &side,
+                                 qreal defaultWidth, const QColor &defaultColor) const
+{
+    const QString prefix = QStringLiteral("border-") + side;
+    const QVariantMap shorthand = style.contains(prefix) ? parseBorder(style.value(prefix).toString()) : QVariantMap();
+
+    const qreal width = style.contains(prefix + QStringLiteral("-width"))
+        ? parseLength(style.value(prefix + QStringLiteral("-width")).toString(), 0)
+        : shorthand.value(QStringLiteral("width"), defaultWidth).toReal();
+    const QColor color = style.contains(prefix + QStringLiteral("-color"))
+        ? parseColor(style.value(prefix + QStringLiteral("-color")).toString())
+        : shorthand.value(QStringLiteral("color"), defaultColor).value<QColor>();
+    const QString borderStyle = style.contains(prefix + QStringLiteral("-style"))
+        ? style.value(prefix + QStringLiteral("-style")).toString()
+        : shorthand.value(QStringLiteral("style"), QStringLiteral("solid")).toString();
+
+    QVariantMap out;
+    out.insert(QStringLiteral("width"), width);
+    out.insert(QStringLiteral("color"), color);
+    out.insert(QStringLiteral("style"), borderStyle);
+    out.insert(QStringLiteral("visible"), width > 0 && color.alphaF() > 0
+               && borderStyle != QLatin1String("none") && borderStyle != QLatin1String("hidden"));
+    return out;
+}
+
+QString CssTheme::resolveFontFamily(const QString &value, const QString &fallback) const
+{
+    const QStringList families = QFontDatabase::families();
+    const auto hasFamily = [&](const QString &candidate) {
+        return std::any_of(families.cbegin(), families.cend(), [&](const QString &family) {
+            return family.compare(candidate, Qt::CaseInsensitive) == 0;
+        });
+    };
+    const auto clean = [](QString candidate) {
+        candidate = candidate.trimmed();
+        if ((candidate.startsWith(QLatin1Char('"')) && candidate.endsWith(QLatin1Char('"')))
+            || (candidate.startsWith(QLatin1Char('\'')) && candidate.endsWith(QLatin1Char('\''))))
+            candidate = candidate.mid(1, candidate.size() - 2).trimmed();
+        return candidate;
+    };
+    const auto alias = [&](const QString &candidate) -> QString {
+        const QString low = candidate.toLower();
+        if (low == QLatin1String("sans-serif"))
+            return hasFamily(QStringLiteral("Noto Sans")) ? QStringLiteral("Noto Sans") : QStringLiteral("Sans Serif");
+        if (low == QLatin1String("serif"))
+            return hasFamily(QStringLiteral("Noto Serif")) ? QStringLiteral("Noto Serif") : QStringLiteral("Serif");
+        if (low == QLatin1String("monospace"))
+            return hasFamily(QStringLiteral("Noto Sans Mono")) ? QStringLiteral("Noto Sans Mono") : QStringLiteral("Monospace");
+        if (low == QLatin1String("helvetica") || low == QLatin1String("helvetica neue"))
+            return hasFamily(QStringLiteral("Nimbus Sans")) ? QStringLiteral("Nimbus Sans") : QString();
+        if (low == QLatin1String("arial"))
+            return hasFamily(QStringLiteral("Liberation Sans")) ? QStringLiteral("Liberation Sans") : QString();
+        return QString();
+    };
+
+    for (const QString &part : CssValueParser::splitTopLevel(value, QLatin1Char(','))) {
+        const QString candidate = clean(part);
+        if (candidate.isEmpty())
+            continue;
+        if (hasFamily(candidate))
+            return candidate;
+        const QString mapped = alias(candidate);
+        if (!mapped.isEmpty())
+            return mapped;
+    }
+    if (!fallback.isEmpty())
+        return resolveFontFamily(fallback, QString());
+    return hasFamily(QStringLiteral("Noto Sans")) ? QStringLiteral("Noto Sans") : QStringLiteral("Sans Serif");
 }
 
 // Parse the colour stops of a gradient (the parts after any head token), distributing

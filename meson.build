@@ -13,7 +13,7 @@ qt6 = import('qt6')
 
 qt6_dep = dependency(
   'qt6',
-  modules: ['Core', 'Gui', 'Qml', 'Quick'],
+  modules: ['Core', 'Gui', 'Qml', 'Quick', 'Network'],
 )
 
 qml_css_engine_sources = files(

@@ -51,6 +51,7 @@ Item {
     readonly property string inheritedFontFamily: (style && style["font-family"]) ? style["font-family"] : (_cssParent ? _cssParent.inheritedFontFamily : "")
     readonly property string inheritedFontSize: (style && style["font-size"]) ? style["font-size"] : (_cssParent ? _cssParent.inheritedFontSize : "")
     readonly property string inheritedFontWeight: (style && style["font-weight"]) ? style["font-weight"] : (_cssParent ? _cssParent.inheritedFontWeight : "")
+    readonly property string inheritedLineHeight: (style && style["line-height"]) ? style["line-height"] : (_cssParent ? _cssParent.inheritedLineHeight : "")
     readonly property string inheritedLetterSpacing: (style && style["letter-spacing"]) ? style["letter-spacing"] : (_cssParent ? _cssParent.inheritedLetterSpacing : "")
     readonly property string inheritedTextTransform: (style && style["text-transform"]) ? style["text-transform"] : (_cssParent ? _cssParent.inheritedTextTransform : "")
     readonly property string inheritedTextAlign: (style && style["text-align"]) ? style["text-align"] : (_cssParent ? _cssParent.inheritedTextAlign : "")
@@ -62,6 +63,17 @@ Item {
     // `cssLayout`); the QML here just TRIGGERS a relayout when geometry/style/children change.
     // `display: none` removes the box from layout (and from view).
     visible: !(style && style["display"] === "none")
+    // `visibility: hidden` keeps the box in layout (space preserved, unlike display:none) but paints
+    // nothing (opacity 0) and takes no input (enabled:false disables any child MouseArea). A plain
+    // `opacity` from CSS applies when not hidden.
+    readonly property bool _cssHidden: style && style["visibility"] === "hidden"
+    opacity: root._cssHidden ? 0
+        : (style && style["opacity"] !== undefined ? Number(style["opacity"]) : 1)
+    enabled: !root._cssHidden
+    // `z-index` → QML z stacking order.
+    z: (style && style["z-index"] !== undefined) ? Number(style["z-index"]) : 0
+    // `overflow: hidden` / `overflow: clip` → clip children to item bounds.
+    clip: !!(style && (style["overflow"] === "hidden" || style["overflow"] === "clip"))
 
     // --- CSS transform + animation ------------------------------------------------------
     // Static `transform` (rotate/scale/translate) and `animation: <name> ...` driven by the
@@ -164,6 +176,11 @@ Item {
     readonly property real borderWidth: (style && style["border-width"])
         ? parseFloat(style["border-width"])
         : (root._borderShorthand.width !== undefined ? root._borderShorthand.width : root.defaultBorderWidth)
+    readonly property bool hasSideBorder: cssTheme.hasSideBorder(style || ({}))
+    readonly property var topBorder: cssTheme.borderSide(style || ({}), "top", 0, root.borderColor)
+    readonly property var rightBorder: cssTheme.borderSide(style || ({}), "right", 0, root.borderColor)
+    readonly property var bottomBorder: cssTheme.borderSide(style || ({}), "bottom", 0, root.borderColor)
+    readonly property var leftBorder: cssTheme.borderSide(style || ({}), "left", 0, root.borderColor)
 
     readonly property var shadowList: (cssTheme && cssTheme.loaded && style && style["box-shadow"])
         ? cssTheme.parseBoxShadowList(style["box-shadow"]) : []
@@ -254,7 +271,54 @@ Item {
     function hasCssIdentity() {
         return root.cssId.length > 0
             || root.cssPart.length > 0
+            || root.cssPrimitive.length > 0 // a type selector (`button {}`) keys off the primitive
             || (Array.isArray(root.cssClass) ? root.cssClass.length > 0 : String(root.cssClass).length > 0)
+    }
+
+    // Single outset shadow, matching the old behaviour, but drawn by a separate source behind
+    // the real fill so MultiEffect cannot make the element background disappear.
+    Item {
+        anchors.fill: parent
+        visible: root.hasOutsetShadow
+
+        Shape {
+            id: shadowSource
+            anchors.fill: parent
+            preferredRendererType: Shape.CurveRenderer
+            opacity: root.hasGradient ? root.gradientPeakAlpha : root.solidColor.a
+
+            ShapePath {
+                strokeColor: "transparent"
+                strokeWidth: 0
+                fillColor: root.hasGradient
+                    ? "#ffffff"
+                    : Qt.rgba(root.solidColor.r, root.solidColor.g, root.solidColor.b, 1.0)
+                startX: root.clampedRadius(0)
+                startY: 0
+                PathLine { x: Math.max(root.clampedRadius(0), root.width - root.clampedRadius(1)); y: 0 }
+                PathArc { x: root.width; y: root.clampedRadius(1); radiusX: root.clampedRadius(1); radiusY: root.clampedRadius(1); direction: PathArc.Clockwise }
+                PathLine { x: root.width; y: Math.max(root.clampedRadius(1), root.height - root.clampedRadius(2)) }
+                PathArc { x: root.width - root.clampedRadius(2); y: root.height; radiusX: root.clampedRadius(2); radiusY: root.clampedRadius(2); direction: PathArc.Clockwise }
+                PathLine { x: root.clampedRadius(3); y: root.height }
+                PathArc { x: 0; y: root.height - root.clampedRadius(3); radiusX: root.clampedRadius(3); radiusY: root.clampedRadius(3); direction: PathArc.Clockwise }
+                PathLine { x: 0; y: root.clampedRadius(0) }
+                PathArc { x: root.clampedRadius(0); y: 0; radiusX: root.clampedRadius(0); radiusY: root.clampedRadius(0); direction: PathArc.Clockwise }
+            }
+        }
+
+        MultiEffect {
+            anchors.fill: shadowSource
+            source: shadowSource
+            shadowEnabled: true
+            shadowColor: root.hasOutsetShadow
+                ? Qt.rgba(root.outsetShadow.color.r, root.outsetShadow.color.g, root.outsetShadow.color.b, 1.0)
+                : "transparent"
+            shadowOpacity: root.hasOutsetShadow ? root.outsetShadow.color.a : 0
+            shadowHorizontalOffset: root.hasOutsetShadow ? root.outsetShadow.x : 0
+            shadowVerticalOffset: root.hasOutsetShadow ? root.outsetShadow.y : 0
+            shadowBlur: root.hasOutsetShadow ? Math.min(1, root.outsetShadow.blur / 32) : 0
+            autoPaddingEnabled: true
+        }
     }
 
     // The fill. Its alpha rides on the Shape's `opacity` (a translucent Shape fill blends
@@ -272,22 +336,6 @@ Item {
                 duration: root.transitionMs
                 easing.type: root.transitionEasingType
             }
-        }
-
-        layer.enabled: root.hasOutsetShadow
-        layer.effect: MultiEffect {
-            shadowEnabled: true
-            // Pass the shadow colour OPAQUE and carry its alpha on shadowOpacity — MultiEffect
-            // does not apply the colour's alpha, so an `rgba(...,.24)` shadow would otherwise
-            // render at full strength (a bright glow bleeding past the element).
-            shadowColor: root.hasOutsetShadow
-                ? Qt.rgba(root.outsetShadow.color.r, root.outsetShadow.color.g, root.outsetShadow.color.b, 1.0)
-                : "transparent"
-            shadowOpacity: root.hasOutsetShadow ? root.outsetShadow.color.a : 0
-            shadowHorizontalOffset: root.hasOutsetShadow ? root.outsetShadow.x : 0
-            shadowVerticalOffset: root.hasOutsetShadow ? root.outsetShadow.y : 0
-            shadowBlur: root.hasOutsetShadow ? Math.min(1, root.outsetShadow.blur / 32) : 0
-            autoPaddingEnabled: true
         }
 
         ShapePath {
@@ -366,7 +414,7 @@ Item {
     // would otherwise vanish, since that opacity (0) would gate the stroke too.
     Shape {
         anchors.fill: parent
-        visible: root.borderWidth > 0 && root.borderColor.a > 0
+        visible: !root.hasSideBorder && root.borderWidth > 0 && root.borderColor.a > 0
         preferredRendererType: Shape.CurveRenderer
         opacity: root.borderColor.a
         ShapePath {
@@ -382,6 +430,47 @@ Item {
             PathArc { x: 0; y: root.height - root.clampedRadius(3); radiusX: root.clampedRadius(3); radiusY: root.clampedRadius(3); direction: PathArc.Clockwise }
             PathLine { x: 0; y: root.clampedRadius(0) }
             PathArc { x: root.clampedRadius(0); y: 0; radiusX: root.clampedRadius(0); radiusY: root.clampedRadius(0); direction: PathArc.Clockwise }
+        }
+    }
+
+    // Per-side CSS borders (`border-top`, etc.) are Qt Quick rectangles. This keeps simple
+    // separators cheap and avoids forcing a full stroked rounded path when only one edge is
+    // requested (TodoMVC rows/footers, <hr>, list dividers).
+    Item {
+        anchors.fill: parent
+        visible: root.hasSideBorder
+
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            height: root.topBorder.visible ? Math.max(1, root.topBorder.width) : 0
+            color: root.topBorder.color
+            visible: root.topBorder.visible
+        }
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: root.bottomBorder.visible ? Math.max(1, root.bottomBorder.width) : 0
+            color: root.bottomBorder.color
+            visible: root.bottomBorder.visible
+        }
+        Rectangle {
+            anchors.left: parent.left
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            width: root.leftBorder.visible ? Math.max(1, root.leftBorder.width) : 0
+            color: root.leftBorder.color
+            visible: root.leftBorder.visible
+        }
+        Rectangle {
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            width: root.rightBorder.visible ? Math.max(1, root.rightBorder.width) : 0
+            color: root.rightBorder.color
+            visible: root.rightBorder.visible
         }
     }
 
@@ -495,6 +584,11 @@ Item {
             cssTheme.loadCss(root)
     }
     onCssClassChanged: {
+        if (cssTheme && root.hasCssIdentity())
+            cssTheme.loadCss(root)
+    }
+    // A reactive cssPrimitive (e.g. <Dynamic component={tag()}>) must re-resolve its type rules.
+    onCssPrimitiveChanged: {
         if (cssTheme && root.hasCssIdentity())
             cssTheme.loadCss(root)
     }

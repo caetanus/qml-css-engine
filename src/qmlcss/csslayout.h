@@ -31,6 +31,7 @@ public:
 
     // Queue a (re)layout of `root`'s content (held by `content`); coalesced.
     Q_INVOKABLE void requestLayout(QQuickItem *root, QQuickItem *content);
+    Q_INVOKABLE void notifyParentLayout(QQuickItem *item);
     // Lay out now.
     Q_INVOKABLE void layout(QQuickItem *root, QQuickItem *content);
 
@@ -59,8 +60,11 @@ private:
 
     // box-model helpers
     double sizeOf(const QVariantMap &style, const QString &key, double avail) const;
+    // Clamp a resolved width/height by the item's min-/max-<axis> (axis = "width" | "height").
+    double clampSize(const QVariantMap &style, const QString &axis, double v, double avail) const;
     QVector<double> box(const QString &value) const;
     QVector<double> paddingOf(const QVariantMap &style) const;
+    QVector<double> borderOf(const QVariantMap &style) const;
     QVector<double> marginOf(const QVariantMap &style) const;
     double aspectOf(const QVariantMap &style) const;
 
@@ -85,4 +89,5 @@ private:
     CssTheme *m_theme;
     QHash<QQuickItem *, QPointer<QQuickItem>> m_pending; // root -> content
     QTimer *m_flushTimer;
+    bool m_flushing = false;
 };

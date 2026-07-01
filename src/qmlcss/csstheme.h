@@ -6,9 +6,12 @@
 #include <QHash>
 #include <QObject>
 #include <QPointer>
+#include <QSet>
 #include <QStringList>
 #include <QVariantList>
 #include <QVariantMap>
+
+class QNetworkAccessManager;
 
 struct CssSimpleSelector {
     bool universal = false;
@@ -47,12 +50,23 @@ struct CssMediaGroup {
     QList<CssRule> rules;
 };
 
+// A parsed `@font-face` rule: the declared family name and the (first) source URL. The engine
+// downloads the URL (cached on disk) and registers the bytes with QFontDatabase so
+// `font-family: "<family>"` resolves without the font being installed on the system.
+struct CssFontFace {
+    QString family;
+    QString url;
+};
+
 class CssTheme : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool loaded READ isLoaded NOTIFY loadedChanged)
     // Current viewport (window) size — exposed so QML can resolve `vw`/`vh` units.
     Q_PROPERTY(qreal viewportWidth READ viewportWidth NOTIFY viewportChanged)
     Q_PROPERTY(qreal viewportHeight READ viewportHeight NOTIFY viewportChanged)
+    // Bumped each time a downloaded `@font-face` registers. Text bindings that resolve a
+    // font-family reference it so they re-evaluate once the (async) web font arrives.
+    Q_PROPERTY(int fontRevision READ fontRevision NOTIFY fontRevisionChanged)
 
 public:
     explicit CssTheme(QObject *parent = nullptr);
@@ -60,6 +74,7 @@ public:
     bool isLoaded() const { return m_loaded; }
     qreal viewportWidth() const { return m_viewportWidth; }
     qreal viewportHeight() const { return m_viewportHeight; }
+    int fontRevision() const { return m_fontRevision; }
 
     void load(const QString &path);
     // Load several stylesheets as one cascade, in order (e.g. [baseStyleSheet, styleSheet]):
@@ -81,8 +96,9 @@ public:
     // Resolve styles for an element (top-level selectors only). `pseudoElement`
     // selects a `::before`/`::after` overlay; empty (default) matches only ordinary
     // selectors, so existing callers never pick up overlay rules by accident.
+    // `primitive` matches a type selector (e.g. `button`) against the element's cssPrimitive.
     Q_INVOKABLE QVariantMap resolve(const QString &id, const QStringList &classes = {},
-                                    const QString &pseudoElement = {}) const;
+                                    const QString &pseudoElement = {}, const QString &primitive = {}) const;
 
     // Resolve with ancestor context — matches descendant selectors like "#workspaces button.focused"
     Q_INVOKABLE QVariantMap resolveWith(const QString &contextId, const QString &id, const QStringList &classes = {},
@@ -112,6 +128,16 @@ public:
     // Resolve a CSS font-size to POINTS (px→pt ×72/96, em/rem×fallbackPt, pt/bare→pt),
     // centrally — components consume the result directly, no per-component unit math.
     Q_INVOKABLE qreal parseFontSize(const QString &value, qreal fallbackPt) const;
+    // Resolve a CSS font-family list (`"Helvetica Neue", Arial, sans-serif`) to one Qt
+    // family installed on the host. QFont takes a single family; CSS takes a fallback list.
+    Q_INVOKABLE QString resolveFontFamily(const QString &value, const QString &fallback = {}) const;
+    Q_INVOKABLE int fontWeight(const QString &value) const;
+    Q_INVOKABLE bool isProportionalLineHeight(const QString &value) const;
+    Q_INVOKABLE qreal parseLineHeight(const QString &value, qreal fallbackPx) const;
+    Q_INVOKABLE qreal boxSideLength(const QVariantMap &style, const QString &prefix, int side) const;
+    Q_INVOKABLE bool hasSideBorder(const QVariantMap &style) const;
+    Q_INVOKABLE QVariantMap borderSide(const QVariantMap &style, const QString &side,
+                                       qreal defaultWidth, const QColor &defaultColor) const;
 
     // Parse `linear-gradient(<angle|to side>, <color> [<pos%>], ...)`.
     // Returns { "type": "linear", "angle": <deg, CSS convention>,
@@ -140,7 +166,6 @@ public:
     // bevel is a dark `inset` plus a light `inset` — so a light bevel edge needs no
     // custom property.
     Q_INVOKABLE QVariantList parseBoxShadowList(const QString &cssValue) const;
-
     // Parse CSS-ish duration values: "180ms", "0.76s", or bare milliseconds.
     Q_INVOKABLE int parseDuration(const QString &cssValue, int fallbackMs) const;
 
@@ -186,6 +211,7 @@ public:
 signals:
     void loadedChanged();
     void viewportChanged();
+    void fontRevisionChanged();
 
 private slots:
     void onCssFileChanged(const QString &path);
@@ -195,11 +221,11 @@ private slots:
 
 private:
     QVariantMap resolveImpl(const QString &contextId, const QString &id, const QStringList &classes,
-                            const QString &pseudoElement) const;
+                            const QString &pseudoElement, const QString &primitive = {}) const;
 
     // Merge the waybar alias(es) under the primary id (primary wins), for `classes`.
     QVariantMap resolveMerged(const QString &cssId, const QStringList &alternateIds,
-                              const QStringList &classes) const;
+                              const QStringList &classes, const QString &primitive = {}) const;
     // Read the target's identity properties, resolve, and push the style onto it (the
     // actual "apply the rules" step). Re-reads the object's current cssClass each time.
     void applyCssTo(QObject *target) const;
@@ -209,6 +235,13 @@ private:
     // Rebuild m_rules = base rules + the rules of every @media block whose condition matches
     // the current viewport. Called on (re)load and on viewport change.
     void rebuildRules();
+
+    // Register a parsed @font-face: load from the on-disk cache if present, else download it
+    // (async, HTTP/2 off) and cache it. Deduped by URL across reloads so a font is fetched once.
+    void registerFontFace(const CssFontFace &face);
+    // Add raw font bytes to QFontDatabase, then bump fontRevision + re-push styles so text using
+    // the now-available family re-resolves.
+    void registerFontData(const QByteArray &bytes);
 
     QList<CssRule> m_rules;        // active cascade (base + matching @media), what resolve() reads
     QList<CssRule> m_baseRules;    // rules outside any @media (always active)
@@ -226,4 +259,7 @@ private:
     QString m_generatedCss;        // build-generated CSS appended (highest priority) on load
     QByteArray m_contentHash;
     QFileSystemWatcher *m_watcher = nullptr;
+    QNetworkAccessManager *m_nam = nullptr; // lazily created for @font-face downloads
+    QSet<QString> m_fontFacesSeen;          // font URLs already loaded/queued (dedupe reloads)
+    int m_fontRevision = 0;                 // ++ on each newly-registered downloaded font
 };
