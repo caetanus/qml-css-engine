@@ -20,6 +20,7 @@ qml_css_engine_sources = files(
   'src/qmlcss/csstheme.cpp',
   'src/qmlcss/csslayout.cpp',
   'src/qmlcss/csshr.cpp',
+  'src/qmlcss/cssimage.cpp',
   'src/qmlcss/valueparser.cpp',
 )
 
@@ -27,11 +28,12 @@ qml_css_engine_headers = files(
   'src/qmlcss/csstheme.h',
   'src/qmlcss/csslayout.h',
   'src/qmlcss/csshr.h',
+  'src/qmlcss/cssimage.h',
   'src/qmlcss/valueparser.h',
 )
 
 qml_css_engine_qt_sources = qt6.preprocess(
-  moc_headers: files('src/qmlcss/csstheme.h', 'src/qmlcss/csslayout.h', 'src/qmlcss/csshr.h'),
+  moc_headers: files('src/qmlcss/csstheme.h', 'src/qmlcss/csslayout.h', 'src/qmlcss/csshr.h', 'src/qmlcss/cssimage.h'),
   qresources: files('qml/qmlcss.qrc'),
 )
 

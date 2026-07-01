@@ -1,6 +1,7 @@
 #include "test_qml_css.h"
 
 #include "qmlcss/csshr.h"
+#include "qmlcss/cssimage.h"
 #include "qmlcss/csslayout.h"
 #include "qmlcss/csstheme.h"
 
@@ -818,6 +819,129 @@ void QmlCssTests::cssHrCppComposesRealShape()
     QVERIFY(shapePath);
     QVERIFY2(QByteArray(shapePath->metaObject()->className()).contains("QQuickShapePath"),
              shapePath->metaObject()->className());
+}
+
+// --- C++ CssImage (composition translation of CssImage.qml) ----------------------------------
+//
+// Helper: classify the composed children of a CssImage by their real Qt class names.
+namespace {
+struct ImageParts {
+    QQuickItem *image = nullptr;  // QQuickImage
+    QQuickItem *effect = nullptr; // QQuickMultiEffect
+    QQuickItem *shape = nullptr;  // QQuickShape (rounded-rect mask)
+};
+ImageParts partsOf(QQuickItem *root)
+{
+    ImageParts p;
+    const QList<QQuickItem *> kids = root->childItems();
+    for (QQuickItem *k : kids) {
+        const QByteArray cls(k->metaObject()->className());
+        if (cls.contains("QQuickImage"))
+            p.image = k;
+        else if (cls.contains("QQuickMultiEffect"))
+            p.effect = k;
+        else if (cls.contains("QQuickShape") && !cls.contains("QQuickShapePath"))
+            p.shape = k;
+    }
+    return p;
+}
+} // namespace
+
+// Rounded case: a non-zero border-radius must compose a REAL Image + MultiEffect + Shape mask,
+// with the effect masking (maskEnabled) and the Image hidden (drawn through the effect).
+void QmlCssTests::cssImageCppComposesImageEffectAndMask()
+{
+    qmlRegisterType<CssImage>("qmlcss", 1, 0, "CssImage");
+
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(
+        "#avatar { border-radius: 12px; object-fit: cover; }"));
+
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+
+        CssImage {
+            width: 100
+            height: 100
+            cssId: "avatar"
+        }
+    )", QUrl());
+
+    QScopedPointer<QObject> object(component.create());
+    QVERIFY2(object, qPrintable(component.errorString()));
+    auto *img = qobject_cast<CssImage *>(object.data());
+    QVERIFY(img);
+
+    // loadCss pushed the resolved style.
+    const QVariantMap style = img->property("style").toMap();
+    QCOMPARE(style.value(QStringLiteral("border-radius")).toString(), QStringLiteral("12px"));
+
+    const ImageParts p = partsOf(img);
+    QVERIFY2(p.image, "composed Image missing");
+    QVERIFY2(p.effect, "composed MultiEffect missing");
+    QVERIFY2(p.shape, "composed Shape mask missing");
+
+    // object-fit: cover -> Image.PreserveAspectCrop (2).
+    QCOMPARE(p.image->property("fillMode").toInt(), 2);
+    // Rounded -> the Image is hidden (the MultiEffect draws it through the mask).
+    QCOMPARE(p.image->isVisible(), false);
+
+    // The MultiEffect masks, is visible, and points at the REAL composed Image / Shape.
+    QCOMPARE(p.effect->property("maskEnabled").toBool(), true);
+    QCOMPARE(p.effect->isVisible(), true);
+    QCOMPARE(p.effect->property("source").value<QQuickItem *>(), p.image);
+    QCOMPARE(p.effect->property("maskSource").value<QQuickItem *>(), p.shape);
+
+    // The mask's rounded-rect radius follows the resolved border-radius and fills the item.
+    QCOMPARE(p.shape->property("maskRadius").toReal(), 12.0);
+    QCOMPARE(p.shape->property("maskWidth").toReal(), 100.0);
+    QCOMPARE(p.shape->property("maskHeight").toReal(), 100.0);
+}
+
+// No-radius case: the Image is shown DIRECT, and the MultiEffect mask is disabled/hidden.
+void QmlCssTests::cssImageCppNoRadiusShowsImageDirect()
+{
+    qmlRegisterType<CssImage>("qmlcss", 1, 0, "CssImage");
+
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(
+        "#plain { object-fit: contain; }"));
+
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+
+        CssImage {
+            width: 80
+            height: 40
+            cssId: "plain"
+        }
+    )", QUrl());
+
+    QScopedPointer<QObject> object(component.create());
+    QVERIFY2(object, qPrintable(component.errorString()));
+    auto *img = qobject_cast<CssImage *>(object.data());
+    QVERIFY(img);
+
+    const ImageParts p = partsOf(img);
+    QVERIFY2(p.image, "composed Image missing");
+    QVERIFY2(p.effect, "composed MultiEffect missing");
+
+    // object-fit: contain -> Image.PreserveAspectFit (1).
+    QCOMPARE(p.image->property("fillMode").toInt(), 1);
+    // No radius -> the Image draws directly, the effect is off.
+    QCOMPARE(p.image->isVisible(), true);
+    QCOMPARE(p.effect->isVisible(), false);
+    QCOMPARE(p.effect->property("maskEnabled").toBool(), false);
 }
 
 QTEST_MAIN(QmlCssTests)

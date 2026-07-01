@@ -31,4 +31,8 @@ private slots:
 
     // C++ CssHr — composition translation of CssHr.qml.
     void cssHrCppComposesRealShape();
+
+    // C++ CssImage — composition translation of CssImage.qml.
+    void cssImageCppComposesImageEffectAndMask();
+    void cssImageCppNoRadiusShowsImageDirect();
 };
