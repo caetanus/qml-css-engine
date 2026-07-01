@@ -4,7 +4,6 @@ import QtQuick
 // qml-css-engine dependency. `cssTheme` / `cssLayout` are provided from C++ (see main.cpp).
 // CssRect is a classic C++ type registered into the `qmlcss` module (see main.cpp).
 import qmlcss
-import "qrc:/qmlcss" as Css
 
 Window {
     visible: true
@@ -21,7 +20,7 @@ Window {
         height: 96
         cssId: "card"
 
-        Css.CssText {
+        CssText {
             cssId: "greeting"
             text: "Hello, qml-css-engine!"
         }

@@ -43,6 +43,9 @@ private slots:
     void cssImageCppComposesImageEffectAndMask();
     void cssImageCppNoRadiusShowsImageDirect();
 
+    // C++ CssText — composition translation of CssText.qml.
+    void cssTextCppComposesRealText();
+
     // C++ CssFill — composition translation of CssFill.qml.
     void cssFillCppComposesImageRectAndHostsChildren();
 };

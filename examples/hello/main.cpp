@@ -12,6 +12,7 @@
 
 #include "qmlcss/csslayout.h"
 #include "qmlcss/cssrect.h"
+#include "qmlcss/csstext.h"
 #include "qmlcss/csstheme.h"
 
 #include <QGuiApplication>
@@ -33,6 +34,7 @@ int main(int argc, char **argv)
     // CssRect is a classic C++ type; register it into the `qmlcss` module so Hello.qml's
     // `import qmlcss` resolves it (the box + layout container primitive).
     qmlRegisterType<CssRect>("qmlcss", 1, 0, "CssRect");
+    qmlRegisterType<CssText>("qmlcss", 1, 0, "CssText");
 
     const QString dir = QStringLiteral(HELLO_DIR);
 

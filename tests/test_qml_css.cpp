@@ -4,6 +4,7 @@
 #include "qmlcss/cssimage.h"
 #include "qmlcss/cssfill.h"
 #include "qmlcss/cssrect.h"
+#include "qmlcss/csstext.h"
 #include "qmlcss/csslayout.h"
 #include "qmlcss/csstheme.h"
 
@@ -30,6 +31,19 @@ QQuickItem *contentHolderOf(QQuickItem *child)
     return child ? child->parentItem() : nullptr;
 }
 
+// The REAL QtQuick Text a CssText composes (it forwards color/font/wrap/align onto it).
+QQuickItem *composedText(QObject *cssText)
+{
+    auto *item = qobject_cast<QQuickItem *>(cssText);
+    if (!item)
+        return nullptr;
+    for (QQuickItem *k : item->childItems()) {
+        if (QByteArray(k->metaObject()->className()).contains("QQuickText"))
+            return k;
+    }
+    return nullptr;
+}
+
 } // namespace
 
 void QmlCssTests::initTestCase()
@@ -40,6 +54,7 @@ void QmlCssTests::initTestCase()
     qmlRegisterType<CssHr>("qmlcss", 1, 0, "CssHr");
     qmlRegisterType<CssImage>("qmlcss", 1, 0, "CssImage");
     qmlRegisterType<CssFill>("qmlcss", 1, 0, "CssFill");
+    qmlRegisterType<CssText>("qmlcss", 1, 0, "CssText");
 }
 
 void QmlCssTests::cssRectLoadsAndRestyles()
@@ -87,9 +102,8 @@ void QmlCssTests::cssTextUsesStandaloneDefaults()
         component.setData(R"(
             import QtQuick
             import qmlcss
-            import "qrc:/qmlcss" as Css
 
-            Css.CssText {
+            CssText {
                 cssId: "label"
                 text: "Label"
             }
@@ -100,7 +114,10 @@ void QmlCssTests::cssTextUsesStandaloneDefaults()
 
         QCOMPARE(object->property("style").toMap().value(QStringLiteral("font-size")).toString(),
                  QStringLiteral("18px"));
-        const QColor color = object->property("color").value<QColor>();
+        // color is forwarded onto the composed Text.
+        QQuickItem *label = composedText(object.data());
+        QVERIFY2(label, "CssText did not compose a Text");
+        const QColor color = label->property("color").value<QColor>();
         QCOMPARE(color.red(), 10);
         QCOMPARE(color.green(), 20);
         QCOMPARE(color.blue(), 30);
@@ -617,7 +634,7 @@ void QmlCssTests::buttonLabelInheritsColor()
             cssPrimitive: "button"
             width: 100; height: 40
 
-            Css.CssText { objectName: "label"; text: "Click" }
+            CssText { objectName: "label"; text: "Click" }
         }
     )", QUrl());
 
@@ -631,8 +648,11 @@ void QmlCssTests::buttonLabelInheritsColor()
 
     auto *label = root->findChild<QQuickItem *>(QStringLiteral("label"));
     QVERIFY(label);
-    // The label has no colour of its own, so it inherits white from the button parent.
-    const QColor color = label->property("color").value<QColor>();
+    // The label has no colour of its own, so it inherits white from the button parent —
+    // forwarded onto its composed Text.
+    QQuickItem *labelText = composedText(label);
+    QVERIFY2(labelText, "CssText did not compose a Text");
+    const QColor color = labelText->property("color").value<QColor>();
     QCOMPARE(color, QColor(255, 255, 255));
 }
 
@@ -702,9 +722,8 @@ void QmlCssTests::cssTextDecorationUnderline()
     component.setData(R"(
         import QtQuick
         import qmlcss
-        import "qrc:/qmlcss" as Css
 
-        Css.CssText {
+        CssText {
             cssId: "uline"
             text: "Hello"
         }
@@ -713,7 +732,9 @@ void QmlCssTests::cssTextDecorationUnderline()
     QScopedPointer<QObject> object(component.create());
     QVERIFY2(object, qPrintable(component.errorString()));
 
-    const QFont font = object->property("font").value<QFont>();
+    QQuickItem *label = composedText(object.data());
+    QVERIFY2(label, "CssText did not compose a Text");
+    const QFont font = label->property("font").value<QFont>();
     QCOMPARE(font.underline(), true);
     QCOMPARE(font.strikeOut(), false);
 }
@@ -730,9 +751,8 @@ void QmlCssTests::cssTextWhiteSpaceNowrap()
     component.setData(R"(
         import QtQuick
         import qmlcss
-        import "qrc:/qmlcss" as Css
 
-        Css.CssText {
+        CssText {
             cssId: "nowrap"
             text: "Hello world"
         }
@@ -741,8 +761,10 @@ void QmlCssTests::cssTextWhiteSpaceNowrap()
     QScopedPointer<QObject> object(component.create());
     QVERIFY2(object, qPrintable(component.errorString()));
 
+    QQuickItem *label = composedText(object.data());
+    QVERIFY2(label, "CssText did not compose a Text");
     // Text.NoWrap maps to QTextOption::NoWrap == 0
-    QCOMPARE(object->property("wrapMode").toInt(), static_cast<int>(QTextOption::NoWrap));
+    QCOMPARE(label->property("wrapMode").toInt(), static_cast<int>(QTextOption::NoWrap));
 }
 
 void QmlCssTests::cssTextOverflowEllipsis()
@@ -757,9 +779,8 @@ void QmlCssTests::cssTextOverflowEllipsis()
     component.setData(R"(
         import QtQuick
         import qmlcss
-        import "qrc:/qmlcss" as Css
 
-        Css.CssText {
+        CssText {
             cssId: "ellipsis"
             text: "A very long piece of text that should be elided"
             width: 50
@@ -769,8 +790,12 @@ void QmlCssTests::cssTextOverflowEllipsis()
     QScopedPointer<QObject> object(component.create());
     QVERIFY2(object, qPrintable(component.errorString()));
 
+    QQuickItem *label = composedText(object.data());
+    QVERIFY2(label, "CssText did not compose a Text");
     // Text.ElideRight maps to Qt::ElideRight == 1
-    QCOMPARE(object->property("elide").toInt(), static_cast<int>(Qt::ElideRight));
+    QCOMPARE(label->property("elide").toInt(), static_cast<int>(Qt::ElideRight));
+    // The composed Text filled the assigned 50px width (so it actually elides).
+    QCOMPARE(label->width(), 50.0);
 }
 
 // --- C++ CssRect (composition translation of CssRect.qml) ------------------------------------
@@ -1055,6 +1080,75 @@ void QmlCssTests::cssImageCppNoRadiusShowsImageDirect()
     QCOMPARE(p.image->isVisible(), true);
     QCOMPARE(p.effect->isVisible(), false);
     QCOMPARE(p.effect->property("maskEnabled").toBool(), false);
+}
+
+// --- C++ CssText (composition translation of CssText.qml) ------------------------------------
+//
+// Proves CssText registers via `import qmlcss`, composes a REAL QtQuick Text (not a Rectangle,
+// not a repaint), forwards the CSS-driven props (color/font/wrap/align) onto it, and inherits the
+// container's colour/font/align through the CSS-inheritance chain.
+void QmlCssTests::cssTextCppComposesRealText()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(
+        "#box { color: #ff0000; font-size: 20px; text-align: center; } "
+        "#label { white-space: nowrap; }"));
+
+    CssLayoutEngine layout(&theme);
+
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layout);
+
+    QQmlComponent component(&engine);
+    // `import qmlcss` proves the C++ registration (not the removed qrc QML file).
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+
+        CssRect {
+            width: 200; height: 40
+            cssId: "box"
+
+            CssText { objectName: "label"; cssId: "label"; text: "Hi" }
+        }
+    )", QUrl());
+
+    QScopedPointer<QObject> object(component.create());
+    QVERIFY2(object, qPrintable(component.errorString()));
+    auto *box = qobject_cast<QQuickItem *>(object.data());
+    QVERIFY(box);
+
+    auto *label = box->findChild<CssText *>(QStringLiteral("label"));
+    QVERIFY(label);
+
+    // loadCss pushed the label's own style (white-space).
+    QCOMPARE(label->property("style").toMap().value(QStringLiteral("white-space")).toString(),
+             QStringLiteral("nowrap"));
+
+    // The composed child is a genuine QtQuick Text (NOT a Rectangle).
+    const QList<QQuickItem *> kids = label->childItems();
+    QQuickItem *text = nullptr;
+    for (QQuickItem *k : kids) {
+        const QByteArray cls(k->metaObject()->className());
+        QVERIFY2(!cls.contains("QQuickRectangle"), cls);
+        if (cls.contains("QQuickText"))
+            text = k;
+    }
+    QVERIFY2(text, "CssText did not compose a real Text");
+
+    // Forwarded content + literal text format.
+    QCOMPARE(text->property("text").toString(), QStringLiteral("Hi"));
+    QCOMPARE(text->property("textFormat").toInt(), 0); // Text.PlainText
+
+    // Inherited from the container: colour (red), font-size (20px -> 15pt) and centre alignment.
+    QCOMPARE(text->property("color").value<QColor>(), QColor(255, 0, 0));
+    const QFont font = text->property("font").value<QFont>();
+    QVERIFY2(std::abs(font.pointSizeF() - 15.0) < 0.5, qPrintable(QString::number(font.pointSizeF())));
+    QCOMPARE(text->property("horizontalAlignment").toInt(), static_cast<int>(Qt::AlignHCenter));
+
+    // The label's own white-space: nowrap forwarded onto the Text.
+    QCOMPARE(text->property("wrapMode").toInt(), static_cast<int>(QTextOption::NoWrap));
 }
 
 // --- C++ CssFill (composition translation of CssFill.qml) ------------------------------------
