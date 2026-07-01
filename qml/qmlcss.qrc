@@ -1,7 +1,6 @@
 <RCC>
   <qresource prefix="/">
     <file alias="qmlcss/CssDropShadow.qml">qmlcss/CssDropShadow.qml</file>
-    <file alias="qmlcss/CssFill.qml">qmlcss/CssFill.qml</file>
     <file alias="qmlcss/CssFillLayer.qml">qmlcss/CssFillLayer.qml</file>
     <file alias="qmlcss/CssIcon.qml">qmlcss/CssIcon.qml</file>
     <file alias="qmlcss/CssItem.qml">qmlcss/CssItem.qml</file>

@@ -2,6 +2,7 @@
 
 #include "qmlcss/csshr.h"
 #include "qmlcss/cssimage.h"
+#include "qmlcss/cssfill.h"
 #include "qmlcss/cssrect.h"
 #include "qmlcss/csslayout.h"
 #include "qmlcss/csstheme.h"
@@ -38,6 +39,7 @@ void QmlCssTests::initTestCase()
     qmlRegisterType<CssRect>("qmlcss", 1, 0, "CssRect");
     qmlRegisterType<CssHr>("qmlcss", 1, 0, "CssHr");
     qmlRegisterType<CssImage>("qmlcss", 1, 0, "CssImage");
+    qmlRegisterType<CssFill>("qmlcss", 1, 0, "CssFill");
 }
 
 void QmlCssTests::cssRectLoadsAndRestyles()
@@ -611,7 +613,7 @@ void QmlCssTests::buttonLabelInheritsColor()
         import qmlcss
         import "qrc:/qmlcss" as Css
 
-        Css.CssFill {
+        CssFill {
             cssPrimitive: "button"
             width: 100; height: 40
 
@@ -1053,6 +1055,104 @@ void QmlCssTests::cssImageCppNoRadiusShowsImageDirect()
     QCOMPARE(p.image->isVisible(), true);
     QCOMPARE(p.effect->isVisible(), false);
     QCOMPARE(p.effect->property("maskEnabled").toBool(), false);
+}
+
+// --- C++ CssFill (composition translation of CssFill.qml) ------------------------------------
+//
+// Proves CssFill (registered via the classic API, instantiated as `qmlcss.CssFill`) composes,
+// for a url() background: a REAL solid-colour Shape behind, a REAL QtQuick Image, and a REAL
+// CssRect renderer (our own type, cssPrimitive "" and fill forced transparent so the image shows
+// through while the border still frames) — AND that it hosts a declared child in its contentHolder,
+// laid out by the C++ box model.
+void QmlCssTests::cssFillCppComposesImageRectAndHostsChildren()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(
+        "#panel { background-color: #204080; background-image: url(qrc:/nope.png); "
+        "background-size: contain; border: 2px solid #ffcc00; "
+        "display: flex; flex-direction: row; gap: 0px; }"));
+
+    CssLayoutEngine layout(&theme);
+
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layout);
+
+    QQmlComponent component(&engine);
+    // `import qmlcss` proves the C++ registration (not the removed qrc QML file).
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+
+        CssFill {
+            width: 120
+            height: 60
+            cssId: "panel"
+
+            CssRect { objectName: "kid"; cssPrimitive: ""; style: ({ "width": "40px", "height": "20px" }) }
+        }
+    )", QUrl());
+
+    QScopedPointer<QObject> object(component.create());
+    QVERIFY2(object, qPrintable(component.errorString()));
+    auto *fill = qobject_cast<CssFill *>(object.data());
+    QVERIFY(fill);
+
+    // loadCss pushed the resolved style.
+    const QVariantMap style = fill->property("style").toMap();
+    QCOMPARE(style.value(QStringLiteral("background-color")).toString(), QStringLiteral("#204080"));
+    QCOMPARE(style.value(QStringLiteral("background-image")).toString(), QStringLiteral("url(qrc:/nope.png)"));
+
+    // Classify the composed layers by their real Qt class names.
+    QQuickItem *image = nullptr;
+    QQuickItem *rect = nullptr;
+    QQuickItem *solidShape = nullptr;
+    for (QQuickItem *k : fill->childItems()) {
+        const QByteArray cls(k->metaObject()->className());
+        if (cls.contains("QQuickImage"))
+            image = k;
+        else if (cls.contains("CssRect"))
+            rect = k;
+        else if (cls.contains("QQuickShape") && !cls.contains("QQuickShapePath"))
+            solidShape = k;
+    }
+    QVERIFY2(image, "composed Image missing");
+    QVERIFY2(rect, "composed CssRect renderer missing");
+    QVERIFY2(solidShape, "composed solid-background Shape missing");
+
+    // The Image carries the resolved url() source, is visible, and object-fit maps background-size:
+    // contain -> Image.PreserveAspectFit (1).
+    QCOMPARE(image->property("source").toUrl(), QUrl(QStringLiteral("qrc:/nope.png")));
+    QCOMPARE(image->isVisible(), true);
+    QCOMPARE(image->property("fillMode").toInt(), 1);
+
+    // The solid Shape shows the background-color behind the image.
+    QCOMPARE(solidShape->isVisible(), true);
+    QCOMPARE(solidShape->property("fillColor").value<QColor>(), QColor(QStringLiteral("#204080")));
+
+    // The CssRect renderer got the same style, and its fill is transparent (image present) while the
+    // border is still resolved — proven through its own composed render root.
+    QCOMPARE(rect->property("cssPrimitive").toString(), QString());
+    QCOMPARE(rect->property("defaultColor").value<QColor>(), QColor(Qt::transparent));
+    QQuickItem *renderRoot = nullptr;
+    for (QQuickItem *k : rect->childItems()) {
+        if (k->property("radiusStr").isValid()) {
+            renderRoot = k;
+            break;
+        }
+    }
+    QVERIFY2(renderRoot, "CssRect render subtree missing");
+    QCOMPARE(renderRoot->property("borderWidth").toReal(), 2.0);
+    QCOMPARE(renderRoot->property("borderColorOpaque").value<QColor>(), QColor(QStringLiteral("#ffcc00")));
+
+    // Container: the declared child lands in CssFill's inner contentHolder (child.parent.parent ==
+    // fill), and the C++ box model laid it out at its 40px width — NOT inside the renderer CssRect.
+    auto *kid = fill->findChild<QQuickItem *>(QStringLiteral("kid"));
+    QVERIFY(kid);
+    QQuickItem *holder = kid->parentItem();
+    QVERIFY(holder);
+    QCOMPARE(holder->parentItem(), fill);
+    QVERIFY2(std::abs(kid->width() - 40.0) < 0.5, qPrintable(QString::number(kid->width())));
 }
 
 QTEST_MAIN(QmlCssTests)

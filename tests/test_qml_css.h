@@ -42,4 +42,7 @@ private slots:
     // C++ CssImage — composition translation of CssImage.qml.
     void cssImageCppComposesImageEffectAndMask();
     void cssImageCppNoRadiusShowsImageDirect();
+
+    // C++ CssFill — composition translation of CssFill.qml.
+    void cssFillCppComposesImageRectAndHostsChildren();
 };
