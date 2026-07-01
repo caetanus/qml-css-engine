@@ -6,7 +6,6 @@
     <file alias="qmlcss/CssIcon.qml">qmlcss/CssIcon.qml</file>
     <file alias="qmlcss/CssItem.qml">qmlcss/CssItem.qml</file>
     <file alias="qmlcss/CssKeyframes.qml">qmlcss/CssKeyframes.qml</file>
-    <file alias="qmlcss/CssRect.qml">qmlcss/CssRect.qml</file>
     <file alias="qmlcss/CssText.qml">qmlcss/CssText.qml</file>
     <file alias="qmlcss/Contrast.js">qmlcss/Contrast.js</file>
   </qresource>

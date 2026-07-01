@@ -6,6 +6,10 @@ class QmlCssTests final : public QObject {
     Q_OBJECT
 
 private slots:
+    // Register the classic C++ types (CssRect/CssHr/CssImage) into the `qmlcss` module once,
+    // before any test — so `import qmlcss` resolves everywhere (incl. the CssFill shim).
+    void initTestCase();
+
     void cssRectLoadsAndRestyles();
     void cssTextUsesStandaloneDefaults();
     void cssItemAppliesToParent();
@@ -28,6 +32,9 @@ private slots:
     void cssTextDecorationUnderline();
     void cssTextWhiteSpaceNowrap();
     void cssTextOverflowEllipsis();
+
+    // C++ CssRect — composition translation of CssRect.qml.
+    void cssRectCppComposesShapeAndContains();
 
     // C++ CssHr — composition translation of CssHr.qml.
     void cssHrCppComposesRealShape();

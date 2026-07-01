@@ -2,6 +2,7 @@
 
 #include "qmlcss/csshr.h"
 #include "qmlcss/cssimage.h"
+#include "qmlcss/cssrect.h"
 #include "qmlcss/csslayout.h"
 #include "qmlcss/csstheme.h"
 
@@ -30,6 +31,15 @@ QQuickItem *contentHolderOf(QQuickItem *child)
 
 } // namespace
 
+void QmlCssTests::initTestCase()
+{
+    // Classic one-line registration — no qmltyperegistrar / QML_ELEMENT machinery. Process-global,
+    // so every test's `import qmlcss` (and the CssFill shim that composes CssRect) resolves.
+    qmlRegisterType<CssRect>("qmlcss", 1, 0, "CssRect");
+    qmlRegisterType<CssHr>("qmlcss", 1, 0, "CssHr");
+    qmlRegisterType<CssImage>("qmlcss", 1, 0, "CssImage");
+}
+
 void QmlCssTests::cssRectLoadsAndRestyles()
     {
         CssTheme theme;
@@ -41,9 +51,10 @@ void QmlCssTests::cssRectLoadsAndRestyles()
         QQmlComponent component(&engine);
         component.setData(R"(
             import QtQuick
+            import qmlcss
             import "qrc:/qmlcss" as Css
 
-            Css.CssRect {
+            CssRect {
                 width: 24
                 height: 24
                 cssId: "box"
@@ -73,6 +84,7 @@ void QmlCssTests::cssTextUsesStandaloneDefaults()
         QQmlComponent component(&engine);
         component.setData(R"(
             import QtQuick
+            import qmlcss
             import "qrc:/qmlcss" as Css
 
             Css.CssText {
@@ -103,6 +115,7 @@ void QmlCssTests::cssItemAppliesToParent()
         QQmlComponent component(&engine);
         component.setData(R"(
             import QtQuick
+            import qmlcss
             import "qrc:/qmlcss" as Css
 
             Rectangle {
@@ -146,16 +159,17 @@ void QmlCssTests::layoutFlexColumnStacks()
     QQmlComponent component(&engine);
     component.setData(R"(
         import QtQuick
+        import qmlcss
         import "qrc:/qmlcss" as Css
 
-        Css.CssRect {
+        CssRect {
             cssPrimitive: ""
             width: 100; height: 50
             style: ({ "display": "flex", "flex-direction": "column", "gap": "0px" })
 
-            Css.CssRect { objectName: "a"; cssPrimitive: ""; style: ({ "height": "30px" }) }
-            Css.CssRect { objectName: "b"; cssPrimitive: ""; style: ({ "height": "30px" }) }
-            Css.CssRect { objectName: "c"; cssPrimitive: ""; style: ({ "height": "30px" }) }
+            CssRect { objectName: "a"; cssPrimitive: ""; style: ({ "height": "30px" }) }
+            CssRect { objectName: "b"; cssPrimitive: ""; style: ({ "height": "30px" }) }
+            CssRect { objectName: "c"; cssPrimitive: ""; style: ({ "height": "30px" }) }
         }
     )", QUrl());
 
@@ -192,18 +206,19 @@ void QmlCssTests::layoutClampsMaxAndMinWidth()
     QQmlComponent component(&engine);
     component.setData(R"(
         import QtQuick
+        import qmlcss
         import "qrc:/qmlcss" as Css
 
-        Css.CssRect {
+        CssRect {
             cssPrimitive: ""
             width: 300; height: 60
             style: ({ "display": "flex", "flex-direction": "row", "gap": "0px" })
 
-            Css.CssRect {
+            CssRect {
                 objectName: "capped"; cssPrimitive: ""
                 style: ({ "width": "200px", "max-width": "50px" })
             }
-            Css.CssRect {
+            CssRect {
                 objectName: "floored"; cssPrimitive: ""
                 style: ({ "width": "20px", "min-width": "80px" })
             }
@@ -240,16 +255,17 @@ void QmlCssTests::layoutHonoursFlexOrder()
     QQmlComponent component(&engine);
     component.setData(R"(
         import QtQuick
+        import qmlcss
         import "qrc:/qmlcss" as Css
 
-        Css.CssRect {
+        CssRect {
             cssPrimitive: ""
             width: 300; height: 40
             style: ({ "display": "flex", "flex-direction": "row", "gap": "0px" })
 
-            Css.CssRect { objectName: "a"; cssPrimitive: ""; style: ({ "width": "30px", "order": "2" }) }
-            Css.CssRect { objectName: "b"; cssPrimitive: ""; style: ({ "width": "30px", "order": "0" }) }
-            Css.CssRect { objectName: "c"; cssPrimitive: ""; style: ({ "width": "30px", "order": "1" }) }
+            CssRect { objectName: "a"; cssPrimitive: ""; style: ({ "width": "30px", "order": "2" }) }
+            CssRect { objectName: "b"; cssPrimitive: ""; style: ({ "width": "30px", "order": "0" }) }
+            CssRect { objectName: "c"; cssPrimitive: ""; style: ({ "width": "30px", "order": "1" }) }
         }
     )", QUrl());
 
@@ -285,16 +301,17 @@ void QmlCssTests::layoutAppliesFlexBasis()
     QQmlComponent component(&engine);
     component.setData(R"(
         import QtQuick
+        import qmlcss
         import "qrc:/qmlcss" as Css
 
-        Css.CssRect {
+        CssRect {
             cssPrimitive: ""
             width: 400; height: 40
             style: ({ "display": "flex", "flex-direction": "row", "gap": "0px" })
 
-            Css.CssRect { objectName: "a"; cssPrimitive: ""; style: ({ "flex-basis": "40px" }) }
-            Css.CssRect { objectName: "b"; cssPrimitive: ""; style: ({ "flex-basis": "80px" }) }
-            Css.CssRect { objectName: "c"; cssPrimitive: ""; style: ({ "flex-basis": "120px" }) }
+            CssRect { objectName: "a"; cssPrimitive: ""; style: ({ "flex-basis": "40px" }) }
+            CssRect { objectName: "b"; cssPrimitive: ""; style: ({ "flex-basis": "80px" }) }
+            CssRect { objectName: "c"; cssPrimitive: ""; style: ({ "flex-basis": "120px" }) }
         }
     )", QUrl());
 
@@ -332,18 +349,19 @@ void QmlCssTests::layoutVisibilityHiddenKeepsSpace()
     QQmlComponent component(&engine);
     component.setData(R"(
         import QtQuick
+        import qmlcss
         import "qrc:/qmlcss" as Css
 
-        Css.CssRect {
+        CssRect {
             cssPrimitive: ""
             width: 300; height: 60
             style: ({ "display": "flex", "flex-direction": "row", "gap": "0px" })
 
-            Css.CssRect {
+            CssRect {
                 objectName: "ghost"; cssPrimitive: ""
                 style: ({ "width": "50px", "visibility": "hidden" })
             }
-            Css.CssRect { objectName: "sibling"; cssPrimitive: ""; style: ({ "width": "30px" }) }
+            CssRect { objectName: "sibling"; cssPrimitive: ""; style: ({ "width": "30px" }) }
         }
     )", QUrl());
 
@@ -378,9 +396,10 @@ void QmlCssTests::layoutGridTemplateAreas()
     QQmlComponent component(&engine);
     component.setData(R"(
         import QtQuick
+        import qmlcss
         import "qrc:/qmlcss" as Css
 
-        Css.CssRect {
+        CssRect {
             cssPrimitive: ""
             width: 300; height: 200
             style: ({
@@ -391,9 +410,9 @@ void QmlCssTests::layoutGridTemplateAreas()
                 "gap": "10px"
             })
 
-            Css.CssRect { objectName: "head"; cssPrimitive: ""; style: ({ "grid-area": "head" }) }
-            Css.CssRect { objectName: "side"; cssPrimitive: ""; style: ({ "grid-area": "side" }) }
-            Css.CssRect { objectName: "main"; cssPrimitive: ""; style: ({ "grid-area": "main" }) }
+            CssRect { objectName: "head"; cssPrimitive: ""; style: ({ "grid-area": "head" }) }
+            CssRect { objectName: "side"; cssPrimitive: ""; style: ({ "grid-area": "side" }) }
+            CssRect { objectName: "main"; cssPrimitive: ""; style: ({ "grid-area": "main" }) }
         }
     )", QUrl());
 
@@ -437,16 +456,17 @@ void QmlCssTests::layoutFlexShrinkOverflow()
     QQmlComponent component(&engine);
     component.setData(R"(
         import QtQuick
+        import qmlcss
         import "qrc:/qmlcss" as Css
 
-        Css.CssRect {
+        CssRect {
             cssPrimitive: ""
             width: 100; height: 40
             style: ({ "display": "flex", "flex-direction": "row", "gap": "0px" })
 
-            Css.CssRect { objectName: "a"; cssPrimitive: ""; style: ({ "width": "60px", "flex-shrink": "1" }) }
-            Css.CssRect { objectName: "b"; cssPrimitive: ""; style: ({ "width": "60px", "flex-shrink": "1" }) }
-            Css.CssRect { objectName: "c"; cssPrimitive: ""; style: ({ "width": "60px", "flex-shrink": "1" }) }
+            CssRect { objectName: "a"; cssPrimitive: ""; style: ({ "width": "60px", "flex-shrink": "1" }) }
+            CssRect { objectName: "b"; cssPrimitive: ""; style: ({ "width": "60px", "flex-shrink": "1" }) }
+            CssRect { objectName: "c"; cssPrimitive: ""; style: ({ "width": "60px", "flex-shrink": "1" }) }
         }
     )", QUrl());
 
@@ -485,9 +505,10 @@ void QmlCssTests::layoutAlignContentCenter()
     QQmlComponent component(&engine);
     component.setData(R"(
         import QtQuick
+        import qmlcss
         import "qrc:/qmlcss" as Css
 
-        Css.CssRect {
+        CssRect {
             cssPrimitive: ""
             width: 100; height: 200
             style: ({
@@ -495,9 +516,9 @@ void QmlCssTests::layoutAlignContentCenter()
                 "gap": "0px", "align-content": "center"
             })
 
-            Css.CssRect { objectName: "a"; cssPrimitive: ""; style: ({ "width": "60px", "height": "20px" }) }
-            Css.CssRect { objectName: "b"; cssPrimitive: ""; style: ({ "width": "60px", "height": "20px" }) }
-            Css.CssRect { objectName: "c"; cssPrimitive: ""; style: ({ "width": "60px", "height": "20px" }) }
+            CssRect { objectName: "a"; cssPrimitive: ""; style: ({ "width": "60px", "height": "20px" }) }
+            CssRect { objectName: "b"; cssPrimitive: ""; style: ({ "width": "60px", "height": "20px" }) }
+            CssRect { objectName: "c"; cssPrimitive: ""; style: ({ "width": "60px", "height": "20px" }) }
         }
     )", QUrl());
 
@@ -535,18 +556,19 @@ void QmlCssTests::layoutBoxSizingBorderBox()
     QQmlComponent component(&engine);
     component.setData(R"(
         import QtQuick
+        import qmlcss
         import "qrc:/qmlcss" as Css
 
-        Css.CssRect {
+        CssRect {
             cssPrimitive: ""
             width: 400; height: 60
             style: ({ "display": "flex", "flex-direction": "row", "gap": "0px" })
 
-            Css.CssRect {
+            CssRect {
                 objectName: "border"; cssPrimitive: ""
                 style: ({ "width": "100px", "padding": "10px", "box-sizing": "border-box" })
             }
-            Css.CssRect {
+            CssRect {
                 objectName: "content"; cssPrimitive: ""
                 style: ({ "width": "100px", "padding": "10px", "box-sizing": "content-box" })
             }
@@ -586,6 +608,7 @@ void QmlCssTests::buttonLabelInheritsColor()
     QQmlComponent component(&engine);
     component.setData(R"(
         import QtQuick
+        import qmlcss
         import "qrc:/qmlcss" as Css
 
         Css.CssFill {
@@ -624,9 +647,10 @@ void QmlCssTests::cssRectZIndex()
     QQmlComponent component(&engine);
     component.setData(R"(
         import QtQuick
+        import qmlcss
         import "qrc:/qmlcss" as Css
 
-        Css.CssRect {
+        CssRect {
             width: 24; height: 24
             cssId: "zbox"
         }
@@ -649,9 +673,10 @@ void QmlCssTests::cssRectOverflowHidden()
     QQmlComponent component(&engine);
     component.setData(R"(
         import QtQuick
+        import qmlcss
         import "qrc:/qmlcss" as Css
 
-        Css.CssRect {
+        CssRect {
             width: 24; height: 24
             cssId: "clipped"
         }
@@ -674,6 +699,7 @@ void QmlCssTests::cssTextDecorationUnderline()
     QQmlComponent component(&engine);
     component.setData(R"(
         import QtQuick
+        import qmlcss
         import "qrc:/qmlcss" as Css
 
         Css.CssText {
@@ -701,6 +727,7 @@ void QmlCssTests::cssTextWhiteSpaceNowrap()
     QQmlComponent component(&engine);
     component.setData(R"(
         import QtQuick
+        import qmlcss
         import "qrc:/qmlcss" as Css
 
         Css.CssText {
@@ -727,6 +754,7 @@ void QmlCssTests::cssTextOverflowEllipsis()
     QQmlComponent component(&engine);
     component.setData(R"(
         import QtQuick
+        import qmlcss
         import "qrc:/qmlcss" as Css
 
         Css.CssText {
@@ -741,6 +769,89 @@ void QmlCssTests::cssTextOverflowEllipsis()
 
     // Text.ElideRight maps to Qt::ElideRight == 1
     QCOMPARE(object->property("elide").toInt(), static_cast<int>(Qt::ElideRight));
+}
+
+// --- C++ CssRect (composition translation of CssRect.qml) ------------------------------------
+//
+// Proves the C++ type registers via `import qmlcss`, resolves its style through cssTheme.loadCss,
+// composes a REAL QtQuick Shape for the box (background / border / radius pushed onto it), AND is
+// a layout container: a declared child lands in the inner contentHolder and is laid out by the
+// C++ box model.
+void QmlCssTests::cssRectCppComposesShapeAndContains()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(
+        "#box { background-color: #2244aa; border: 2px solid #ffcc00; border-radius: 8px; "
+        "display: flex; flex-direction: row; gap: 0px; }"));
+
+    CssLayoutEngine layout(&theme);
+
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layout);
+
+    QQmlComponent component(&engine);
+    // `import qmlcss` proves the C++ registration (not a qrc QML file).
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+
+        CssRect {
+            width: 120
+            height: 40
+            cssId: "box"
+
+            CssRect { objectName: "kid"; cssPrimitive: ""; style: ({ "width": "40px", "height": "20px" }) }
+        }
+    )", QUrl());
+
+    QScopedPointer<QObject> object(component.create());
+    QVERIFY2(object, qPrintable(component.errorString()));
+    auto *rect = qobject_cast<CssRect *>(object.data());
+    QVERIFY(rect);
+
+    // loadCss pushed the resolved style.
+    const QVariantMap style = rect->property("style").toMap();
+    QCOMPARE(style.value(QStringLiteral("background-color")).toString(), QStringLiteral("#2244aa"));
+    QCOMPARE(style.value(QStringLiteral("border-radius")).toString(), QStringLiteral("8px"));
+
+    // The composed render subtree root carries the resolved CSS values (bg/border/radius) that
+    // drive the real Shape fill — identified as the CssRect child exposing `radiusStr`.
+    QQuickItem *renderRoot = nullptr;
+    for (QQuickItem *k : rect->childItems()) {
+        if (k->property("radiusStr").isValid()) {
+            renderRoot = k;
+            break;
+        }
+    }
+    QVERIFY2(renderRoot, "composed render subtree missing");
+    QCOMPARE(renderRoot->property("radiusStr").toString(), QStringLiteral("8px"));
+    QCOMPARE(renderRoot->property("borderWidth").toReal(), 2.0);
+    QCOMPARE(renderRoot->property("borderColorOpaque").value<QColor>(), QColor(QStringLiteral("#ffcc00")));
+    const QColor solid = renderRoot->property("solid").value<QColor>();
+    QCOMPARE(solid, QColor(QStringLiteral("#2244aa")));
+
+    // The box fill is a genuine QtQuick Shape (NOT a Rectangle), somewhere under the render root.
+    bool hasShape = false;
+    bool hasRectangle = false;
+    for (QQuickItem *d : renderRoot->findChildren<QQuickItem *>()) {
+        const QByteArray cls(d->metaObject()->className());
+        if (cls.contains("QQuickShape") && !cls.contains("QQuickShapePath"))
+            hasShape = true;
+        if (cls.contains("QQuickRectangle"))
+            hasRectangle = true;
+    }
+    QVERIFY2(hasShape, "no composed QtQuick Shape fill");
+    QVERIFY2(!hasRectangle, "composition used a Rectangle (owner's rule: Shape only)");
+
+    // Container: the declared child lands in the inner contentHolder (child.parent.parent == rect),
+    // and the C++ box model laid it out at its 40px width.
+    auto *kid = rect->findChild<QQuickItem *>(QStringLiteral("kid"));
+    QVERIFY(kid);
+    QQuickItem *holder = kid->parentItem();
+    QVERIFY(holder);
+    QCOMPARE(holder->parentItem(), rect);
+    QVERIFY2(std::abs(kid->width() - 40.0) < 0.5, qPrintable(QString::number(kid->width())));
 }
 
 // --- C++ CssHr (composition translation of CssHr.qml) ----------------------------------------

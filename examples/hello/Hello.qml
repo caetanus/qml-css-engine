@@ -2,6 +2,8 @@ import QtQuick
 
 // The engine's QML primitives live under qrc:/qmlcss and are pulled in by linking the
 // qml-css-engine dependency. `cssTheme` / `cssLayout` are provided from C++ (see main.cpp).
+// CssRect is a classic C++ type registered into the `qmlcss` module (see main.cpp).
+import qmlcss
 import "qrc:/qmlcss" as Css
 
 Window {
@@ -13,7 +15,7 @@ Window {
 
     // A CSS-styled, CSS-laid-out card. #card centers its child via flexbox; #greeting is a
     // plain label that inherits nothing and is matched purely by its cssId.
-    Css.CssRect {
+    CssRect {
         anchors.centerIn: parent
         width: 280
         height: 96

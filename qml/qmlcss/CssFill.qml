@@ -1,5 +1,5 @@
 import QtQuick
-import "qrc:/qmlcss" as QmlCss
+import qmlcss
 
 // Thin compatibility shim over CssRect (the Shape-based fill renderer). A Shape cannot
 // fill with an image, so CssFill adds the `background-image` layer BEHIND a CssRect;
@@ -116,7 +116,7 @@ Item {
     // The fill / border / gradient / box-shadow / bevel / transition — all CssRect. When
     // an image is present the fill is transparent (CssRect renders url() bgs transparent),
     // so the image above shows through and the border still frames it.
-    QmlCss.CssRect {
+    CssRect {
         anchors.fill: parent
         // Renderer-only child: CssFill owns CSS resolution. Keep this CssRect off the
         // theme registry or loadCss() will overwrite the explicit style binding below.

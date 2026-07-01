@@ -11,10 +11,12 @@
 // used by the build's smoke check.
 
 #include "qmlcss/csslayout.h"
+#include "qmlcss/cssrect.h"
 #include "qmlcss/csstheme.h"
 
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
+#include <QtQml/qqml>
 #include <QQmlContext>
 #include <QQuickWindow>
 #include <QTimer>
@@ -27,6 +29,10 @@
 int main(int argc, char **argv)
 {
     QGuiApplication app(argc, argv);
+
+    // CssRect is a classic C++ type; register it into the `qmlcss` module so Hello.qml's
+    // `import qmlcss` resolves it (the box + layout container primitive).
+    qmlRegisterType<CssRect>("qmlcss", 1, 0, "CssRect");
 
     const QString dir = QStringLiteral(HELLO_DIR);
 
