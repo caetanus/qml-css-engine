@@ -9,6 +9,7 @@
 #include "qmlcss/csstheme.h"
 #include "qmlcss/cssdropshadow.h"
 #include "qmlcss/csskeyframes.h"
+#include "qmlcss/cssicon.h"
 
 #include <QtQml/qqml.h>
 
@@ -21,6 +22,7 @@
 #include <QSignalSpy>
 #include <QTest>
 #include <QTextOption>
+#include <QUrl>
 
 #include <cmath>
 
@@ -59,6 +61,7 @@ void QmlCssTests::initTestCase()
     qmlRegisterType<CssText>("qmlcss", 1, 0, "CssText");
     qmlRegisterType<CssDropShadow>("qmlcss", 1, 0, "CssDropShadow");
     qmlRegisterType<CssKeyframes>("qmlcss", 1, 0, "CssKeyframes");
+    qmlRegisterType<CssIcon>("qmlcss", 1, 0, "CssIcon");
 }
 
 void QmlCssTests::cssRectLoadsAndRestyles()
@@ -1379,6 +1382,100 @@ void QmlCssTests::cssKeyframesCppInterpolatesTarget()
     kfObj->setProperty("progress", 0.25);
     QVERIFY2(std::abs(target->property("opacity").toReal() - 0.25) < 0.01,
              qPrintable(QString::number(target->property("opacity").toReal())));
+}
+
+// --- C++ CssIcon (composition translation of CssIcon.qml) ------------------------------------
+//
+// Proves CssIcon registers via `import qmlcss`, composes a REAL QtQuick Image and a REAL
+// QtQuick.Effects MultiEffect, and correctly drives the icon source URL from a QVariantMap style
+// (icon-name key → themeicon URL) and a fallbackSource, as well as the colorization props.
+void QmlCssTests::cssIconCppComposesImageAndEffect()
+{
+    QQmlEngine engine;
+
+    // 1. Basic construction: compose Image + MultiEffect.
+    QQmlComponent comp(&engine);
+    comp.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssIcon {
+            width: 48; height: 48
+        }
+    )", QUrl());
+
+    QScopedPointer<QObject> object(comp.create());
+    QVERIFY2(object, qPrintable(comp.errorString()));
+    auto *icon = qobject_cast<CssIcon *>(object.data());
+    QVERIFY(icon);
+
+    // Find the composed REAL Image and MultiEffect children.
+    QQuickItem *image = nullptr;
+    QQuickItem *effect = nullptr;
+    for (QQuickItem *k : icon->childItems()) {
+        const QByteArray cls(k->metaObject()->className());
+        if (cls.contains("QQuickImage"))
+            image = k;
+        else if (cls.contains("QQuickMultiEffect"))
+            effect = k;
+    }
+    QVERIFY2(image, "composed Image missing");
+    QVERIFY2(effect, "composed MultiEffect missing");
+
+    // Image starts invisible (effect is the renderer); effect also invisible (no source loaded yet).
+    QCOMPARE(image->isVisible(), false);
+    // Initially no source is set, so effect is hidden too.
+    QCOMPARE(effect->isVisible(), false);
+
+    // Image fillMode == Image.PreserveAspectFit (1).
+    QCOMPARE(image->property("fillMode").toInt(), 1);
+
+    // Effect source points at the composed image.
+    QCOMPARE(effect->property("source").value<QQuickItem *>(), image);
+
+    // 2. Colorization props: default colorize=true, color=white.
+    QVERIFY2(std::abs(effect->property("colorization").toReal() - 1.0) < 1e-6,
+             qPrintable(QString::number(effect->property("colorization").toReal())));
+    QCOMPARE(effect->property("colorizationColor").value<QColor>(), QColor(Qt::white));
+
+    // 3. setColorize(false) → colorization 0.
+    icon->setColorize(false);
+    QVERIFY2(std::abs(effect->property("colorization").toReal() - 0.0) < 1e-6,
+             qPrintable(QString::number(effect->property("colorization").toReal())));
+
+    // 4. setColor → colorizationColor updated.
+    icon->setColorize(true);
+    icon->setColor(QColor(QStringLiteral("#ff4400")));
+    QCOMPARE(effect->property("colorizationColor").value<QColor>(), QColor(QStringLiteral("#ff4400")));
+
+    // 5. fallbackSource: setFallbackSource drives the Image source URL.
+    icon->setFallbackSource(QStringLiteral("qrc:/icons/fallback.svg"));
+    const QString fbSrc = image->property("source").toUrl().toString();
+    QCOMPARE(fbSrc, QStringLiteral("qrc:/icons/fallback.svg"));
+
+    // 6. icon-name CSS key → "image://themeicon/<name>|<hexcolor-without-#>".
+    //    The color is #ff4400 (set above), hex = "ff4400".
+    QVariantMap style;
+    style[QStringLiteral("icon-name")] = QStringLiteral("search");
+    icon->setStyle(style);
+    // Qt encodes the pipe '|' as '%7C' when converting to QUrl internally; decode first.
+    const QString themeUrl = image->property("source").toUrl().toString();
+    const QString themeDecoded = QUrl::fromPercentEncoding(themeUrl.toUtf8());
+    QVERIFY2(themeDecoded.startsWith(QLatin1String("image://themeicon/search|")),
+             qPrintable(themeDecoded));
+    // The hex part after '|' must be the color without '#': ff4400.
+    QVERIFY2(themeDecoded.endsWith(QLatin1String("ff4400")),
+             qPrintable(themeDecoded));
+
+    // 7. icon CSS key overrides fallbackSource; sourceFromCssUrl strips url(...).
+    QVariantMap style2;
+    style2[QStringLiteral("icon")] = QStringLiteral("url(qrc:/icons/star.png)");
+    icon->setStyle(style2);
+    const QString urlSrc = image->property("source").toUrl().toString();
+    QCOMPARE(urlSrc, QStringLiteral("qrc:/icons/star.png"));
+
+    // 8. iconSize auto-derives from geometry (width=height=48, no explicit set).
+    // icon was created 48×48 — auto iconSize should be 48.
+    QCOMPARE(icon->iconSize(), 48);
 }
 
 QTEST_MAIN(QmlCssTests)

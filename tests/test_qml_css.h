@@ -54,4 +54,7 @@ private slots:
 
     // C++ CssKeyframes — composition translation of CssKeyframes.qml.
     void cssKeyframesCppInterpolatesTarget();
+
+    // C++ CssIcon — composition translation of CssIcon.qml.
+    void cssIconCppComposesImageAndEffect();
 };
