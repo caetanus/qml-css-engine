@@ -10,6 +10,7 @@
 #include "qmlcss/cssdropshadow.h"
 #include "qmlcss/csskeyframes.h"
 #include "qmlcss/cssicon.h"
+#include "qmlcss/cssfilllayer.h"
 
 #include <QtQml/qqml.h>
 
@@ -62,6 +63,7 @@ void QmlCssTests::initTestCase()
     qmlRegisterType<CssDropShadow>("qmlcss", 1, 0, "CssDropShadow");
     qmlRegisterType<CssKeyframes>("qmlcss", 1, 0, "CssKeyframes");
     qmlRegisterType<CssIcon>("qmlcss", 1, 0, "CssIcon");
+    qmlRegisterType<CssFillLayer>("qmlcss", 1, 0, "CssFillLayer");
 }
 
 void QmlCssTests::cssRectLoadsAndRestyles()
@@ -1476,6 +1478,81 @@ void QmlCssTests::cssIconCppComposesImageAndEffect()
     // 8. iconSize auto-derives from geometry (width=height=48, no explicit set).
     // icon was created 48×48 — auto iconSize should be 48.
     QCOMPARE(icon->iconSize(), 48);
+}
+
+// --- C++ CssFillLayer (composition translation of CssFillLayer.qml) -------------------------
+//
+// Proves CssFillLayer registers via `import qmlcss`, composes a REAL QtQuick Shape as its only
+// child, and correctly drives the Shape's opacity from peakAlpha (solid color alpha or max stop
+// alpha), so the fill renders opaque and alpha is carried on opacity — exactly as the QML did.
+void QmlCssTests::cssFillLayerCppComposesShape()
+{
+    QQmlEngine engine;
+
+    // --- Test 1: solid colour with alpha 0.5 → composed Shape opacity == 0.5 ---------------
+    QQmlComponent comp1(&engine);
+    comp1.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssFillLayer {
+            width: 50; height: 50
+            spec: ({ type: "color", color: Qt.rgba(1, 0, 0, 0.5) })
+            radii: [0, 0, 0, 0]
+        }
+    )", QUrl());
+
+    QScopedPointer<QObject> o1(comp1.create());
+    QVERIFY2(o1, qPrintable(comp1.errorString()));
+    auto *layer1 = qobject_cast<QQuickItem *>(o1.data());
+    QVERIFY(layer1);
+
+    // Exactly one composed child: the real Shape.
+    const QList<QQuickItem *> kids1 = layer1->childItems();
+    QCOMPARE(kids1.size(), 1);
+    QQuickItem *shape1 = kids1.first();
+    QVERIFY(shape1);
+    QVERIFY2(QByteArray(shape1->metaObject()->className()).contains("QQuickShape"),
+             shape1->metaObject()->className());
+    QVERIFY2(!QByteArray(shape1->metaObject()->className()).contains("QQuickRectangle"),
+             shape1->metaObject()->className());
+
+    // peakAlpha = solid color alpha = 0.5 → Shape opacity == 0.5 (alpha on opacity, fill opaque).
+    QVERIFY2(std::abs(shape1->property("opacity").toReal() - 0.5) < 0.01,
+             qPrintable(QString::number(shape1->property("opacity").toReal())));
+
+    // --- Test 2: linear gradient, stops with alpha 1.0 and 0.8 → peakAlpha == 1.0 ----------
+    QQmlComponent comp2(&engine);
+    comp2.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssFillLayer {
+            width: 60; height: 20
+            spec: ({
+                type: "linear", angle: 90,
+                stops: [
+                    { position: 0.0, color: Qt.rgba(1, 0, 0, 1.0) },
+                    { position: 1.0, color: Qt.rgba(0, 0, 1, 0.8) }
+                ]
+            })
+            radii: [0, 0, 0, 0]
+        }
+    )", QUrl());
+
+    QScopedPointer<QObject> o2(comp2.create());
+    QVERIFY2(o2, qPrintable(comp2.errorString()));
+    auto *layer2 = qobject_cast<QQuickItem *>(o2.data());
+    QVERIFY(layer2);
+
+    const QList<QQuickItem *> kids2 = layer2->childItems();
+    QCOMPARE(kids2.size(), 1);
+    QQuickItem *shape2 = kids2.first();
+    QVERIFY(shape2);
+    QVERIFY2(QByteArray(shape2->metaObject()->className()).contains("QQuickShape"),
+             shape2->metaObject()->className());
+
+    // peakAlpha = max(1.0, 0.8) = 1.0.
+    QVERIFY2(std::abs(shape2->property("opacity").toReal() - 1.0) < 0.01,
+             qPrintable(QString::number(shape2->property("opacity").toReal())));
 }
 
 QTEST_MAIN(QmlCssTests)

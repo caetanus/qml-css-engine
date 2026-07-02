@@ -57,4 +57,7 @@ private slots:
 
     // C++ CssIcon — composition translation of CssIcon.qml.
     void cssIconCppComposesImageAndEffect();
+
+    // C++ CssFillLayer — composition translation of CssFillLayer.qml.
+    void cssFillLayerCppComposesShape();
 };

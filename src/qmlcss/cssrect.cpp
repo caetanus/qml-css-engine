@@ -79,7 +79,7 @@ const char *kRenderShell = R"QML(
 import QtQuick
 import QtQuick.Shapes
 import QtQuick.Effects
-import "qrc:/qmlcss"
+import qmlcss
 
 Item {
     id: r
@@ -255,6 +255,7 @@ Item {
     Repeater {
         model: r.orderedLayers
         CssFillLayer {
+            anchors.fill: parent
             spec: modelData
             radii: [r.clampedRadius(0), r.clampedRadius(1), r.clampedRadius(2), r.clampedRadius(3)]
         }
