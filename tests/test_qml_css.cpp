@@ -12,6 +12,7 @@
 #include "qmlcss/cssicon.h"
 #include "qmlcss/cssfilllayer.h"
 #include "qmlcss/cssitem.h"
+#include "qmlcss/contrast.h"
 
 #include <QtQml/qqml.h>
 
@@ -66,6 +67,8 @@ void QmlCssTests::initTestCase()
     qmlRegisterType<CssIcon>("qmlcss", 1, 0, "CssIcon");
     qmlRegisterType<CssFillLayer>("qmlcss", 1, 0, "CssFillLayer");
     qmlRegisterType<CssItem>("qmlcss", 1, 0, "CssItem");
+    qmlRegisterSingletonType<Contrast>("qmlcss", 1, 0, "Contrast",
+        [](QQmlEngine *, QJSEngine *) -> QObject * { return new Contrast(); });
 }
 
 void QmlCssTests::cssRectLoadsAndRestyles()
@@ -80,7 +83,6 @@ void QmlCssTests::cssRectLoadsAndRestyles()
         component.setData(R"(
             import QtQuick
             import qmlcss
-            import "qrc:/qmlcss" as Css
 
             CssRect {
                 width: 24
@@ -190,7 +192,6 @@ void QmlCssTests::layoutFlexColumnStacks()
     component.setData(R"(
         import QtQuick
         import qmlcss
-        import "qrc:/qmlcss" as Css
 
         CssRect {
             cssPrimitive: ""
@@ -237,7 +238,6 @@ void QmlCssTests::layoutClampsMaxAndMinWidth()
     component.setData(R"(
         import QtQuick
         import qmlcss
-        import "qrc:/qmlcss" as Css
 
         CssRect {
             cssPrimitive: ""
@@ -286,7 +286,6 @@ void QmlCssTests::layoutHonoursFlexOrder()
     component.setData(R"(
         import QtQuick
         import qmlcss
-        import "qrc:/qmlcss" as Css
 
         CssRect {
             cssPrimitive: ""
@@ -332,7 +331,6 @@ void QmlCssTests::layoutAppliesFlexBasis()
     component.setData(R"(
         import QtQuick
         import qmlcss
-        import "qrc:/qmlcss" as Css
 
         CssRect {
             cssPrimitive: ""
@@ -380,7 +378,6 @@ void QmlCssTests::layoutVisibilityHiddenKeepsSpace()
     component.setData(R"(
         import QtQuick
         import qmlcss
-        import "qrc:/qmlcss" as Css
 
         CssRect {
             cssPrimitive: ""
@@ -427,7 +424,6 @@ void QmlCssTests::layoutGridTemplateAreas()
     component.setData(R"(
         import QtQuick
         import qmlcss
-        import "qrc:/qmlcss" as Css
 
         CssRect {
             cssPrimitive: ""
@@ -487,7 +483,6 @@ void QmlCssTests::layoutFlexShrinkOverflow()
     component.setData(R"(
         import QtQuick
         import qmlcss
-        import "qrc:/qmlcss" as Css
 
         CssRect {
             cssPrimitive: ""
@@ -536,7 +531,6 @@ void QmlCssTests::layoutAlignContentCenter()
     component.setData(R"(
         import QtQuick
         import qmlcss
-        import "qrc:/qmlcss" as Css
 
         CssRect {
             cssPrimitive: ""
@@ -587,7 +581,6 @@ void QmlCssTests::layoutBoxSizingBorderBox()
     component.setData(R"(
         import QtQuick
         import qmlcss
-        import "qrc:/qmlcss" as Css
 
         CssRect {
             cssPrimitive: ""
@@ -639,7 +632,6 @@ void QmlCssTests::buttonLabelInheritsColor()
     component.setData(R"(
         import QtQuick
         import qmlcss
-        import "qrc:/qmlcss" as Css
 
         CssFill {
             cssPrimitive: "button"
@@ -681,7 +673,6 @@ void QmlCssTests::cssRectZIndex()
     component.setData(R"(
         import QtQuick
         import qmlcss
-        import "qrc:/qmlcss" as Css
 
         CssRect {
             width: 24; height: 24
@@ -707,7 +698,6 @@ void QmlCssTests::cssRectOverflowHidden()
     component.setData(R"(
         import QtQuick
         import qmlcss
-        import "qrc:/qmlcss" as Css
 
         CssRect {
             width: 24; height: 24
@@ -1593,6 +1583,60 @@ void QmlCssTests::cssItemCppAppliesToParent()
     const QColor color = object->property("color").value<QColor>();
     QCOMPARE(color, QColor(QStringLiteral("#112233")));
     QCOMPARE(object->property("radius").toReal(), 8.0);
+}
+
+// --- C++ Contrast (ported from Contrast.js) --------------------------------------------------
+//
+// (a) Pure C++ validation: contrastRatio(white, black) ≈ 21, toHex red, blendOver at 0.5,
+//     needsDarkIcon on light/dark bg, naturalContrastColor already passing the target.
+void QmlCssTests::contrastCppPure()
+{
+    Contrast c;
+
+    // contrastRatio(white, black) must be close to 21 (WCAG maximum).
+    const QColor white = QColor::fromRgbF(1.0, 1.0, 1.0, 1.0);
+    const QColor black = QColor::fromRgbF(0.0, 0.0, 0.0, 1.0);
+    const double ratio = c.contrastRatio(white, black);
+    QVERIFY2(std::abs(ratio - 21.0) < 0.5, qPrintable(QString::number(ratio)));
+
+    // toHex of pure red (#ff0000).
+    const QColor red = QColor::fromRgbF(1.0, 0.0, 0.0, 1.0);
+    QCOMPARE(c.toHex(red), QStringLiteral("#ff0000"));
+
+    // blendOver: semi-transparent white over black → grey ~(0.5, 0.5, 0.5, 1).
+    const QColor semiWhite = QColor::fromRgbF(1.0, 1.0, 1.0, 0.5);
+    const QColor blended = c.blendOver(semiWhite, black);
+    QVERIFY2(std::abs(blended.redF()   - 0.5) < 0.01, qPrintable(QString::number(blended.redF())));
+    QVERIFY2(std::abs(blended.greenF() - 0.5) < 0.01, qPrintable(QString::number(blended.greenF())));
+    QVERIFY2(std::abs(blended.blueF()  - 0.5) < 0.01, qPrintable(QString::number(blended.blueF())));
+    QCOMPARE(blended.alphaF(), 1.0);
+
+    // needsDarkIcon: white bg is light (luminance ≥ 0.5) → true; black bg → false.
+    QCOMPARE(c.needsDarkIcon(white), true);
+    QCOMPARE(c.needsDarkIcon(black), false);
+
+    // naturalContrastColor: fg already satisfying the target is returned unchanged.
+    // white vs black contrast ≈ 21; target 4.5 → should return white as-is.
+    const QColor result = c.naturalContrastColor(white, black, 4.5);
+    QCOMPARE(result, white);
+}
+
+// (b) QML singleton validation: `import qmlcss` + `Contrast.toHex(...)` — proves registration.
+void QmlCssTests::contrastQmlSingleton()
+{
+    QQmlEngine engine;
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        Item {
+            property string hexRed: Contrast.toHex(Qt.rgba(1, 0, 0, 1))
+        }
+    )", QUrl());
+
+    QScopedPointer<QObject> object(component.create());
+    QVERIFY2(object, qPrintable(component.errorString()));
+    QCOMPARE(object->property("hexRed").toString(), QStringLiteral("#ff0000"));
 }
 
 QTEST_MAIN(QmlCssTests)

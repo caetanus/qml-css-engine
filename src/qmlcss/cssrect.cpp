@@ -12,7 +12,6 @@
 #include <QUrl>
 
 #include <algorithm>
-#include <cmath>
 
 namespace {
 

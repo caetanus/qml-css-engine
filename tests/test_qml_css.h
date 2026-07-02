@@ -63,4 +63,8 @@ private slots:
 
     // C++ CssItem — composition translation of CssItem.qml (migrated from cssItemAppliesToParent).
     void cssItemCppAppliesToParent();
+
+    // C++ Contrast — WCAG contrast utilities, ported from Contrast.js.
+    void contrastCppPure();
+    void contrastQmlSingleton();
 };
