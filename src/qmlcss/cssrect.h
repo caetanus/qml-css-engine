@@ -70,6 +70,12 @@ class CssRect : public QQuickItem {
     Q_PROPERTY(qreal _animTx READ animTx WRITE setAnimTx NOTIFY animChanged)
     Q_PROPERTY(qreal _animTy READ animTy WRITE setAnimTy NOTIFY animChanged)
 
+    // Normalised animation position 0→1; driven by the composed NumberAnimation (see
+    // componentComplete). On every tick, the setter calls cssLayout.applyAnim() to interpolate
+    // the @keyframes stops and write _animRotate/_animScale/_animTx/_animTy. Equivalent to the
+    // QML `property real animTick` + `onAnimTickChanged` + `NumberAnimation on animTick`.
+    Q_PROPERTY(qreal animTick READ animTick WRITE setAnimTick NOTIFY animTickChanged)
+
     // The container's default child slot (QML `default property alias content: contentHolder.data`).
     Q_PROPERTY(QQmlListProperty<QObject> content READ content)
     Q_CLASSINFO("DefaultProperty", "content")
@@ -127,6 +133,9 @@ public:
     qreal animTy() const { return m_animTy; }
     void setAnimTy(qreal v);
 
+    qreal animTick() const { return m_animTick; }
+    void setAnimTick(qreal v);
+
     QQmlListProperty<QObject> content();
 
     // QML `requestRelayout()` — invoked by CssLayoutEngine::notifyParentLayout and on our own
@@ -148,6 +157,7 @@ signals:
     void defaultBorderWidthChanged();
     void inheritedChanged();
     void animChanged();
+    void animTickChanged();
 
 protected:
     void componentComplete() override;
@@ -160,8 +170,10 @@ private:
     void recompute();
     // anchors.fill equivalent: keep the render subtree + content holder sized to us.
     void layoutChildren();
-    // The transform-origin-centred static transform (rotate/scale/translate), applied to us so it
-    // affects content too, exactly like the QML root's rotation/scale/transform.
+    // Applies the active transform — if _animActive (stops.length >= 2), uses the animated
+    // _animRotate/_animScale/_animTx/_animTy (written each tick by applyAnim); otherwise uses the
+    // static transform resolved from style["transform"]. Pivot is the element centre (CSS default,
+    // QML: transformOrigin: Item.Center). Faithful to the QML rotation/scale/transform bindings.
     void applyTransform();
     // Re-style through the reverse-slot engine path when identity changes (QML onCss*Changed).
     void maybeLoadCss();
@@ -181,6 +193,7 @@ private:
     QColor m_defaultBorderColor = QColor(Qt::transparent);
     qreal m_defaultBorderWidth = 0;
 
+    // Animated transform channels — written each tick by CssLayoutEngine::applyAnim().
     qreal m_animRotate = 0;
     qreal m_animScale = 1;
     qreal m_animTx = 0;
@@ -191,6 +204,15 @@ private:
     qreal m_staticScale = 1;
     qreal m_staticTx = 0;
     qreal m_staticTy = 0;
+
+    // @keyframes animation driver — QML-equivalent:
+    //   property real animTick: 0
+    //   NumberAnimation on animTick { from: 0.0; to: 1.0; duration: ...; loops: ...; easing: ... }
+    //   onAnimTickChanged: if (cssLayout) cssLayout.applyAnim(root, _animStops, animTick)
+    qreal m_animTick = 0.0;
+    bool m_animActive = false;           // _animStops.length >= 2
+    QVariantList m_animStops;            // buildAnimStops output for current @keyframes
+    QPointer<QObject> m_anim;            // REAL QtQuick NumberAnimation on animTick (0→1)
 
     QPointer<CssTheme> m_theme;
     QPointer<CssLayoutEngine> m_layout;

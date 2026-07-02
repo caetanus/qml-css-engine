@@ -1378,6 +1378,81 @@ void QmlCssTests::cssKeyframesCppInterpolatesTarget()
              qPrintable(QString::number(target->property("opacity").toReal())));
 }
 
+// --- C++ CssRect @keyframes animation driver -----------------------------------------------
+//
+// Proves that CssRect's live @keyframes driver is wired: a CssRect with
+// `animation: spin 200ms linear infinite` (and a matching @keyframes block in the theme)
+// actually ticks animTick via a REAL NumberAnimation and drives rotation() through applyAnim.
+//
+// Two cases:
+//  1. Positive: animation active → rotation() moves away from 0 within 2s.
+//  2. Negative: static transform only (no animation key) → rotation() is the parsed value.
+//
+// Style is injected directly via setProperty("style", map) to bypass the selector-resolution
+// path (which has a pre-existing failure unrelated to this driver — parsesKeyframesAndAnimation).
+void QmlCssTests::cssRectCppKeyframesDriverLive()
+{
+    // --- shared setup ---
+    // Load @keyframes spin (0deg → 180deg) into the theme.  We don't need a selector rule —
+    // we inject style directly, so only keyframes lookup matters here.
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(
+        "@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(180deg); } }"));
+
+    CssLayoutEngine layout(&theme);
+
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layout);
+
+    // --- positive: animation is live, rotation leaves 0 ---
+    {
+        QQmlComponent comp(&engine);
+        comp.setData(R"(
+            import QtQuick
+            import qmlcss
+            CssRect { width: 60; height: 60 }
+        )", QUrl());
+        QScopedPointer<QObject> obj(comp.create());
+        QVERIFY2(obj, qPrintable(comp.errorString()));
+        auto *rect = qobject_cast<CssRect *>(obj.data());
+        QVERIFY(rect);
+
+        // Inject style with `animation: spin 200ms linear infinite` and no static transform.
+        // This triggers recompute() → buildAnimStops (2 stops) → _animActive=true → NumberAnimation
+        // starts → tick fires → applyAnim writes _animRotate → applyTransform sets rotation().
+        QVariantMap animStyle;
+        animStyle.insert(QStringLiteral("animation"), QStringLiteral("spin 200ms linear infinite"));
+        rect->setProperty("style", animStyle);
+
+        // Within 2s (>>200ms animation period) rotation() must leave 0. QTRY_VERIFY pumps the
+        // event loop, allowing the NumberAnimation to fire its first tick.
+        QTRY_VERIFY_WITH_TIMEOUT(rect->rotation() > 0.5, 2000);
+    }
+
+    // --- negative: static transform, no animation — rotation() is the CSS value ---
+    {
+        QQmlComponent comp(&engine);
+        comp.setData(R"(
+            import QtQuick
+            import qmlcss
+            CssRect { width: 60; height: 60 }
+        )", QUrl());
+        QScopedPointer<QObject> obj(comp.create());
+        QVERIFY2(obj, qPrintable(comp.errorString()));
+        auto *rect = qobject_cast<CssRect *>(obj.data());
+        QVERIFY(rect);
+
+        // Static transform only — _animActive=false, static branch in applyTransform.
+        QVariantMap staticStyle;
+        staticStyle.insert(QStringLiteral("transform"), QStringLiteral("rotate(45deg)"));
+        rect->setProperty("style", staticStyle);
+
+        QVERIFY2(std::abs(rect->rotation() - 45.0) < 0.5,
+                 qPrintable(QString::number(rect->rotation())));
+    }
+}
+
 // --- C++ CssIcon (composition translation of CssIcon.qml) ------------------------------------
 //
 // Proves CssIcon registers via `import qmlcss`, composes a REAL QtQuick Image and a REAL

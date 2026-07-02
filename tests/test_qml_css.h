@@ -55,6 +55,9 @@ private slots:
     // C++ CssKeyframes — composition translation of CssKeyframes.qml.
     void cssKeyframesCppInterpolatesTarget();
 
+    // C++ CssRect @keyframes animation driver — live NumberAnimation on animTick.
+    void cssRectCppKeyframesDriverLive();
+
     // C++ CssIcon — composition translation of CssIcon.qml.
     void cssIconCppComposesImageAndEffect();
 

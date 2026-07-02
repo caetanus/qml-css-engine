@@ -9,6 +9,7 @@
 #include <QQmlContext>
 #include <QQmlEngine>
 #include <QQmlListReference>
+#include <QQmlProperty>
 #include <QUrl>
 
 #include <algorithm>
@@ -594,6 +595,16 @@ void CssRect::setAnimTy(qreal v)
     applyTransform();
 }
 
+void CssRect::setAnimTick(qreal v)
+{
+    m_animTick = v;
+    emit animTickChanged();
+    // QML: onAnimTickChanged: if (typeof cssLayout !== "undefined" && cssLayout)
+    //          cssLayout.applyAnim(root, root._animStops, root.animTick)
+    if (m_layout)
+        m_layout->applyAnim(this, m_animStops, v);
+}
+
 // --- content default property (forwards to the contentHolder's `data`, the QML alias) --------
 
 QQmlListProperty<QObject> CssRect::content()
@@ -796,21 +807,83 @@ void CssRect::recompute()
     m_staticScale = tf.contains(QStringLiteral("scale")) ? tf.value(QStringLiteral("scale")).toReal() : 1.0;
     m_staticTx = tf.contains(QStringLiteral("translateX")) ? tf.value(QStringLiteral("translateX")).toReal() : 0.0;
     m_staticTy = tf.contains(QStringLiteral("translateY")) ? tf.value(QStringLiteral("translateY")).toReal() : 0.0;
+
+    // --- @keyframes animation driver ---
+    // QML equivalent:
+    //   readonly property var _animation: (cssTheme && cssTheme.loaded && style["animation"])
+    //       ? cssTheme.parseAnimation(style["animation"]) : ({})
+    //   readonly property var _animFrames: _animation.name ? cssTheme.keyframes(_animation.name) : []
+    //   readonly property var _animStops: cssLayout ? cssLayout.buildAnimStops(_animFrames) : []
+    //   readonly property bool _animActive: _animStops.length >= 2
+    //
+    //   NumberAnimation on animTick {
+    //       from: 0.0; to: 1.0
+    //       duration: Math.max(1, _animation.duration !== undefined ? _animation.duration : 1000)
+    //       loops: (_animation.iterations === undefined || _animation.iterations < 0)
+    //                  ? Animation.Infinite : Math.max(1, _animation.iterations)
+    //       easing.type: _animation.easing !== undefined ? _animation.easing : Easing.Linear
+    //       running: root._animActive
+    //   }
+    //   onAnimTickChanged: if (cssLayout) cssLayout.applyAnim(root, _animStops, animTick)
+    QVariantMap animCfg;
+    if (m_theme && has("animation"))
+        animCfg = m_theme->parseAnimation(str("animation"));
+
+    QVariantList animFrames;
+    if (m_theme && !animCfg.isEmpty() && !animCfg.value(QStringLiteral("name")).toString().isEmpty())
+        animFrames = m_theme->keyframes(animCfg.value(QStringLiteral("name")).toString());
+
+    QVariantList newStops;
+    if (m_layout)
+        newStops = m_layout->buildAnimStops(animFrames);
+    m_animStops = newStops;
+    m_animActive = m_animStops.size() >= 2;
+
+    if (m_anim) {
+        // Stop first so reconfiguration takes effect cleanly (matching QML reactive rebuild).
+        m_anim->setProperty("running", false);
+
+        // QML: duration: Math.max(1, _animation.duration !== undefined ? _animation.duration : 1000)
+        // animCfg is {} when no animation key in style; parseAnimation always sets "duration".
+        const int dur = animCfg.isEmpty() ? 1000 : qMax(1, animCfg.value(QStringLiteral("duration")).toInt());
+        m_anim->setProperty("duration", dur);
+
+        // QML: loops: (_animation.iterations === undefined || _animation.iterations < 0)
+        //          ? Animation.Infinite : Math.max(1, _animation.iterations)
+        // Animation.Infinite == -1
+        const int iters = animCfg.isEmpty() ? -1 : animCfg.value(QStringLiteral("iterations")).toInt();
+        m_anim->setProperty("loops", iters < 0 ? -1 : qMax(1, iters));
+
+        // QML: easing.type: _animation.easing !== undefined ? _animation.easing : Easing.Linear
+        // Easing.Linear == QEasingCurve::Linear == 0
+        const int easingType = animCfg.isEmpty()
+            ? static_cast<int>(QEasingCurve::Linear)
+            : animCfg.value(QStringLiteral("easing")).toInt();
+        QQmlProperty(m_anim.data(), QStringLiteral("easing.type")).write(easingType);
+
+        // QML: running: root._animActive
+        m_anim->setProperty("running", m_animActive);
+    }
+
     applyTransform();
 }
 
 void CssRect::applyTransform()
 {
-    // We omit the live @keyframes ticking driver; the static transform is what CssRect renders
-    // when no animation is running. If CssLayoutEngine::applyAnim writes the _anim* properties,
-    // those take over (matching the QML rotation/scale/transform bindings' animated branch).
-    const bool anim = m_style.contains(QStringLiteral("animation"))
-        && !m_style.value(QStringLiteral("animation")).toString().isEmpty();
-    setRotation(anim ? m_animRotate : m_staticRotate);
-    setScale(anim ? m_animScale : m_staticScale);
+    // _animActive = m_animStops.size() >= 2 (faithful to the QML `_animActive: _animStops.length >= 2`).
+    // While the @keyframes animation is live (NumberAnimation on animTick running), each tick calls
+    // applyAnim() which writes _animRotate/_animScale/_animTx/_animTy (the animated branch).
+    // When not active, the static style["transform"] values apply.
+    // Equivalent to the QML:
+    //   rotation: root._animActive ? root._animRotate : (root._staticTransform.rotate ?? 0)
+    //   scale:    root._animActive ? root._animScale  : (root._staticTransform.scale  ?? 1)
+    //   transform: Translate { x: root._animActive ? root._animTx : (root._staticTransform.translateX ?? 0)
+    //                          y: root._animActive ? root._animTy : (root._staticTransform.translateY ?? 0) }
+    setRotation(m_animActive ? m_animRotate : m_staticRotate);
+    setScale(m_animActive ? m_animScale : m_staticScale);
     if (m_translate) {
-        m_translate->setProperty("x", anim ? m_animTx : m_staticTx);
-        m_translate->setProperty("y", anim ? m_animTy : m_staticTy);
+        m_translate->setProperty("x", m_animActive ? m_animTx : m_staticTx);
+        m_translate->setProperty("y", m_animActive ? m_animTy : m_staticTy);
     }
 }
 
@@ -868,6 +941,27 @@ void CssRect::componentComplete()
                 if (ref.isValid())
                     ref.append(o);
                 m_translate = o;
+            }
+        }
+
+        // A REAL QtQuick NumberAnimation on our `animTick` property (0→1), driving the @keyframes
+        // interpolation. Created once here; reconfigured (duration/loops/easing/running) in every
+        // recompute() when the style changes. Equivalent QML:
+        //   NumberAnimation on animTick { from: 0.0; to: 1.0; ... running: root._animActive }
+        {
+            QQmlComponent comp(eng);
+            comp.setData(
+                "import QtQuick\n"
+                "NumberAnimation { from: 0.0; to: 1.0 }\n",
+                QUrl());
+            if (QObject *o = comp.create(qmlContext(this))) {
+                o->setParent(this);
+                o->setProperty("target", QVariant::fromValue(static_cast<QObject *>(this)));
+                o->setProperty("property", QStringLiteral("animTick"));
+                m_anim = o;
+            } else {
+                qWarning("CssRect: failed to compose anim NumberAnimation: %s",
+                         qPrintable(comp.errorString()));
             }
         }
     }
