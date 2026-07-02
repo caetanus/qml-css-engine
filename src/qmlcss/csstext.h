@@ -30,9 +30,9 @@ class CssLayoutEngine;
 //   PlainText; lineHeight(Mode)<-line-height; padding<-padding; visible<-display:none;
 //   opacity<-visibility/opacity. font.family re-resolves on cssTheme.fontRevision (async @font-face).
 //
-// text-shadow is composed as a REAL QtQuick.Effects MultiEffect drop-shadow (CssDropShadow.qml's
-// idiom) sourcing the Text — the direct port of the QML `layer.effect: CssDropShadow{}`, since
-// CssDropShadow has not been ported to C++ yet.
+// text-shadow is composed as a REAL QtQuick.Effects MultiEffect drop-shadow (same idiom as
+// the C++ CssDropShadow) sourcing the Text — mirrors the QML `layer.effect: CssDropShadow{}`
+// pattern (CssDropShadow is now also a C++ type; CssText inlines the equivalent directly).
 //
 // Layout participant: implicitWidth/Height mirror the composed Text's; notifyParentLayout on
 // implicit/visible/style change (like CssHr).

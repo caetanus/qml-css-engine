@@ -48,4 +48,7 @@ private slots:
 
     // C++ CssFill — composition translation of CssFill.qml.
     void cssFillCppComposesImageRectAndHostsChildren();
+
+    // C++ CssDropShadow — composition translation of CssDropShadow.qml.
+    void cssDropShadowCppComposesMultiEffect();
 };

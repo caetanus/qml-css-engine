@@ -7,6 +7,7 @@
 #include "qmlcss/csstext.h"
 #include "qmlcss/csslayout.h"
 #include "qmlcss/csstheme.h"
+#include "qmlcss/cssdropshadow.h"
 
 #include <QtQml/qqml.h>
 
@@ -55,6 +56,7 @@ void QmlCssTests::initTestCase()
     qmlRegisterType<CssImage>("qmlcss", 1, 0, "CssImage");
     qmlRegisterType<CssFill>("qmlcss", 1, 0, "CssFill");
     qmlRegisterType<CssText>("qmlcss", 1, 0, "CssText");
+    qmlRegisterType<CssDropShadow>("qmlcss", 1, 0, "CssDropShadow");
 }
 
 void QmlCssTests::cssRectLoadsAndRestyles()
@@ -1247,6 +1249,66 @@ void QmlCssTests::cssFillCppComposesImageRectAndHostsChildren()
     QVERIFY(holder);
     QCOMPARE(holder->parentItem(), fill);
     QVERIFY2(std::abs(kid->width() - 40.0) < 0.5, qPrintable(QString::number(kid->width())));
+}
+
+// --- C++ CssDropShadow (composition translation of CssDropShadow.qml) -----------------------
+//
+// Proves CssDropShadow registers via `import qmlcss`, composes a REAL QtQuick.Effects
+// MultiEffect as its only child, and correctly drives the shadow* props (including the
+// shadowBlur 0..1 normalisation over 32 px) from a QVariantMap shadow descriptor.
+void QmlCssTests::cssDropShadowCppComposesMultiEffect()
+{
+    QQmlEngine engine;
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssDropShadow {
+            width: 100; height: 40
+        }
+    )", QUrl());
+
+    QScopedPointer<QObject> object(component.create());
+    QVERIFY2(object, qPrintable(component.errorString()));
+    auto *ds = qobject_cast<CssDropShadow *>(object.data());
+    QVERIFY(ds);
+
+    // Initially: no shadow descriptor → hasShadow false.
+    QCOMPARE(ds->hasShadow(), false);
+
+    // Find the composed REAL MultiEffect child.
+    QQuickItem *effect = nullptr;
+    for (QQuickItem *k : ds->childItems()) {
+        if (QByteArray(k->metaObject()->className()).contains("QQuickMultiEffect"))
+            effect = k;
+    }
+    QVERIFY2(effect, "composed MultiEffect missing");
+    QCOMPARE(effect->property("shadowEnabled").toBool(), false);
+
+    // Set a shadow descriptor and verify it is pushed onto the MultiEffect.
+    QVariantMap shadow;
+    shadow[QStringLiteral("x")]     = 2.0;
+    shadow[QStringLiteral("y")]     = 3.0;
+    shadow[QStringLiteral("blur")]  = 16.0;         // blur/32 = 0.5
+    shadow[QStringLiteral("color")] = QColor(QStringLiteral("#ff8800"));
+    ds->setShadow(shadow);
+
+    QCOMPARE(ds->hasShadow(), true);
+    QCOMPARE(effect->property("shadowEnabled").toBool(), true);
+    QCOMPARE(effect->property("shadowColor").value<QColor>(), QColor(QStringLiteral("#ff8800")));
+    QCOMPARE(effect->property("shadowHorizontalOffset").toReal(), 2.0);
+    QCOMPARE(effect->property("shadowVerticalOffset").toReal(), 3.0);
+    // QML: shadowBlur = Math.min(1, 16 / 32) = 0.5
+    QVERIFY2(std::abs(effect->property("shadowBlur").toReal() - 0.5) < 1e-6,
+             qPrintable(QString::number(effect->property("shadowBlur").toReal())));
+
+    // autoPaddingEnabled must be true (matches the original QML).
+    QCOMPARE(effect->property("autoPaddingEnabled").toBool(), true);
+
+    // Clearing the shadow (no color key) resets shadowEnabled.
+    ds->setShadow({});
+    QCOMPARE(ds->hasShadow(), false);
+    QCOMPARE(effect->property("shadowEnabled").toBool(), false);
 }
 
 QTEST_MAIN(QmlCssTests)

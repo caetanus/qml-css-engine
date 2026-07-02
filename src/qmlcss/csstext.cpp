@@ -393,7 +393,8 @@ void CssText::componentComplete()
         }
 
         // The REAL QtQuick.Effects MultiEffect drop-shadow (text-shadow), sourcing the Text.
-        // Direct port of the QML `layer.effect: CssDropShadow{}` (not yet a C++ type).
+        // Mirrors the C++ CssDropShadow composition (same MultiEffect props); CssText inlines
+        // it directly rather than composing a CssDropShadow to avoid an extra indirection.
         if (m_label) {
             QQmlComponent comp(eng);
             comp.setData("import QtQuick.Effects\nMultiEffect { autoPaddingEnabled: true; visible: false }", QUrl());
