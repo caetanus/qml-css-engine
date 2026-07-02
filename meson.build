@@ -25,6 +25,7 @@ qml_css_engine_sources = files(
   'src/qmlcss/cssrect.cpp',
   'src/qmlcss/csstext.cpp',
   'src/qmlcss/cssdropshadow.cpp',
+  'src/qmlcss/csskeyframes.cpp',
   'src/qmlcss/valueparser.cpp',
 )
 
@@ -37,11 +38,12 @@ qml_css_engine_headers = files(
   'src/qmlcss/cssrect.h',
   'src/qmlcss/csstext.h',
   'src/qmlcss/cssdropshadow.h',
+  'src/qmlcss/csskeyframes.h',
   'src/qmlcss/valueparser.h',
 )
 
 qml_css_engine_qt_sources = qt6.preprocess(
-  moc_headers: files('src/qmlcss/csstheme.h', 'src/qmlcss/csslayout.h', 'src/qmlcss/csshr.h', 'src/qmlcss/cssimage.h', 'src/qmlcss/cssfill.h', 'src/qmlcss/cssrect.h', 'src/qmlcss/csstext.h', 'src/qmlcss/cssdropshadow.h'),
+  moc_headers: files('src/qmlcss/csstheme.h', 'src/qmlcss/csslayout.h', 'src/qmlcss/csshr.h', 'src/qmlcss/cssimage.h', 'src/qmlcss/cssfill.h', 'src/qmlcss/cssrect.h', 'src/qmlcss/csstext.h', 'src/qmlcss/cssdropshadow.h', 'src/qmlcss/csskeyframes.h'),
   qresources: files('qml/qmlcss.qrc'),
 )
 

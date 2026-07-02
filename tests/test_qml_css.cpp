@@ -8,6 +8,7 @@
 #include "qmlcss/csslayout.h"
 #include "qmlcss/csstheme.h"
 #include "qmlcss/cssdropshadow.h"
+#include "qmlcss/csskeyframes.h"
 
 #include <QtQml/qqml.h>
 
@@ -57,6 +58,7 @@ void QmlCssTests::initTestCase()
     qmlRegisterType<CssFill>("qmlcss", 1, 0, "CssFill");
     qmlRegisterType<CssText>("qmlcss", 1, 0, "CssText");
     qmlRegisterType<CssDropShadow>("qmlcss", 1, 0, "CssDropShadow");
+    qmlRegisterType<CssKeyframes>("qmlcss", 1, 0, "CssKeyframes");
 }
 
 void QmlCssTests::cssRectLoadsAndRestyles()
@@ -1309,6 +1311,74 @@ void QmlCssTests::cssDropShadowCppComposesMultiEffect()
     ds->setShadow({});
     QCOMPARE(ds->hasShadow(), false);
     QCOMPARE(effect->property("shadowEnabled").toBool(), false);
+}
+
+// --- C++ CssKeyframes (composition translation of CssKeyframes.qml) --------------------------
+//
+// Proves CssKeyframes registers via `import qmlcss`, composes a REAL QtQuick NumberAnimation,
+// and correctly interpolates the keyframe value onto target[animatedProperty] when progress is
+// set directly (testing _numAt without requiring the animation event loop to tick).
+void QmlCssTests::cssKeyframesCppInterpolatesTarget()
+{
+    QQmlEngine engine;
+
+    // A target QQuickItem whose `opacity` we'll animate.
+    QQmlComponent targetComp(&engine);
+    targetComp.setData("import QtQuick\nItem { width: 1; height: 1 }", QUrl());
+    QScopedPointer<QObject> targetObj(targetComp.create());
+    QVERIFY2(targetObj, qPrintable(targetComp.errorString()));
+    auto *target = qobject_cast<QQuickItem *>(targetObj.data());
+    QVERIFY(target);
+
+    // Instantiate CssKeyframes from QML to exercise the full componentComplete path.
+    QQmlComponent kfComp(&engine);
+    kfComp.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssKeyframes {}
+    )", QUrl());
+    QScopedPointer<QObject> kfObj(kfComp.create());
+    QVERIFY2(kfObj, qPrintable(kfComp.errorString()));
+
+    // CssKeyframes is invisible and 0x0 (matching the QML original).
+    auto *kf = qobject_cast<QQuickItem *>(kfObj.data());
+    QVERIFY(kf);
+    QCOMPARE(kf->isVisible(), false);
+    QCOMPARE(kf->width(), 0.0);
+    QCOMPARE(kf->height(), 0.0);
+
+    // Build two keyframes: opacity 0->1.
+    QVariantMap f0, f1, p0, p1;
+    p0[QStringLiteral("opacity")] = QStringLiteral("0.0");
+    p1[QStringLiteral("opacity")] = QStringLiteral("1.0");
+    f0[QStringLiteral("offset")]     = 0.0;
+    f0[QStringLiteral("properties")] = p0;
+    f1[QStringLiteral("offset")]     = 1.0;
+    f1[QStringLiteral("properties")] = p1;
+    QVariantList frames;
+    frames << f0 << f1;
+
+    kfObj->setProperty("frames", frames);
+    kfObj->setProperty("animatedProperty", QStringLiteral("opacity"));
+    kfObj->setProperty("target", QVariant::fromValue(target));
+
+    // Directly set progress (bypasses the NumberAnimation event loop) and check _numAt.
+    kfObj->setProperty("progress", 0.0);
+    QVERIFY2(std::abs(target->property("opacity").toReal() - 0.0) < 0.01,
+             qPrintable(QString::number(target->property("opacity").toReal())));
+
+    kfObj->setProperty("progress", 0.5);
+    QVERIFY2(std::abs(target->property("opacity").toReal() - 0.5) < 0.01,
+             qPrintable(QString::number(target->property("opacity").toReal())));
+
+    kfObj->setProperty("progress", 1.0);
+    QVERIFY2(std::abs(target->property("opacity").toReal() - 1.0) < 0.01,
+             qPrintable(QString::number(target->property("opacity").toReal())));
+
+    // Quarter-way: 0.25 -> opacity 0.25 (linear).
+    kfObj->setProperty("progress", 0.25);
+    QVERIFY2(std::abs(target->property("opacity").toReal() - 0.25) < 0.01,
+             qPrintable(QString::number(target->property("opacity").toReal())));
 }
 
 QTEST_MAIN(QmlCssTests)

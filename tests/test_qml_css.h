@@ -51,4 +51,7 @@ private slots:
 
     // C++ CssDropShadow — composition translation of CssDropShadow.qml.
     void cssDropShadowCppComposesMultiEffect();
+
+    // C++ CssKeyframes — composition translation of CssKeyframes.qml.
+    void cssKeyframesCppInterpolatesTarget();
 };
