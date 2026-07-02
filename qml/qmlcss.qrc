@@ -1,6 +1,5 @@
 <RCC>
   <qresource prefix="/">
-    <file alias="qmlcss/CssItem.qml">qmlcss/CssItem.qml</file>
     <file alias="qmlcss/Contrast.js">qmlcss/Contrast.js</file>
   </qresource>
 </RCC>

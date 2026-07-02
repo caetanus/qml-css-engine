@@ -11,6 +11,7 @@
 #include "qmlcss/csskeyframes.h"
 #include "qmlcss/cssicon.h"
 #include "qmlcss/cssfilllayer.h"
+#include "qmlcss/cssitem.h"
 
 #include <QtQml/qqml.h>
 
@@ -64,6 +65,7 @@ void QmlCssTests::initTestCase()
     qmlRegisterType<CssKeyframes>("qmlcss", 1, 0, "CssKeyframes");
     qmlRegisterType<CssIcon>("qmlcss", 1, 0, "CssIcon");
     qmlRegisterType<CssFillLayer>("qmlcss", 1, 0, "CssFillLayer");
+    qmlRegisterType<CssItem>("qmlcss", 1, 0, "CssItem");
 }
 
 void QmlCssTests::cssRectLoadsAndRestyles()
@@ -141,16 +143,16 @@ void QmlCssTests::cssItemAppliesToParent()
         engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
 
         QQmlComponent component(&engine);
+        // `import qmlcss` proves the C++ registration (not the removed qrc QML file).
         component.setData(R"(
             import QtQuick
             import qmlcss
-            import "qrc:/qmlcss" as Css
 
             Rectangle {
                 width: 24
                 height: 24
 
-                Css.CssItem {
+                CssItem {
                     cssId: "plain"
                 }
             }
@@ -1553,6 +1555,44 @@ void QmlCssTests::cssFillLayerCppComposesShape()
     // peakAlpha = max(1.0, 0.8) = 1.0.
     QVERIFY2(std::abs(shape2->property("opacity").toReal() - 1.0) < 0.01,
              qPrintable(QString::number(shape2->property("opacity").toReal())));
+}
+
+// --- C++ CssItem — migrated from cssItemAppliesToParent, now uses `import qmlcss` ----------
+//
+// Proves CssItem registers via `import qmlcss`, infers "rect" from its Rectangle parent (which
+// has both `radius` and `color` properties), and correctly applies background-color and
+// border-radius onto that parent — same assertions as the original QML-based test.
+void QmlCssTests::cssItemCppAppliesToParent()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral("#item2 { background-color: #112233; border-radius: 8px; }"));
+
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+
+    QQmlComponent component(&engine);
+    // `import qmlcss` proves the C++ registration (not the removed qrc QML file).
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+
+        Rectangle {
+            width: 30
+            height: 30
+
+            CssItem {
+                cssId: "item2"
+            }
+        }
+    )", QUrl());
+
+    QScopedPointer<QObject> object(component.create());
+    QVERIFY2(object, qPrintable(component.errorString()));
+
+    // CssItem inferred "rect" from the Rectangle parent and applied the CSS props.
+    const QColor color = object->property("color").value<QColor>();
+    QCOMPARE(color, QColor(QStringLiteral("#112233")));
+    QCOMPARE(object->property("radius").toReal(), 8.0);
 }
 
 QTEST_MAIN(QmlCssTests)

@@ -60,4 +60,7 @@ private slots:
 
     // C++ CssFillLayer — composition translation of CssFillLayer.qml.
     void cssFillLayerCppComposesShape();
+
+    // C++ CssItem — composition translation of CssItem.qml (migrated from cssItemAppliesToParent).
+    void cssItemCppAppliesToParent();
 };
