@@ -1,18 +1,6 @@
 #include "test_qml_css.h"
 
-#include "qmlcss/csshr.h"
-#include "qmlcss/cssimage.h"
-#include "qmlcss/cssfill.h"
-#include "qmlcss/cssrect.h"
-#include "qmlcss/csstext.h"
-#include "qmlcss/csslayout.h"
-#include "qmlcss/csstheme.h"
-#include "qmlcss/cssdropshadow.h"
-#include "qmlcss/csskeyframes.h"
-#include "qmlcss/cssicon.h"
-#include "qmlcss/cssfilllayer.h"
-#include "qmlcss/cssitem.h"
-#include "qmlcss/contrast.h"
+#include "qmlcss/QMLCss.h"
 
 #include <QtQml/qqml.h>
 
@@ -55,20 +43,9 @@ QQuickItem *composedText(QObject *cssText)
 
 void QmlCssTests::initTestCase()
 {
-    // Classic one-line registration — no qmltyperegistrar / QML_ELEMENT machinery. Process-global,
-    // so every test's `import qmlcss` (and the CssFill shim that composes CssRect) resolves.
-    qmlRegisterType<CssRect>("qmlcss", 1, 0, "CssRect");
-    qmlRegisterType<CssHr>("qmlcss", 1, 0, "CssHr");
-    qmlRegisterType<CssImage>("qmlcss", 1, 0, "CssImage");
-    qmlRegisterType<CssFill>("qmlcss", 1, 0, "CssFill");
-    qmlRegisterType<CssText>("qmlcss", 1, 0, "CssText");
-    qmlRegisterType<CssDropShadow>("qmlcss", 1, 0, "CssDropShadow");
-    qmlRegisterType<CssKeyframes>("qmlcss", 1, 0, "CssKeyframes");
-    qmlRegisterType<CssIcon>("qmlcss", 1, 0, "CssIcon");
-    qmlRegisterType<CssFillLayer>("qmlcss", 1, 0, "CssFillLayer");
-    qmlRegisterType<CssItem>("qmlcss", 1, 0, "CssItem");
-    qmlRegisterSingletonType<Contrast>("qmlcss", 1, 0, "Contrast",
-        [](QQmlEngine *, QJSEngine *) -> QObject * { return new Contrast(); });
+    // Process-global, so every test's `import qmlcss` (and the CssFill shim that composes
+    // CssRect) resolves. Same call consumers make.
+    QmlCss::registerTypes();
 }
 
 void QmlCssTests::cssRectLoadsAndRestyles()

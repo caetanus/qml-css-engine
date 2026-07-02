@@ -34,6 +34,7 @@ qml_css_engine_sources = files(
 )
 
 qml_css_engine_headers = files(
+  'src/qmlcss/QMLCss.h',
   'src/qmlcss/csstheme.h',
   'src/qmlcss/csslayout.h',
   'src/qmlcss/csshr.h',
