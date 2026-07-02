@@ -1691,4 +1691,47 @@ void QmlCssTests::contrastQmlSingleton()
     QCOMPARE(object->property("hexRed").toString(), QStringLiteral("#ff0000"));
 }
 
+// The QML original duck-typed: `if (holder.parent.requestRelayout) holder.parent.requestRelayout()`.
+// A plain-Item grandparent (window content, transpiler wrapper, ...) has no requestRelayout();
+// it must be skipped silently — invokeMethod-by-name warns "No such method" on every notify.
+void QmlCssTests::layoutNotifyParentSkipsNonBoxAncestors()
+{
+    static QStringList warnings;
+    warnings.clear();
+    const auto previous = qInstallMessageHandler(
+        [](QtMsgType type, const QMessageLogContext &, const QString &msg) {
+            if (type == QtWarningMsg)
+                warnings.append(msg);
+        });
+
+    QQmlEngine engine;
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        Item {            // plain grandparent — no requestRelayout()
+            Item {        // holder
+                CssText { text: "hi" }
+            }
+        }
+    )", QUrl());
+    QScopedPointer<QObject> object(component.create());
+
+    CssTheme theme;
+    CssLayoutEngine layout(&theme);
+    auto *grandparent = qobject_cast<QQuickItem *>(object.data());
+    QVERIFY(grandparent);
+    QQuickItem *holder = grandparent->childItems().value(0);
+    QVERIFY(holder);
+    QQuickItem *text = holder->childItems().value(0);
+    QVERIFY(text);
+
+    layout.notifyParentLayout(text);
+
+    qInstallMessageHandler(previous);
+    for (const QString &w : std::as_const(warnings))
+        QVERIFY2(!w.contains(QLatin1String("No such method")),
+                 qPrintable(QStringLiteral("notifyParentLayout warned: ") + w));
+}
+
 QTEST_MAIN(QmlCssTests)

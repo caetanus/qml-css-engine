@@ -70,4 +70,8 @@ private slots:
     // C++ Contrast — WCAG contrast utilities, ported from Contrast.js.
     void contrastCppPure();
     void contrastQmlSingleton();
+
+    // notifyParentLayout must duck-type like the QML original: a plain-Item grandparent
+    // (no requestRelayout()) is skipped silently, not invoked-and-warned.
+    void layoutNotifyParentSkipsNonBoxAncestors();
 };
