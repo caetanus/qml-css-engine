@@ -306,15 +306,33 @@ void CssText::applyToText()
 
 void CssText::applyShadow()
 {
-    if (!m_shadow)
-        return;
-
     // QML: _dropShadow = (cssTheme.loaded && style["text-shadow"]) ? parseBoxShadow(...) : ({})
     QVariantMap shadow;
     const QString ts = m_style.value(QStringLiteral("text-shadow")).toString();
     if (m_theme && m_theme->isLoaded() && !ts.isEmpty())
         shadow = m_theme->parseBoxShadow(ts);
     const bool hasShadow = shadow.contains(QStringLiteral("color"));
+
+    // Lazy composition: only a label that actually declares text-shadow pays for the effect.
+    if (!m_shadow && hasShadow && m_label && isComponentComplete()) {
+        if (QQmlEngine *eng = qmlEngine(this)) {
+            QQmlComponent comp(eng);
+            comp.setData("import QtQuick.Effects\nMultiEffect { autoPaddingEnabled: true; visible: false }", QUrl());
+            if (QObject *o = comp.create(qmlContext(this))) {
+                if (QQuickItem *fx = qobject_cast<QQuickItem *>(o)) {
+                    fx->setParent(this);
+                    fx->setParentItem(this);
+                    fx->setProperty("source", QVariant::fromValue(m_label.data()));
+                    m_shadow = fx;
+                    layoutChild(); // size the fresh effect to the current box
+                } else {
+                    o->deleteLater();
+                }
+            }
+        }
+    }
+    if (!m_shadow)
+        return;
 
     // Mirror CssDropShadow.qml onto the composed MultiEffect (sourcing the Text).
     m_shadow->setProperty("shadowEnabled", hasShadow);
@@ -408,22 +426,9 @@ void CssText::componentComplete()
             }
         }
 
-        // The REAL QtQuick.Effects MultiEffect drop-shadow (text-shadow), sourcing the Text.
-        // Mirrors the C++ CssDropShadow composition (same MultiEffect props); CssText inlines
-        // it directly rather than composing a CssDropShadow to avoid an extra indirection.
-        if (m_label) {
-            QQmlComponent comp(eng);
-            comp.setData("import QtQuick.Effects\nMultiEffect { autoPaddingEnabled: true; visible: false }", QUrl());
-            if (QObject *o = comp.create(qmlContext(this))) {
-                if (QQuickItem *fx = qobject_cast<QQuickItem *>(o)) {
-                    fx->setParentItem(this);
-                    fx->setProperty("source", QVariant::fromValue(m_label.data()));
-                    m_shadow = fx;
-                } else {
-                    o->deleteLater();
-                }
-            }
-        }
+        // The text-shadow MultiEffect is composed LAZILY in applyShadow(): a MultiEffect
+        // drags in ShaderEffectSources + blur items even while invisible, and most labels
+        // never declare text-shadow.
     }
 
     if (m_label) {

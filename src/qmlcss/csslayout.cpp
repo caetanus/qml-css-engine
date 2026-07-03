@@ -1,6 +1,7 @@
 #include "csslayout.h"
 
 #include "csstheme.h"
+#include "cssrect.h"
 
 #include <QMetaMethod>
 #include <QQuickItem>
@@ -400,8 +401,20 @@ void CssLayoutEngine::place(QQuickItem *k, double x, double y, double w, double 
     const QVariantMap ks = k->property("style").toMap();
     w = clampSize(ks, QStringLiteral("width"), w, std::nan(""));
     h = clampSize(ks, QStringLiteral("height"), h, std::nan(""));
-    if (!std::isnan(w) && w >= 0 && std::abs(k->width() - w) > 0.5) k->setWidth(w);
-    if (!std::isnan(h) && h >= 0 && std::abs(k->height() - h) > 0.5) k->setHeight(h);
+    // A declared `transition: width/height` animates the write instead of snapping; the
+    // cast + covers-check only run when the geometry actually changes.
+    CssRect *box = nullptr;
+    if (!std::isnan(w) && w >= 0 && std::abs(k->width() - w) > 0.5) {
+        box = qobject_cast<CssRect *>(k);
+        if (!box || !box->animateGeometry(QLatin1String("width"), w))
+            k->setWidth(w);
+    }
+    if (!std::isnan(h) && h >= 0 && std::abs(k->height() - h) > 0.5) {
+        if (!box)
+            box = qobject_cast<CssRect *>(k);
+        if (!box || !box->animateGeometry(QLatin1String("height"), h))
+            k->setHeight(h);
+    }
     if (!std::isnan(x) && std::abs(k->x() - x) > 0.5) k->setX(x);
     if (!std::isnan(y) && std::abs(k->y() - y) > 0.5) k->setY(y);
 }
