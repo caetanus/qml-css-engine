@@ -286,16 +286,9 @@ void CssText::applyToText()
         : (align == QLatin1String("right") ? Qt::AlignRight : Qt::AlignLeft);
     t->setProperty("horizontalAlignment", static_cast<int>(halign));
 
-    // display:none hides the whole item (drops out of layout); visibility:hidden -> opacity 0.
-    // Only a DECLARED display drives visible (an unconditional write severs author bindings).
-    if (styleStr("display") == QLatin1String("none")) {
-        setVisible(false);
-        m_displayHidden = true;
-    } else if (m_displayHidden) {
-        setVisible(true);
-        m_displayHidden = false;
-    }
-    if (styleStr("visibility") == QLatin1String("hidden"))
+    // display:none never writes `visible` (imperative writes sever author bindings, e.g. the
+    // <Show> guard); the layout skips it by style, painting dies via opacity 0.
+    if (styleStr("display") == QLatin1String("none") || styleStr("visibility") == QLatin1String("hidden"))
         setOpacity(0);
     else
         setOpacity(m_style.contains(QStringLiteral("opacity")) ? m_style.value(QStringLiteral("opacity")).toReal()

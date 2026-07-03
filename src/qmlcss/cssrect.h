@@ -241,7 +241,6 @@ private:
     //   onAnimTickChanged: if (cssLayout) cssLayout.applyAnim(root, _animStops, animTick)
     qreal m_animTick = 0.0;
     bool m_animActive = false;           // _animStops.length >= 2
-    bool m_displayHidden = false;        // we hid via display:none (so only we restore visible)
 
     // --- CSS transition state (parsed from `transition` at style apply) -------------------
     int m_transMs = 0;

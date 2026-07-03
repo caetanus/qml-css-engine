@@ -1895,10 +1895,20 @@ void QmlCssTests::styleApplyPreservesVisibleBinding()
     root->setProperty("showIt", true);
     QCOMPARE(badge->isVisible(), true);
 
-    // And `display: none` still hides (a declared display drives visible).
+    // And `display: none` still hides — by PAINT (opacity 0) and input (disabled), with
+    // `visible` (and its binding) untouched; the layout skips it by style.
     theme.loadFromString(QStringLiteral(".badge { display: none; }"));
     theme.loadCss(badge);
-    QCOMPARE(badge->isVisible(), false);
+    QCOMPARE(badge->opacity(), 0.0);
+    QVERIFY(!badge->isEnabled());
+    QCOMPARE(badge->isVisible(), true); // author binding still owns `visible`
+
+    // Removing display:none restores paint AND the binding still works.
+    theme.loadFromString(QStringLiteral(".badge { background-color: #41cd52; }"));
+    theme.loadCss(badge);
+    QCOMPARE(badge->opacity(), 1.0);
+    root->setProperty("showIt", false);
+    QCOMPARE(badge->isVisible(), false); // the <Show> guard survived the round-trip
 }
 
 // `transition: opacity <ms>` must ANIMATE the item's opacity on restyle, not snap — the

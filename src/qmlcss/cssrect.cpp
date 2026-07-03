@@ -483,16 +483,10 @@ void CssRect::setStyle(const QVariantMap &v)
     m_style = v;
     emit styleChanged();
 
-    // Only a DECLARED display drives visible: an unconditional setVisible would sever author
-    // `visible:` bindings (<Show> guards on delegates). Restore true only if WE hid it.
-    const QString display = m_style.value(QStringLiteral("display")).toString();
-    if (display == QLatin1String("none")) {
-        setVisible(false);
-        m_displayHidden = true;
-    } else if (m_displayHidden) {
-        setVisible(true);
-        m_displayHidden = false;
-    }
+    // display:none NEVER writes `visible` (any imperative write severs author bindings —
+    // the <Show> guard — and a later restore resurrects hidden delegates). The layout skips
+    // display:none by style; painting dies via opacity 0; input via enabled false.
+    const bool displayNone = m_style.value(QStringLiteral("display")).toString() == QLatin1String("none");
 
     // Parse the transition spec FIRST: the opacity write below and the layout engine's
     // width/height writes (via animateGeometry) both key off it.
@@ -507,7 +501,8 @@ void CssRect::setStyle(const QVariantMap &v)
     }
 
     // visibility:hidden -> painted invisible (opacity 0) and inert (enabled false), but STILL in flow.
-    const bool hidden = m_style.value(QStringLiteral("visibility")).toString() == QLatin1String("hidden");
+    const bool hidden = displayNone
+        || m_style.value(QStringLiteral("visibility")).toString() == QLatin1String("hidden");
     const qreal targetOpacity = hidden ? 0.0
         : (m_style.contains(QStringLiteral("opacity")) ? m_style.value(QStringLiteral("opacity")).toReal() : 1.0);
     // A covering `transition: opacity` fades instead of snapping (the carousel crossfade).
