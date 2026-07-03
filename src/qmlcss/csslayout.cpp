@@ -617,7 +617,11 @@ QPair<double, double> CssLayoutEngine::layoutFlex(const QList<QQuickItem *> &flo
         // without it, auto-sized columns read a stale main size and collapse their content to ~0.
         // So shrink applies only when the author asks (`flex-shrink`/`flex` 2nd token). Definite-size
         // detection is a future refinement. Also honour the `flex` shorthand's 2nd token.
-        double sh = 0;
+        // STABLE flexible-both-ways rule: an item that declares flex-grow also gives space
+        // back on overflow (shrink default 1) — that's what lets a grown pane follow the
+        // container back down on a window shrink. Rigid (non-grow) items keep 0 unless the
+        // author asks; deriving CSS "definite size" from layout state proved unstable.
+        double sh = grows[i] > 0 ? 1 : 0;
         const QString fsh = styleStr(ks, "flex-shrink");
         if (!fsh.isEmpty())
             sh = jsParseFloat(fsh);
