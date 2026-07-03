@@ -527,7 +527,14 @@ void CssRect::setStyle(const QVariantMap &v)
     setEnabled(!hidden);
     setZ(m_style.contains(QStringLiteral("z-index")) ? m_style.value(QStringLiteral("z-index")).toReal() : 0.0);
     const QString overflow = m_style.value(QStringLiteral("overflow")).toString();
-    setClip(overflow == QLatin1String("hidden") || overflow == QLatin1String("clip"));
+    QString overflowY = m_style.value(QStringLiteral("overflow-y")).toString();
+    if (overflowY.isEmpty())
+        overflowY = overflow;
+    // overflow(-y): auto/scroll -> the content area becomes a REAL Flickable (QML's native
+    // scrolling). Composed once, lazily; it clips itself, so the box's own clip stays off.
+    if (overflowY == QLatin1String("auto") || overflowY == QLatin1String("scroll"))
+        ensureScrollable();
+    setClip(!m_flickable && (overflow == QLatin1String("hidden") || overflow == QLatin1String("clip")));
 
     recompute();
     requestRelayout();
@@ -939,7 +946,7 @@ void CssRect::layoutChildren()
 {
     const qreal w = width();
     const qreal h = height();
-    for (QQuickItem *child : {m_render.data(), m_contentHolder.data()}) {
+    for (QQuickItem *child : {m_render.data(), m_flickable ? m_flickable.data() : m_contentHolder.data()}) {
         if (!child)
             continue;
         child->setX(0);
@@ -947,6 +954,53 @@ void CssRect::layoutChildren()
         child->setWidth(w);
         child->setHeight(h);
     }
+    if (m_flickable && m_contentHolder) {
+        // The holder becomes the scrolled content: full width, height = children extent.
+        m_contentHolder->setWidth(w);
+        syncScrollContent();
+    }
+}
+
+void CssRect::ensureScrollable()
+{
+    if (m_flickable || !m_contentHolder || !isComponentComplete())
+        return;
+    QQmlEngine *eng = qmlEngine(this);
+    if (!eng)
+        return;
+    QQmlComponent comp(eng);
+    comp.setData("import QtQuick\nFlickable { clip: true; boundsBehavior: Flickable.StopAtBounds; "
+                 "flickableDirection: Flickable.VerticalFlick }", QUrl());
+    QObject *o = comp.create(qmlContext(this));
+    QQuickItem *flick = qobject_cast<QQuickItem *>(o);
+    if (!flick) {
+        if (o)
+            o->deleteLater();
+        qWarning("CssRect: failed to compose Flickable: %s", qPrintable(comp.errorString()));
+        return;
+    }
+    flick->setParent(this);
+    flick->setParentItem(this);
+    m_flickable = flick;
+    // Move the content INTO the flickable; the layout keeps operating on the same holder.
+    QQuickItem *contentItem = flick->property("contentItem").value<QQuickItem *>();
+    m_contentHolder->setParentItem(contentItem ? contentItem : flick);
+    // Content extent follows the laid-out children.
+    connect(m_contentHolder, &QQuickItem::childrenRectChanged, this, &CssRect::syncScrollContent);
+    layoutChildren();
+}
+
+void CssRect::syncScrollContent()
+{
+    if (!m_flickable || !m_contentHolder)
+        return;
+    const QRectF r = m_contentHolder->childrenRect();
+    // Bottom padding keeps the scroll end breathing like the web (children start offset ~= top padding).
+    const qreal pad = std::max<qreal>(0.0, r.y());
+    const qreal contentH = std::max(height(), r.y() + r.height() + pad);
+    m_contentHolder->setHeight(contentH);
+    m_flickable->setProperty("contentWidth", width());
+    m_flickable->setProperty("contentHeight", contentH);
 }
 
 void CssRect::componentComplete()

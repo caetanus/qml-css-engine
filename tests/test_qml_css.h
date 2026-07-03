@@ -98,4 +98,8 @@ private slots:
     // An applicable `:hover` rule makes the engine hover-track the element itself (the web
     // hovers ANY element; the transpiler only wires interactive ones).
     void hoverRuleEnablesEngineHoverTracking();
+
+    // overflow-y: auto/scroll composes a real Flickable hosting the content (QML's native
+    // scrolling), with contentHeight tracking the laid-out children.
+    void overflowScrollComposesFlickable();
 };

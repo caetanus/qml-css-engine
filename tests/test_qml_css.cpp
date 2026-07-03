@@ -2020,4 +2020,56 @@ void QmlCssTests::hoverRuleEnablesEngineHoverTracking()
              QStringLiteral("#ffffff"));
 }
 
+// `overflow-y: auto` (or scroll) turns the box's content area into a REAL Flickable —
+// wheel/drag scrolling comes from QtQuick, not a reimplementation. contentHeight tracks the
+// laid-out children so it scrolls exactly the overflow.
+void QmlCssTests::overflowScrollComposesFlickable()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(R"(
+        .list { overflow-y: auto; display: flex; flex-direction: column; }
+        .row { height: 60px; }
+    )"));
+    CssLayoutEngine layoutEngine(&theme);
+
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect {
+            objectName: "list"
+            cssClass: ["list"]
+            cssPrimitive: "div"
+            width: 200; height: 150
+            CssRect { cssClass: ["row"]; cssPrimitive: "div" }
+            CssRect { cssClass: ["row"]; cssPrimitive: "div" }
+            CssRect { cssClass: ["row"]; cssPrimitive: "div" }
+            CssRect { cssClass: ["row"]; cssPrimitive: "div" }
+            CssRect { cssClass: ["row"]; cssPrimitive: "div" }
+        }
+    )", QUrl());
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+
+    // 5 x 60px rows in a 150px viewport -> a Flickable with ~300px of content.
+    QQuickItem *flick = nullptr;
+    const auto kids = root->findChildren<QQuickItem *>();
+    for (QQuickItem *k : kids) {
+        if (QString::fromLatin1(k->metaObject()->className()).contains(QLatin1String("Flickable"))) {
+            flick = k;
+            break;
+        }
+    }
+    QVERIFY2(flick, "overflow-y: auto did not compose a Flickable");
+    QTRY_VERIFY_WITH_TIMEOUT(flick->property("contentHeight").toReal() >= 295.0, 2000);
+    QVERIFY(flick->clip());
+
+    // It actually scrolls: content offset moves.
+    flick->setProperty("contentY", 120.0);
+    QCOMPARE(flick->property("contentY").toReal(), 120.0);
+}
+
 QTEST_MAIN(QmlCssTests)

@@ -132,6 +132,9 @@ public:
     bool cssEngineHover() const { return m_engineHover; }
     void setCssEngineHover(bool v);
     Q_SLOT void onEngineHoverChanged(); // composed HoverHandler.hoveredChanged -> cssEngineHover
+    // Compose the Flickable and move the content holder into it (overflow-y: auto/scroll).
+    void ensureScrollable();
+    Q_SLOT void syncScrollContent();
 
     bool hasCssIdentity() const;
 
@@ -251,6 +254,9 @@ private:
     QVariantAnimation *m_heightAnim = nullptr;
     qreal m_widthAnimTarget = -1;
     qreal m_heightAnimTarget = -1;
+
+    // overflow(-y): auto/scroll — composed Flickable hosting the contentHolder.
+    QPointer<QQuickItem> m_flickable;
 
     // Engine-driven hover tracking (see cssHoverStyled/cssEngineHover above).
     bool m_hoverStyled = false;

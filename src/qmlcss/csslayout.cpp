@@ -95,16 +95,21 @@ void CssLayoutEngine::notifyParentLayout(QQuickItem *item)
 {
     if (!item)
         return;
-    QQuickItem *holder = item->parentItem();
-    QQuickItem *parentBox = holder ? holder->parentItem() : nullptr;
-    if (!parentBox)
-        return;
     // Duck-typed like the QML original (`if (holder.parent.requestRelayout) ...`): only boxes
-    // (CssRect/CssFill) have requestRelayout(); plain-Item ancestors are skipped silently.
-    const QMetaObject *mo = parentBox->metaObject();
-    const int idx = mo->indexOfMethod("requestRelayout()");
-    if (idx >= 0)
-        mo->method(idx).invoke(parentBox);
+    // (CssRect/CssFill) have requestRelayout(). A scrollable box interposes a Flickable and
+    // its contentItem between the holder and the box, so climb a few levels to find it;
+    // plain-Item ancestors without the method are skipped silently.
+    QQuickItem *p = item->parentItem();
+    for (int hops = 0; p && hops < 5; ++hops, p = p->parentItem()) {
+        if (hops == 0)
+            continue; // the holder itself
+        const QMetaObject *mo = p->metaObject();
+        const int idx = mo->indexOfMethod("requestRelayout()");
+        if (idx >= 0) {
+            mo->method(idx).invoke(p);
+            return;
+        }
+    }
 }
 
 void CssLayoutEngine::flush()
