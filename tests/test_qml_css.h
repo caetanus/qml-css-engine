@@ -88,6 +88,10 @@ private slots:
     // `.wg-select .popup` keeps matching.
     void cssAncestorReanchorsDetachedSubtree();
 
+    // [bg-image-cssrect] CssRect composites a background-image as a visible Image layer,
+    // with fillMode from background-size (cover/contain) and background-repeat (tile).
+    void cssRectPaintsBackgroundImage();
+
     // CssText must paint `background-color` (+ border-radius) behind the composed Text,
     // like the web does for any element (cssgaps `.wrap/.nowrap/.ellipsis` tiles).
     void cssTextCppPaintsBackground();

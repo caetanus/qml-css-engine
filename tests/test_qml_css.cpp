@@ -1929,6 +1929,60 @@ void QmlCssTests::cssTextShadowKeepsLabelVisible()
 
 // The web paints `background-color` behind ANY element, text included — CssText composes a
 // Shape underlay (never Rectangle) sized to its box. No background declared → underlay hidden.
+// [bg-image-cssrect] A page/element background-image must paint: CssRect (a div) previously
+// had no image layer (only CssFill did), so a page background rendered blank. The render shell
+// now composes a visible Image whose fillMode follows background-size / background-repeat.
+static QQuickItem *findVisibleImage(QQuickItem *root)
+{
+    if (!root) return nullptr;
+    if (QString(root->metaObject()->className()).startsWith(QLatin1String("QQuickImage")) && root->isVisible())
+        return root;
+    const auto kids = root->childItems();
+    for (QQuickItem *k : kids)
+        if (QQuickItem *hit = findVisibleImage(k))
+            return hit;
+    return nullptr;
+}
+
+void QmlCssTests::cssRectPaintsBackgroundImage()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(
+        "#cover { background-image: url(/tmp/does-not-need-to-exist.png); background-size: cover; }"
+        "#tiled { background-image: url(/tmp/does-not-need-to-exist.png); background-repeat: repeat; }"));
+
+    CssLayoutEngine layout(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layout);
+
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        Item {
+            width: 200; height: 200
+            CssRect { objectName: "cover"; cssId: "cover"; width: 200; height: 100 }
+            CssRect { objectName: "tiled"; cssId: "tiled"; width: 200; height: 100 }
+        }
+    )", QUrl());
+
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+    auto *cover = root->findChild<QQuickItem *>(QStringLiteral("cover"));
+    auto *tiled = root->findChild<QQuickItem *>(QStringLiteral("tiled"));
+    QVERIFY(cover && tiled);
+
+    QQuickItem *coverImg = findVisibleImage(cover);
+    QVERIFY2(coverImg, "background-image did not compose a visible Image on CssRect");
+    QCOMPARE(coverImg->property("source").toUrl(), QUrl(QStringLiteral("file:///tmp/does-not-need-to-exist.png")));
+    QCOMPARE(coverImg->property("fillMode").toInt(), 2); // PreserveAspectCrop (cover)
+
+    QQuickItem *tiledImg = findVisibleImage(tiled);
+    QVERIFY(tiledImg);
+    QCOMPARE(tiledImg->property("fillMode").toInt(), 3); // Tile
+}
+
 void QmlCssTests::cssTextCppPaintsBackground()
 {
     CssTheme theme;

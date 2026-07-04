@@ -70,6 +70,39 @@ bool isCssUrl(const QString &value)
     return value.trimmed().toLower().startsWith(QLatin1String("url("));
 }
 
+// [bg-image-cssrect] copied verbatim from cssfill.cpp's anon namespace (local to avoid a
+// shared-header change; if master promotes them, delete these). See MERGE-NOTES.
+QString imageSource(const QString &value)
+{
+    if (!isCssUrl(value))
+        return QString();
+    QString s = value.trimmed();
+    s = s.mid(4, s.length() - 5).trimmed();
+    if (s.length() >= 2
+        && ((s.front() == QLatin1Char('"') && s.back() == QLatin1Char('"'))
+            || (s.front() == QLatin1Char('\'') && s.back() == QLatin1Char('\'')))) {
+        s = s.mid(1, s.length() - 2);
+    }
+    if (s.isEmpty())
+        return QString();
+    if (s.startsWith(QLatin1String("qrc:/")) || s.startsWith(QLatin1String("file:/"))
+        || s.startsWith(QLatin1String("http://")) || s.startsWith(QLatin1String("https://")))
+        return s;
+    if (s.startsWith(QLatin1Char('/')))
+        return QStringLiteral("file://") + s;
+    return s;
+}
+
+int fillModeFor(const QString &size)
+{
+    const QString sz = (size.isEmpty() ? QStringLiteral("cover") : size).toLower();
+    if (sz == QLatin1String("contain"))
+        return 1; // PreserveAspectFit
+    if (sz == QLatin1String("stretch") || sz == QLatin1String("100% 100%"))
+        return 0; // Stretch
+    return 2;     // cover -> PreserveAspectCrop
+}
+
 // JS parseFloat: leading numeric prefix ("2px" -> 2), NaN-ish -> fallback.
 qreal parseLeadingFloat(const QString &value, qreal fallback)
 {
@@ -123,6 +156,10 @@ Item {
     readonly property bool hasGradient: cssIn.hasGradient !== undefined ? cssIn.hasGradient : false
     readonly property var gradient: cssIn.gradient !== undefined ? cssIn.gradient : ({})
     readonly property var orderedLayers: cssIn.orderedLayers !== undefined ? cssIn.orderedLayers : []
+    // [bg-image-cssrect] page/element background-image layer inputs.
+    readonly property string bgImageSource: cssIn.bgImageSource !== undefined ? cssIn.bgImageSource : ""
+    readonly property int bgImageFillMode: cssIn.bgImageFillMode !== undefined ? cssIn.bgImageFillMode : 2
+    readonly property real bgImageOpacity: cssIn.bgImageOpacity !== undefined ? cssIn.bgImageOpacity : 1
     readonly property bool borderVisible: cssIn.borderVisible !== undefined ? cssIn.borderVisible : false
     readonly property color borderColorOpaque: cssIn.borderColorOpaque !== undefined ? cssIn.borderColorOpaque : "transparent"
     readonly property real borderWidth: cssIn.borderWidth !== undefined ? cssIn.borderWidth : 0
@@ -326,6 +363,19 @@ Item {
             spec: modelData
             radii: [r.cr0, r.cr1, r.cr2, r.cr3]
         }
+    }
+
+    // --- [bg-image-cssrect] background-image: above the fill, below the border. Clipped to the
+    // box (rounded corners handled by the parent's clip). fillMode from background-size. ---
+    Image {
+        anchors.fill: parent
+        visible: r.bgImageSource !== ""
+        source: r.bgImageSource
+        fillMode: r.bgImageFillMode
+        opacity: r.bgImageOpacity
+        clip: true
+        asynchronous: true
+        cache: true
     }
 
     // --- border as its own Shape (independent alpha); lazy — most boxes have no border ---
@@ -892,6 +942,27 @@ void CssRect::recompute()
         for (int i = bgLayers.size() - 1; i >= 0; --i)
             orderedLayers.push_back(bgLayers.at(i));
 
+    // [bg-image-cssrect] a url() background-image (in `background-image` or `background`) → an
+    // Image layer in the render shell. Independent of gradients/solid; composites above them.
+    QString bgImageValue = str("background-image");
+    if (bgImageValue.isEmpty() && isCssUrl(backgroundValue))
+        bgImageValue = backgroundValue;
+    const QString bgImageSrc = imageSource(bgImageValue);
+    // background-repeat wins when set (tiling); otherwise background-size (cover/contain/stretch).
+    // QQuickImage::FillMode — Tile=3, TileVertically=4, TileHorizontally=5.
+    const QString bgRepeat = str("background-repeat").toLower();
+    int bgImageFillMode;
+    if (bgRepeat == QLatin1String("repeat"))
+        bgImageFillMode = 3;                                   // Tile
+    else if (bgRepeat == QLatin1String("repeat-x"))
+        bgImageFillMode = 5;                                   // TileHorizontally
+    else if (bgRepeat == QLatin1String("repeat-y"))
+        bgImageFillMode = 4;                                   // TileVertically
+    else
+        bgImageFillMode = fillModeFor(str("background-size")); // no-repeat → cover/contain/stretch
+    const QString bgImageOpacityStr = str("background-image-opacity");
+    const qreal bgImageOpacity = bgImageOpacityStr.isEmpty() ? 1.0 : bgImageOpacityStr.toDouble();
+
     qreal gradientPeakAlpha = 1.0;
     if (hasGradient) {
         gradientPeakAlpha = 0.0;
@@ -983,6 +1054,9 @@ void CssRect::recompute()
     in.insert(QStringLiteral("hasGradient"), QVariant::fromValue(hasGradient));
     in.insert(QStringLiteral("gradient"), QVariant::fromValue(gradient));
     in.insert(QStringLiteral("orderedLayers"), QVariant::fromValue(orderedLayers));
+    in.insert(QStringLiteral("bgImageSource"), QVariant::fromValue(bgImageSrc));            // [bg-image-cssrect]
+    in.insert(QStringLiteral("bgImageFillMode"), QVariant::fromValue(bgImageFillMode));     // [bg-image-cssrect]
+    in.insert(QStringLiteral("bgImageOpacity"), QVariant::fromValue(bgImageOpacity));       // [bg-image-cssrect]
     in.insert(QStringLiteral("borderVisible"), QVariant::fromValue(borderVisible));
     in.insert(QStringLiteral("borderColorOpaque"), QVariant::fromValue(opaque(borderColor)));
     in.insert(QStringLiteral("borderWidth"), QVariant::fromValue(borderWidth));
