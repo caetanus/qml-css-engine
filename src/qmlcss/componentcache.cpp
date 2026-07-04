@@ -8,6 +8,8 @@
 
 namespace QmlCss {
 
+namespace QmlCss {
+
 QQmlComponent *cachedComponent(QQmlEngine *engine, const QString &key, const char *qml)
 {
     // QML engines live on one thread; a plain static map suffices (no locking on the hot path).
@@ -25,5 +27,7 @@ QQmlComponent *cachedComponent(QQmlEngine *engine, const QString &key, const cha
     }
     return slot;
 }
+
+} // namespace QmlCss
 
 } // namespace QmlCss

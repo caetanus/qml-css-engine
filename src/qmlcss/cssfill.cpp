@@ -11,6 +11,8 @@
 #include <QQmlListReference>
 #include <QUrl>
 
+namespace QmlCss {
+
 // Equivalent QML this C++ composes (see cssfill.h for the annotated version):
 //
 //   import QtQuick
@@ -484,3 +486,5 @@ void CssFill::geometryChange(const QRectF &newGeometry, const QRectF &oldGeometr
     if (newGeometry.size() != oldGeometry.size())
         requestRelayout();
 }
+
+} // namespace QmlCss

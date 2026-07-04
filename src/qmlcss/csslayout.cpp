@@ -13,6 +13,8 @@
 #include <cmath>
 #include <functional>
 
+namespace QmlCss {
+
 namespace {
 
 // Trimmed string value of a style key, or empty.
@@ -1237,3 +1239,5 @@ void CssLayoutEngine::applyAnim(QQuickItem *root, const QVariantList &stops, qre
     root->setProperty("_animTx", lerp(QStringLiteral("tx")));
     root->setProperty("_animTy", lerp(QStringLiteral("ty")));
 }
+
+} // namespace QmlCss

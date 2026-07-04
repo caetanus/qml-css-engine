@@ -12,6 +12,8 @@
 
 #include <algorithm>
 
+namespace QmlCss {
+
 namespace {
 
 // Mirror of csstheme.cpp's identity coercion, used only for the hasCssIdentity check.
@@ -259,3 +261,5 @@ void CssHr::geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry)
     // Keep the child full-width whenever our width changes (anchors.right equivalent).
     layoutChild();
 }
+
+} // namespace QmlCss

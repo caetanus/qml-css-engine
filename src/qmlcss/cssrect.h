@@ -9,8 +9,10 @@
 #include <QVariantList>
 #include <QVariantMap>
 
-class CssTheme;
 class QVariantAnimation;
+
+namespace QmlCss {
+class CssTheme;
 class CssLayoutEngine;
 
 // Native CSS box, translated 1:1 from qml/qmlcss/CssRect.qml — BY COMPOSITION, not
@@ -288,3 +290,5 @@ private:
     QPointer<QQuickItem> m_contentHolder; // hosts declared children (the layout participants)
     QPointer<QObject> m_translate;        // the QtQuick Translate in our transform list
 };
+
+} // namespace QmlCss

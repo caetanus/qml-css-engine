@@ -6,6 +6,8 @@
 #include <QVariant>
 #include <QVariantMap>
 
+namespace QmlCss {
+
 class CssTheme;
 class CssLayoutEngine;
 
@@ -107,3 +109,5 @@ private:
     QPointer<CssLayoutEngine> m_layout;
     QPointer<QQuickItem> m_shape; // the REAL QtQuick Shape (ShapePath + PathRectangle), via the type-system
 };
+
+} // namespace QmlCss

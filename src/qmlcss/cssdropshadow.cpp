@@ -8,6 +8,8 @@
 
 #include <algorithm>
 
+namespace QmlCss {
+
 // Equivalent QML (see cssdropshadow.h for the annotated version):
 //   import QtQuick.Effects
 //   MultiEffect {
@@ -123,3 +125,5 @@ void CssDropShadow::geometryChange(const QRectF &newGeometry, const QRectF &oldG
     // Keep the composed MultiEffect filling us (C++ anchors.fill equivalent).
     layoutEffect();
 }
+
+} // namespace QmlCss

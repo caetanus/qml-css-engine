@@ -20,6 +20,8 @@
 
 #include <algorithm>
 
+namespace QmlCss {
+
 namespace {
 
 // SQ_MOUNT_STATS=1: aggregate per-phase mount timing (style resolve vs shell composition),
@@ -1517,3 +1519,4 @@ void CssRect::pushFastRect()
     }
 }
 
+} // namespace QmlCss

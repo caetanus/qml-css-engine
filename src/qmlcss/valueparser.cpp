@@ -2,6 +2,8 @@
 
 #include <QtGlobal>
 
+namespace QmlCss {
+
 namespace CssValueParser {
 
 QColor parseColor(const QString &colorStr)
@@ -312,3 +314,5 @@ QVariantMap parseAnimation(const QString &cssValue)
 }
 
 } // namespace CssValueParser
+
+} // namespace QmlCss

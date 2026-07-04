@@ -6,6 +6,8 @@
 #include <QVariant>
 #include <QVariantMap>
 
+namespace QmlCss {
+
 class CssTheme;
 class CssLayoutEngine;
 
@@ -185,3 +187,5 @@ private:
     QPointer<QQuickItem> m_shadow; // the REAL QtQuick.Effects MultiEffect drop-shadow (text-shadow)
     QPointer<QQuickItem> m_bg; // background underlay Shape, composed on first background-color
 };
+
+} // namespace QmlCss

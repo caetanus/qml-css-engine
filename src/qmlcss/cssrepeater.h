@@ -6,6 +6,8 @@
 #include <QVariantList>
 #include <QVector>
 
+namespace QmlCss {
+
 // Keyed repeater with FLYWEIGHT semantics — Solid's <For>: when the model array changes,
 // entries whose VALUE survives keep their existing delegate (moved/re-stacked to the new
 // position, never recreated); removed entries destroy theirs; only genuinely new entries
@@ -53,3 +55,5 @@ private:
     QQmlComponent *m_delegate = nullptr;
     QVector<Row> m_rows;
 };
+
+} // namespace QmlCss

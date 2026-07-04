@@ -25,6 +25,8 @@
 #include <QUrl>
 #include <algorithm>
 
+namespace QmlCss {
+
 namespace {
 struct ApplyStats {
     qint64 chainNs = 0, resolveNs = 0, hoverNs = 0, pushNs = 0; int count = 0;
@@ -1894,3 +1896,5 @@ QVariantMap CssTheme::parseTransform(const QString &cssValue) const
     }
     return result;
 }
+
+} // namespace QmlCss

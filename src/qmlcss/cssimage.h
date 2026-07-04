@@ -6,6 +6,8 @@
 #include <QVariant>
 #include <QVariantMap>
 
+namespace QmlCss {
+
 class CssTheme;
 class CssLayoutEngine;
 
@@ -129,3 +131,5 @@ private:
     QPointer<QQuickItem> m_effect; // REAL QtQuick.Effects MultiEffect (rounded-corner mask)
     QPointer<QQuickItem> m_mask;   // REAL QtQuick Shape (rounded-rect) used as the MultiEffect maskSource
 };
+
+} // namespace QmlCss

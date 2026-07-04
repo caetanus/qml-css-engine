@@ -6,6 +6,8 @@
 #include <QStringList>
 #include <QVariantMap>
 
+namespace QmlCss {
+
 namespace CssValueParser {
 
 QColor parseColor(const QString &cssColor);
@@ -28,3 +30,5 @@ QVariantMap parseTransition(const QString &cssValue);
 QVariantMap parseAnimation(const QString &cssValue);
 
 } // namespace CssValueParser
+
+} // namespace QmlCss

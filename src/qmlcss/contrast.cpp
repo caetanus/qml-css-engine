@@ -10,6 +10,8 @@
 #include <array>
 #include <cmath>
 
+namespace QmlCss {
+
 // ---------------------------------------------------------------------------
 // Internal helpers — mirror the private JS functions in Contrast.js exactly.
 // None of these cross the public API; rgbToHsl/hslToColor use an opaque
@@ -305,3 +307,5 @@ QString Contrast::contrastFill(const QColor &bg, double alpha) const
         ? QStringLiteral("rgba(255, 255, 255, ") + a + QStringLiteral(")")
         : QStringLiteral("rgba(26, 26, 26, ")    + a + QStringLiteral(")");
 }
+
+} // namespace QmlCss

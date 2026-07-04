@@ -5,6 +5,8 @@
 #include <QString>
 #include <QVariantList>
 
+namespace QmlCss {
+
 // CSS @keyframes driver, translated 1:1 from qml/qmlcss/CssKeyframes.qml — BY COMPOSITION.
 // An invisible Item that animates `target[animatedProperty]` through a parsed @keyframes
 // sequence by looping a normalised `progress` (0 → 1) over `duration` ms via a REAL
@@ -113,3 +115,5 @@ private:
 
     QPointer<QObject> m_anim; // REAL QtQuick NumberAnimation (QObject, not QQuickItem)
 };
+
+} // namespace QmlCss

@@ -6,6 +6,8 @@
 #include <QVariantList>
 #include <QVariantMap>
 
+namespace QmlCss {
+
 class CssTheme;
 
 // Non-visual CSS enabler, translated 1:1 from qml/qmlcss/CssItem.qml — BY COMPOSITION. Drop a
@@ -86,3 +88,5 @@ private:
 
     QPointer<CssTheme> m_theme;
 };
+
+} // namespace QmlCss

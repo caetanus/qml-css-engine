@@ -10,9 +10,11 @@
 #include <QVariantMap>
 #include <QVector>
 
-class CssTheme;
 class QQuickItem;
 class QTimer;
+
+namespace QmlCss {
+class CssTheme;
 
 // The CSS box-model layout engine, in C++ (the QML/V4 implementation it replaces was a
 // prototype). Given a styled element (a CssRect) and its content holder, it lays the content
@@ -105,3 +107,5 @@ private:
     int m_batchDepth = 0;
     bool m_flushing = false;
 };
+
+} // namespace QmlCss

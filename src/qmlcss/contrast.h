@@ -6,6 +6,8 @@
 #include <QVariant>
 #include <QVariantMap>
 
+namespace QmlCss {
+
 // Contrast utilities, translated 1:1 from qml/qmlcss/Contrast.js (.pragma library).
 // Registered as a QML singleton `Contrast` in the `qmlcss` module.
 //
@@ -98,3 +100,5 @@ public:
     // "rgba(r, g, b, alpha)" string for canvas fills; alpha is formatted as-is (no zero-pad).
     Q_INVOKABLE QString contrastFill(const QColor &bg, double alpha) const;
 };
+
+} // namespace QmlCss

@@ -54,6 +54,8 @@ Include the two headers and create the objects before loading the QML engine:
 // In your application startup, before engine.load():
 QQmlApplicationEngine engine;
 
+using namespace QmlCss; // all public types live in namespace QmlCss
+
 auto *cssTheme  = new CssTheme(&engine);          // parent = engine for lifetime
 auto *cssLayout = new CssLayoutEngine(cssTheme, &engine);
 

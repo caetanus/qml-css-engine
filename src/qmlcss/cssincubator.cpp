@@ -6,6 +6,8 @@
 #include <QVariantAnimation>
 #include <QQmlEngine>
 
+namespace QmlCss {
+
 CssIncubator::CssIncubator(QQuickItem *parent)
     : QQuickItem(parent)
 {
@@ -126,3 +128,5 @@ void CssIncubator::teardown()
         emit itemChanged();
     }
 }
+
+} // namespace QmlCss

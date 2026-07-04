@@ -5,6 +5,8 @@
 #include <QQmlIncubator>
 #include <QQuickItem>
 
+namespace QmlCss {
+
 // Async branch mount (QQmlIncubator, driven by the window's incubation controller): while
 // `active`, incubates `sourceComponent` asynchronously and — like Repeater does for its
 // delegates — reparents the ready item to OUR parent (the box's contentHolder), so the item
@@ -62,3 +64,5 @@ private:
     Incubator *m_incubator = nullptr;
     QPointer<QQuickItem> m_item;
 };
+
+} // namespace QmlCss

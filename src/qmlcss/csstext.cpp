@@ -15,6 +15,8 @@
 
 #include <algorithm>
 
+namespace QmlCss {
+
 namespace {
 
 // Mirror of csstheme.cpp's identity coercion, used only for the hasCssIdentity check.
@@ -558,3 +560,5 @@ void CssText::onAncestorInheritedChanged()
     applyShadow();
     emit inheritedChanged();
 }
+
+} // namespace QmlCss

@@ -8,6 +8,8 @@
 #include <QVariantList>
 #include <QVariantMap>
 
+namespace QmlCss {
+
 class CssTheme;
 class CssLayoutEngine;
 
@@ -179,3 +181,5 @@ private:
     QPointer<QQuickItem> m_rect;          // REAL CssRect renderer (fill/border/gradient/shadow)
     QPointer<QQuickItem> m_contentHolder; // hosts declared children (the layout participants)
 };
+
+} // namespace QmlCss

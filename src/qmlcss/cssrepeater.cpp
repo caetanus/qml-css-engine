@@ -6,6 +6,8 @@
 #include <QQmlContext>
 #include <QQmlEngine>
 
+namespace QmlCss {
+
 namespace {
 
 // The model arrives from QML bindings as a QJSValue array; normalize to a QVariantList.
@@ -179,3 +181,5 @@ void CssRepeater::notifyLayout()
         }
     }
 }
+
+} // namespace QmlCss

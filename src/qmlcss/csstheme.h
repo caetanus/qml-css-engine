@@ -12,6 +12,8 @@
 #include <QVariantMap>
 
 class QNetworkAccessManager;
+
+namespace QmlCss {
 class CssLayoutEngine;
 
 struct CssSimpleSelector {
@@ -308,3 +310,5 @@ private:
     QSet<QString> m_fontFacesSeen;          // font URLs already loaded/queued (dedupe reloads)
     int m_fontRevision = 0;                 // ++ on each newly-registered downloaded font
 };
+
+} // namespace QmlCss

@@ -9,6 +9,8 @@
 #include <QQmlEngine>
 #include <QUrl>
 
+namespace QmlCss {
+
 // Equivalent QML this C++ composes (see cssimage.h for the annotated version):
 //
 //   import QtQuick
@@ -308,3 +310,5 @@ void CssImage::geometryChange(const QRectF &newGeometry, const QRectF &oldGeomet
     QQuickItem::geometryChange(newGeometry, oldGeometry);
     layoutChildren();
 }
+
+} // namespace QmlCss

@@ -13,6 +13,9 @@ dependency the include path is set automatically:
 
 ## `CssTheme`
 
+> All public C++ types live in `namespace QmlCss` (since the hardening pass).
+> Snippets below omit the namespace for brevity — qualify or `using namespace QmlCss;`.
+
 ```cpp
 class CssTheme : public QObject
 ```

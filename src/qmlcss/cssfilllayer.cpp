@@ -8,6 +8,8 @@
 
 #include <algorithm>
 
+namespace QmlCss {
+
 // The composed render shell — a REAL QtQuick Shape (the original QML's root type) driven entirely
 // by the inputs C++ pushes onto it. C++ manages geometry (no anchors in the shell); the shell's
 // JS bindings faithfully reproduce the QML geometry expressions (gradient line, radial centre,
@@ -233,3 +235,5 @@ void CssFillLayer::geometryChange(const QRectF &newGeometry, const QRectF &oldGe
     QQuickItem::geometryChange(newGeometry, oldGeometry);
     layoutChild();
 }
+
+} // namespace QmlCss

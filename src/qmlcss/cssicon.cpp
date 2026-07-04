@@ -7,6 +7,8 @@
 #include <QQmlProperty>
 #include <QUrl>
 
+namespace QmlCss {
+
 // Equivalent QML (see cssicon.h for the annotated version):
 //   Image { id: iconImage; anchors.centerIn: parent; width/height: iconSize;
 //           sourceSize.width/height: iconSize; source: iconSource;
@@ -305,3 +307,5 @@ void CssIcon::onImageStatusChanged()
         m_effect->setVisible(isReady);
     emit readyChanged();
 }
+
+} // namespace QmlCss

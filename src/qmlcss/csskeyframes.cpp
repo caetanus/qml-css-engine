@@ -9,6 +9,8 @@
 
 #include <cmath>
 
+namespace QmlCss {
+
 // Equivalent QML (see csskeyframes.h for the annotated version):
 //   NumberAnimation on progress {
 //       from: 0.0; to: 1.0
@@ -189,3 +191,5 @@ void CssKeyframes::componentComplete()
 
     updateAnimation();
 }
+
+} // namespace QmlCss

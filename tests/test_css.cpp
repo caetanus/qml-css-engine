@@ -9,6 +9,8 @@
 #include <QSignalSpy>
 #include <QTest>
 
+using namespace QmlCss;
+
 void CssThemeTests::gradientTransparentStopsInheritNeighbourHue()
 {
     CssTheme theme;

@@ -6,6 +6,8 @@
 #include <QVariant>
 #include <QVariantMap>
 
+namespace QmlCss {
+
 // Reusable drop-shadow, translated 1:1 from qml/qmlcss/CssDropShadow.qml — BY COMPOSITION.
 // Intended as a Text/Item `layer.effect` or sibling effect. The root QML WAS a MultiEffect;
 // this C++ version is a QQuickItem that COMPOSES a REAL QtQuick.Effects MultiEffect (via the
@@ -68,3 +70,5 @@ private:
 
     QPointer<QQuickItem> m_effect; // REAL QtQuick.Effects MultiEffect
 };
+
+} // namespace QmlCss

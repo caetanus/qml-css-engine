@@ -5,6 +5,8 @@
 #include <QVariantList>
 #include <QVariantMap>
 
+namespace QmlCss {
+
 // One CSS background layer — solid colour, linear- or radial-gradient — painted as a rounded
 // rectangle matching this item's size and the given (already clamped) corner radii. Translated
 // 1:1 from qml/qmlcss/CssFillLayer.qml — BY COMPOSITION. CssRect stacks these via a Repeater
@@ -76,3 +78,5 @@ private:
 
     QPointer<QQuickItem> m_shape; // REAL QtQuick Shape (ShapePath + PathLine/Arc + gradients)
 };
+
+} // namespace QmlCss

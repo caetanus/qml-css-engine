@@ -6,6 +6,8 @@
 #include <QString>
 #include <QVariantMap>
 
+namespace QmlCss {
+
 // CSS icon widget, translated 1:1 from qml/qmlcss/CssIcon.qml — BY COMPOSITION.
 // Renders an icon image (from a CSS `icon`/`icon-image`/`icon-name` prop, a fallback source
 // or a theme-icon name) with optional colour tinting, by composing a REAL QtQuick Image and a
@@ -134,3 +136,5 @@ private:
     QPointer<QQuickItem> m_image;  // REAL QtQuick Image (source + texture provider)
     QPointer<QQuickItem> m_effect; // REAL QtQuick.Effects MultiEffect (visible renderer)
 };
+
+} // namespace QmlCss

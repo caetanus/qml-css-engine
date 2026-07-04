@@ -17,6 +17,8 @@
 
 #include <cmath>
 
+using namespace QmlCss;
+
 namespace {
 
 // Locate the CssRect/CssFill contentHolder that owns `child` (the Item whose children are the

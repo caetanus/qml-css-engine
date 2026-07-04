@@ -7,6 +7,8 @@
 #include <QQmlContext>
 #include <QQmlEngine>
 
+namespace QmlCss {
+
 namespace {
 
 // Mirror of csstheme.cpp's identity coercion, used only for hasCssIdentity().
@@ -199,3 +201,5 @@ void CssItem::componentComplete()
     if (m_theme && hasCssIdentity())
         m_theme->loadCss(this);
 }
+
+} // namespace QmlCss
