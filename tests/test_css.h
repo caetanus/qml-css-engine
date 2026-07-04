@@ -40,6 +40,10 @@ private slots:
     void exactResolveIgnoresUniversalRules();
     void stripsCommentsAndAtRules();
     void parsesColors();
+
+    // Gradient `transparent` stops inherit the neighbour hue (premultiplied-alpha parity):
+    // QGradient interpolates straight, and transparent-BLACK ramps render muddy.
+    void gradientTransparentStopsInheritNeighbourHue();
     void parsesCssDurationsAndEasings();
     void loadCssAppliesReappliesAndPrunes();
     void loadCssAppliesClassOnlyTargets();

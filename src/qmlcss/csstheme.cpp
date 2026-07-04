@@ -1576,6 +1576,29 @@ static QVariantList parseGradientStops(const QStringList &parts, int firstStop)
     if (colors.size() < 2)
         return {};
 
+    // Web parity: CSS interpolates gradient colors in PREMULTIPLIED alpha, so a
+    // `transparent` stop takes the hue of its neighbour and only the alpha ramps.
+    // QGradient interpolates straight (non-premultiplied), and `transparent` parses as
+    // BLACK alpha-0 — the ramp then passes through dark translucent greys and a pastel
+    // page veil renders muddy brown. Give fully-transparent stops the nearest opaque
+    // neighbour's RGB (alpha stays 0) — exact for the common endpoint-transparent case.
+    for (int i = 0; i < colors.size(); ++i) {
+        if (colors.at(i).alpha() != 0)
+            continue;
+        for (int d = 1; d < colors.size(); ++d) {
+            const int lo = i - d, hi = i + d;
+            const QColor *src = nullptr;
+            if (lo >= 0 && colors.at(lo).alpha() != 0)
+                src = &colors.at(lo);
+            else if (hi < colors.size() && colors.at(hi).alpha() != 0)
+                src = &colors.at(hi);
+            if (src) {
+                colors[i] = QColor(src->red(), src->green(), src->blue(), 0);
+                break;
+            }
+        }
+    }
+
     QVariantList stops;
     for (int i = 0; i < colors.size(); ++i) {
         double pos = positions.at(i);

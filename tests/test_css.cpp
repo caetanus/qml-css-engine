@@ -9,6 +9,22 @@
 #include <QSignalSpy>
 #include <QTest>
 
+void CssThemeTests::gradientTransparentStopsInheritNeighbourHue()
+{
+    CssTheme theme;
+    const QVariantMap g = theme.parseGradient(QStringLiteral(
+        "radial-gradient(circle at 20% 20%, rgba(99, 179, 237, 0.28), transparent 28%)"));
+    QCOMPARE(g.value(QStringLiteral("type")).toString(), QStringLiteral("radial"));
+    const QVariantList stops = g.value(QStringLiteral("stops")).toList();
+    QCOMPARE(stops.size(), 2);
+    const QColor last = stops.at(1).toMap().value(QStringLiteral("color")).value<QColor>();
+    QCOMPARE(last.alpha(), 0);
+    // The transparent endpoint carries the blue neighbour's hue, not black.
+    QCOMPARE(last.red(), 99);
+    QCOMPARE(last.green(), 179);
+    QCOMPARE(last.blue(), 237);
+}
+
 void CssThemeTests::parsesIdClassAndSourceOrder()
 {
     CssTheme theme;
