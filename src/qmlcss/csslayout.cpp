@@ -508,11 +508,17 @@ void CssLayoutEngine::layout(QQuickItem *root, QQuickItem *content)
     const bool isGrid = (disp == QLatin1String("grid"));
     const bool isFlex = disp.contains(QLatin1String("flex"));
 
-    QList<QQuickItem *> flow, abs;
+    QList<QQuickItem *> flow, abs, foreign;
     const auto kids = content->childItems();
     for (QQuickItem *k : kids) {
-        if (!isLayoutChild(k))
+        if (!isLayoutChild(k)) {
+            // A non-Css child — a hand-written/foreign QML component (the escape hatch), or an
+            // anchored-Item host inside a widget wrapper. Tracked so a Css box whose ONLY content
+            // is foreign can size to it (below); anchor-filled hosts ignore the x/y we set.
+            if (k && k->isVisible())
+                foreign.push_back(k);
             continue;
+        }
         // An invisible child is out of flow (conditional rendering: <Show>/<Switch> branches, an
         // empty <For>), like `display: none` — it must not occupy flex/grid space. When it becomes
         // visible, CssRect's onVisibleChanged notifies the parent, which relayouts and sizes it.
@@ -550,8 +556,26 @@ void CssLayoutEngine::layout(QQuickItem *root, QQuickItem *content)
     for (QQuickItem *k : abs)
         placeAbsolute(k, originX, originY, cw, ch);
 
-    const double iw = contentSize.first + pad[1] + pad[3];
-    const double ih = contentSize.second + pad[0] + pad[2];
+    double contentW = contentSize.first;
+    double contentH = contentSize.second;
+    // Foreign-content box: when a Css container has no laid-out Css children but does hold foreign
+    // items (a custom `.qml` instance), size to the largest foreign child's implicit and place them
+    // at the content origin — so the escape-hatch component participates in the parent's flex/grid.
+    // Gated on an empty flow so ordinary cards with stray plain decorations are untouched; widget
+    // wrappers are unaffected because their explicit CSS width/height override this implicit anyway.
+    if (flow.isEmpty() && !foreign.isEmpty()) {
+        double fw = 0.0, fh = 0.0;
+        for (QQuickItem *k : foreign) {
+            k->setX(originX);
+            k->setY(originY);
+            fw = std::max(fw, k->implicitWidth());
+            fh = std::max(fh, k->implicitHeight());
+        }
+        contentW = std::max(contentW, fw);
+        contentH = std::max(contentH, fh);
+    }
+    const double iw = contentW + pad[1] + pad[3];
+    const double ih = contentH + pad[0] + pad[2];
     if (std::abs(root->implicitWidth() - iw) > 0.5) root->setImplicitWidth(iw);
     if (std::abs(root->implicitHeight() - ih) > 0.5) root->setImplicitHeight(ih);
 }
