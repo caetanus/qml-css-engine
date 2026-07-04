@@ -86,6 +86,17 @@ qml_css_engine_dep = declare_dependency(
 
 install_headers(qml_css_engine_headers, subdir: 'qmlcss')
 
+# .pc file: the universal consumption path (CMake users too, via
+# pkg_check_modules(... IMPORTED_TARGET qml-css-engine)). The in-tree
+# CMakeLists.txt additionally provides native find_package support.
+pkgconfig = import('pkgconfig')
+pkgconfig.generate(
+  qml_css_engine_lib,
+  name: 'qml-css-engine',
+  description: 'A real CSS engine for Qt Quick',
+  requires: ['Qt6Core', 'Qt6Gui', 'Qt6Qml', 'Qt6Quick', 'Qt6Network'],
+)
+
 # Tests run only when this is built on its own (not when consumed as a subproject).
 if not meson.is_subproject()
   qt6_test_dep = dependency(

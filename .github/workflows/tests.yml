@@ -32,3 +32,30 @@ jobs:
         run: dbus-run-session -- meson test -C build --print-errorlogs
         env:
           QT_QPA_PLATFORM: offscreen
+
+      - name: CMake mirror parity
+        run: python3 tools/check-cmake-parity.py
+
+  cmake:
+    name: CMake mirror build (Debian stable)
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            git ca-certificates cmake ninja-build pkg-config g++ \
+            qt6-base-dev qt6-declarative-dev qt6-declarative-private-dev \
+            libgl-dev fonts-dejavu-core dbus
+
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build-cmake -G Ninja
+
+      - name: Build
+        run: cmake --build build-cmake
+
+      - name: Test
+        run: dbus-run-session -- ctest --test-dir build-cmake --output-on-failure

@@ -11,6 +11,11 @@ and breaking API moves are called out per entry.
   QML module names (`import qmlcss 1.0`) are unchanged.
 
 ### Added
+- **CMake support for packaging/consumers**: a mirrored `CMakeLists.txt`
+  (static lib + tests + install/export: `find_package(qml-css-engine)` →
+  `QmlCssEngine::QmlCssEngine`), a generated `qml-css-engine.pc` from the
+  meson build, and `tools/check-cmake-parity.py` wired into CI so the two
+  source lists cannot drift silently. meson remains the primary build.
 - **Remote `@import`**: http(s) sheets are inlined like local ones — sha1-keyed
   disk cache (offline after first fetch), asynchronous cold fetch with an
   automatic theme reload when the last import lands, URL-relative resolution

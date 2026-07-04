@@ -292,3 +292,23 @@ Window {
     font-weight: bold;
 }
 ```
+
+---
+
+## Consuming from CMake
+
+meson is the primary build, but the tree ships a mirrored `CMakeLists.txt`
+(kept honest by `tools/check-cmake-parity.py` in CI) for native CMake use:
+
+```cmake
+# vendored / FetchContent:
+add_subdirectory(vendor/qml-css-engine)
+target_link_libraries(myapp PRIVATE QmlCssEngine::QmlCssEngine)
+
+# or, installed system-wide:
+find_package(qml-css-engine REQUIRED)
+target_link_libraries(myapp PRIVATE QmlCssEngine::QmlCssEngine)
+```
+
+A `qml-css-engine.pc` is also installed (by either build system consumer path),
+so `pkg_check_modules(QMLCSS IMPORTED_TARGET qml-css-engine)` works as well.
