@@ -7,6 +7,10 @@
 #include <QJSValue>
 #include <QRegularExpression>
 #include <QSignalSpy>
+#include <QDir>
+#include <QStandardPaths>
+#include <QTcpServer>
+#include <QTcpSocket>
 #include <QTest>
 
 using namespace QmlCss;
@@ -360,6 +364,115 @@ void CssThemeTests::appliesArrayCssClassFromQJSValue()
     QVERIFY(jsArray.isArray());
     stub.setProperty("cssClass", QVariant::fromValue(jsArray)); // emits NOTIFY → reverse-slot reapply
     QCOMPARE(stub.m_style.value(QStringLiteral("background-color")).toString(), QStringLiteral("#ffffff"));
+}
+
+
+void CssThemeTests::waybarTypeQualifiedIdNeedsPrimitive()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(
+        "window#waybar { background-color: transparent; border-left: 80px; }"));
+
+    // A bare id resolve must NOT match the type-qualified rule (strict CSS)...
+    QVERIFY(!theme.resolve(QStringLiteral("waybar")).contains(QStringLiteral("background-color")));
+    // ...and the primitive parameter is the documented escape hatch.
+    const QVariantMap m = theme.resolve(QStringLiteral("waybar"), {}, {}, QStringLiteral("window"));
+    QCOMPARE(m.value(QStringLiteral("background-color")).toString(),
+             QStringLiteral("#00000000")); // the engine normalizes 'transparent'
+    QCOMPARE(m.value(QStringLiteral("border-left")).toString(), QStringLiteral("80px"));
+}
+
+void CssThemeTests::waybarStateClassVariants()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(
+        "window#waybar { opacity: 1; } window#waybar.hidden { opacity: 0.2; }"));
+
+    const QVariantMap normal = theme.resolve(QStringLiteral("waybar"), {}, {}, QStringLiteral("window"));
+    QCOMPARE(normal.value(QStringLiteral("opacity")).toString(), QStringLiteral("1"));
+    const QVariantMap hidden = theme.resolve(QStringLiteral("waybar"),
+                                             {QStringLiteral("hidden")}, {}, QStringLiteral("window"));
+    QCOMPARE(hidden.value(QStringLiteral("opacity")).toString(), QStringLiteral("0.2"));
+}
+
+void CssThemeTests::waybarCustomModuleIds()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(
+        "#custom-btc { color: #fe640b; } #custom-media.custom-spotify { color: #1db954; }"));
+
+    QCOMPARE(theme.resolve(QStringLiteral("custom-btc")).value(QStringLiteral("color")).toString(),
+             QStringLiteral("#fe640b"));
+    QCOMPARE(theme.resolve(QStringLiteral("custom-media"), {QStringLiteral("custom-spotify")})
+                 .value(QStringLiteral("color")).toString(),
+             QStringLiteral("#1db954"));
+}
+
+void CssThemeTests::waybarWorkspacesButtonDescendant()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(
+        "#workspaces button { color: #888888; } #workspaces button.focused { color: #ffffff; }"));
+
+    QCOMPARE(theme.resolveWith(QStringLiteral("workspaces"), QStringLiteral("button"))
+                 .value(QStringLiteral("color")).toString(),
+             QStringLiteral("#888888"));
+    QCOMPARE(theme.resolveWith(QStringLiteral("workspaces"), QStringLiteral("button"),
+                               {QStringLiteral("focused")})
+                 .value(QStringLiteral("color")).toString(),
+             QStringLiteral("#ffffff"));
+}
+
+void CssThemeTests::waybarUniversalRule()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral("* { font-family: monospace; } #clock { color: #fff; }"));
+    QCOMPARE(theme.resolve(QStringLiteral("clock")).value(QStringLiteral("font-family")).toString(),
+             QStringLiteral("monospace"));
+}
+
+void CssThemeTests::remoteImportsFetchCacheAndReload()
+{
+    QStandardPaths::setTestModeEnabled(true);
+    QDir(QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
+         + QStringLiteral("/webimports")).removeRecursively();
+
+    // Minimal single-purpose HTTP responder.
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost));
+    int hits = 0;
+    QObject::connect(&server, &QTcpServer::newConnection, &server, [&server, &hits]() {
+        QTcpSocket *sock = server.nextPendingConnection();
+        QObject::connect(sock, &QTcpSocket::readyRead, sock, [sock, &hits]() {
+            ++hits;
+            const QByteArray body = "#remote { color: #ff0000; }\n";
+            sock->write("HTTP/1.1 200 OK\r\nContent-Type: text/css\r\nContent-Length: "
+                        + QByteArray::number(body.size()) + "\r\nConnection: close\r\n\r\n" + body);
+            sock->disconnectFromHost();
+        });
+    });
+    const QString url = QStringLiteral("http://127.0.0.1:%1/theme.css").arg(server.serverPort());
+
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral("@import '%1';\n#local { color: #00ff00; }").arg(url));
+
+    // The local part applies immediately; the remote chunk is not there yet (async).
+    QCOMPARE(theme.resolve(QStringLiteral("local")).value(QStringLiteral("color")).toString(),
+             QStringLiteral("#00ff00"));
+    QVERIFY(theme.resolve(QStringLiteral("remote")).isEmpty());
+
+    // When the fetch lands the theme reloads itself and the remote rule appears.
+    QTRY_VERIFY(!theme.resolve(QStringLiteral("remote")).isEmpty());
+    QCOMPARE(theme.resolve(QStringLiteral("remote")).value(QStringLiteral("color")).toString(),
+             QStringLiteral("#ff0000"));
+    QCOMPARE(hits, 1);
+
+    // A fresh CssTheme hits the disk cache: synchronous splice, no second request.
+    CssTheme warm;
+    warm.loadFromString(QStringLiteral("@import '%1';").arg(url));
+    QCOMPARE(warm.resolve(QStringLiteral("remote")).value(QStringLiteral("color")).toString(),
+             QStringLiteral("#ff0000"));
+    QCOMPARE(hits, 1);
 }
 
 QTEST_GUILESS_MAIN(CssThemeTests)

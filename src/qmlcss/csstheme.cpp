@@ -183,47 +183,17 @@ QString substituteVars(const QString &text, const QHash<QString, QString> &vars)
     return result;
 }
 
-// Inline `@import` statements by reading the referenced file and recursively expanding
-// it in place. Resolves a bare/relative path against `baseDir`; `visited` (absolute paths)
-// guards against import cycles. http(s) imports are skipped here — there is no base dir or
-// synchronous fetch at this layer (use `set-css <url>` for a remote *root* theme instead).
-QString expandImports(const QString &cssIn, const QString &baseDir, QStringList &visited)
+// Disk-cache location for a remote @import, keyed by a hash of the URL (same scheme as
+// the @font-face cache): a launch never re-downloads, and themes work offline once warm.
+QString importCachePath(const QString &url)
 {
-    static const QRegularExpression importRe(
-        QStringLiteral(R"(@import\s+(?:url\(\s*)?['"]?([^'")\s]+)['"]?\s*\)?\s*;)"));
-
-    QString out;
-    int last = 0;
-    auto it = importRe.globalMatch(cssIn);
-    while (it.hasNext()) {
-        const QRegularExpressionMatch m = it.next();
-        out += cssIn.mid(last, m.capturedStart() - last);
-        last = m.capturedEnd();
-
-        QString ref = m.captured(1);
-        if (ref.startsWith(QLatin1String("http://")) || ref.startsWith(QLatin1String("https://"))) {
-            qWarning() << "CssTheme @import: remote imports are not supported:" << ref;
-            continue;
-        }
-        if (ref.startsWith(QLatin1String("file://")))
-            ref = QUrl(ref).toLocalFile();
-        const QString path = QFileInfo(ref).isAbsolute() ? ref : QDir(baseDir).filePath(ref);
-        const QString abs = QFileInfo(path).absoluteFilePath();
-        if (visited.contains(abs))
-            continue; // already imported (cycle / duplicate)
-        visited.append(abs);
-
-        QFile file(path);
-        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-            qWarning() << "CssTheme @import: cannot read" << path;
-            continue;
-        }
-        const QString sub = QString::fromUtf8(file.readAll());
-        out += expandImports(sub, QFileInfo(path).absolutePath(), visited);
-    }
-    out += cssIn.mid(last);
-    return out;
+    const QByteArray key = QCryptographicHash::hash(url.toUtf8(), QCryptographicHash::Sha1).toHex();
+    const QString cacheDir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
+        + QStringLiteral("/webimports");
+    QDir().mkpath(cacheDir);
+    return cacheDir + QLatin1Char('/') + QString::fromLatin1(key);
 }
+
 
 // Expand GTK-style `@define-color name value;` declarations: collect them,
 // resolve references between them, substitute `@name` throughout, then strip
@@ -686,6 +656,123 @@ CssTheme::CssTheme(QObject *parent)
     connect(m_watcher, &QFileSystemWatcher::fileChanged, this, &CssTheme::onCssFileChanged);
 }
 
+// Inline `@import` statements by reading the referenced sheet and recursively expanding
+// it in place. `base` is either the importing sheet's directory (filesystem) or its URL
+// (remote sheet): a relative ref resolves against whichever world its parent lives in, so
+// a remote theme's relative imports stay remote, like the web. `visited` (absolute paths
+// and URLs) guards against import cycles.
+//
+// Remote sheets are served synchronously FROM THE DISK CACHE when warm; a cold URL is
+// fetched asynchronously (fetchRemoteImport) and the load that discovers it completes
+// without that chunk — the theme reloads through the same pipeline when the last pending
+// fetch lands, and by then the cache is warm, so the splice is synchronous.
+QString CssTheme::expandImports(const QString &cssIn, const QString &base, QStringList &visited)
+{
+    static const QRegularExpression importRe(
+        QStringLiteral(R"(@import\s+(?:url\(\s*)?['"]?([^'")\s]+)['"]?\s*\)?\s*;)"));
+
+    const bool baseIsUrl = base.startsWith(QLatin1String("http://"))
+        || base.startsWith(QLatin1String("https://"));
+
+    QString out;
+    int last = 0;
+    auto it = importRe.globalMatch(cssIn);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        out += cssIn.mid(last, m.capturedStart() - last);
+        last = m.capturedEnd();
+
+        QString ref = m.captured(1);
+        const bool refIsUrl = ref.startsWith(QLatin1String("http://"))
+            || ref.startsWith(QLatin1String("https://"));
+
+        if (refIsUrl || baseIsUrl) {
+            const QString url = refIsUrl
+                ? ref
+                : QUrl(base).resolved(QUrl(ref)).toString();
+            if (visited.contains(url))
+                continue; // already imported (cycle / duplicate)
+            visited.append(url);
+
+            QFile cached(importCachePath(url));
+            if (cached.exists() && cached.open(QIODevice::ReadOnly)) {
+                // Nested refs inside a remote sheet resolve against ITS url.
+                out += expandImports(QString::fromUtf8(cached.readAll()), url, visited);
+            } else {
+                fetchRemoteImport(url);
+            }
+            continue;
+        }
+
+        if (ref.startsWith(QLatin1String("file://")))
+            ref = QUrl(ref).toLocalFile();
+        const QString path = QFileInfo(ref).isAbsolute() ? ref : QDir(base).filePath(ref);
+        const QString abs = QFileInfo(path).absoluteFilePath();
+        if (visited.contains(abs))
+            continue; // already imported (cycle / duplicate)
+        visited.append(abs);
+
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            qWarning() << "CssTheme @import: cannot read" << path;
+            continue;
+        }
+        const QString sub = QString::fromUtf8(file.readAll());
+        out += expandImports(sub, QFileInfo(path).absolutePath(), visited);
+    }
+    out += cssIn.mid(last);
+    return out;
+}
+
+// Cold remote @import: download once (async, never blocks the UI thread), park it in the
+// disk cache, and re-run the ORIGINAL load when the last in-flight fetch lands — the
+// reload's expandImports then splices synchronously from the warm cache. Failures are
+// remembered per-URL for this CssTheme's lifetime so a dead URL can't cause a fetch loop.
+void CssTheme::fetchRemoteImport(const QString &url)
+{
+    if (m_importFetchesInFlight.contains(url) || m_importFetchesFailed.contains(url))
+        return;
+    m_importFetchesInFlight.insert(url);
+
+    if (!m_nam)
+        m_nam = new QNetworkAccessManager(this);
+    QNetworkRequest request{ QUrl(url) };
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    request.setAttribute(QNetworkRequest::Http2AllowedAttribute, false); // see @font-face note
+    QNetworkReply *reply = m_nam->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, url] {
+        reply->deleteLater();
+        m_importFetchesInFlight.remove(url);
+        if (reply->error() != QNetworkReply::NoError) {
+            qWarning() << "CssTheme @import: download failed" << url << reply->errorString();
+            m_importFetchesFailed.insert(url);
+        } else {
+            QFile out(importCachePath(url));
+            if (out.open(QIODevice::WriteOnly))
+                out.write(reply->readAll());
+        }
+        if (m_importFetchesInFlight.isEmpty())
+            reloadCurrentSource();
+    });
+}
+
+// Re-run the last top-level load (layer or string) through the normal pipeline —
+// used when async remote imports finish so the theme picks the fetched chunks up.
+void CssTheme::reloadCurrentSource()
+{
+    switch (m_lastLoadKind) {
+    case LastLoad::Layer:
+        m_contentHash.clear(); // content may be byte-identical; the imports are what changed
+        loadLayered(m_requestedLayer);
+        break;
+    case LastLoad::String:
+        loadFromString(m_lastExternalCss);
+        break;
+    case LastLoad::None:
+        break;
+    }
+}
+
 void CssTheme::load(const QString &path)
 {
     loadLayered(QStringList{path});
@@ -699,6 +786,7 @@ void CssTheme::setStylePrelude(const QString &css)
 void CssTheme::loadLayered(const QStringList &paths)
 {
     m_requestedLayer = paths; // remembered so a file-change reload re-reads the whole layer
+    m_lastLoadKind = LastLoad::Layer;
 
     QString combined;
     QStringList present;
@@ -743,7 +831,9 @@ void CssTheme::loadLayered(const QStringList &paths)
     if (hash == m_contentHash)
         return; // content unchanged — touch or spurious notification
     m_contentHash = hash;
+    m_inInternalLoad = true;
     loadFromString(combined);
+    m_inInternalLoad = false;
 }
 
 void CssTheme::loadLayeredString(const QString &generatedCss)
@@ -764,8 +854,19 @@ void CssTheme::onCssFileChanged(const QString &)
     loadLayered(m_requestedLayer);
 }
 
-void CssTheme::loadFromString(const QString &css)
+void CssTheme::loadFromString(const QString &cssIn)
 {
+    QString css = cssIn;
+    if (!m_inInternalLoad) {
+        // External string load (e.g. a remote root theme applied via set-css): remember it
+        // for the async remote-@import reload, and expand its imports — absolute paths and
+        // http(s) urls work; a RELATIVE ref has no document to resolve against here.
+        m_lastLoadKind = LastLoad::String;
+        m_lastExternalCss = cssIn;
+        QStringList visited;
+        css = expandImports(cssIn, QString(), visited);
+    }
+
     // @keyframes blocks nest, which the flat parseCss can't handle — extract them first
     // (on the comment-stripped, @define-color-expanded source so frame values resolve).
     const QString cleaned = expandDefineColors(stripComments(css));

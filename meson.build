@@ -107,4 +107,13 @@ if not meson.is_subproject()
     dependencies: [qml_css_engine_dep, qt6_test_dep],
   )
   test('qml-css', qml_test, env: ['QT_QPA_PLATFORM=offscreen'])
+
+  layout_test_moc = qt6.preprocess(moc_headers: files('tests/test_layout.h'))
+  layout_test = executable(
+    'test-layout',
+    files('tests/test_layout.cpp'),
+    layout_test_moc,
+    dependencies: [qml_css_engine_dep, qt6_test_dep],
+  )
+  test('layout', layout_test, env: ['QT_QPA_PLATFORM=offscreen'])
 endif

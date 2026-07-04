@@ -34,6 +34,18 @@ class CssThemeTests final : public QObject {
     Q_OBJECT
 
 private slots:
+    // Waybar-compat corpus: the selector idioms real waybar stylesheets use, pinned
+    // so engine matching changes cannot silently break migrating consumers (the strict
+    // type-selector change of 2026-07-03 broke qbar's window#waybar rule exactly here).
+    void waybarTypeQualifiedIdNeedsPrimitive();
+    void waybarStateClassVariants();
+    void waybarCustomModuleIds();
+    void waybarWorkspacesButtonDescendant();
+    void waybarUniversalRule();
+
+    // Remote @import: async fetch + disk cache + reload-on-arrival.
+    void remoteImportsFetchCacheAndReload();
+
     void parsesIdClassAndSourceOrder();
     void resolvesDescendantSelectorsWithContext();
     void classAncestorSelectorsScope();

@@ -252,6 +252,14 @@ private:
                             const QStringList &classes, const QString &pseudoElement,
                             const QString &primitive = {}) const;
 
+    // @import inlining. `base` is the importing sheet's directory OR its http(s) url;
+    // remote refs are spliced synchronously from the disk cache when warm, fetched
+    // asynchronously otherwise (the load reruns via reloadCurrentSource when the last
+    // in-flight fetch lands).
+    QString expandImports(const QString &cssIn, const QString &base, QStringList &visited);
+    void fetchRemoteImport(const QString &url);
+    void reloadCurrentSource();
+
     // resolveImpl memo (input signature -> resolved map); cleared on rebuildRules().
     mutable QHash<QString, QVariantMap> m_resolveCache;
     // resolveFontFamily memo; cleared when a downloaded font registers.
@@ -306,6 +314,16 @@ private:
     QString m_generatedCss;        // build-generated CSS appended (highest priority) on load
     QByteArray m_contentHash;
     QFileSystemWatcher *m_watcher = nullptr;
+    // Remote @import bookkeeping: in-flight downloads (reload fires when the set
+    // empties) and URLs that failed this session (never refetch-loop a dead URL).
+    QSet<QString> m_importFetchesInFlight;
+    QSet<QString> m_importFetchesFailed;
+    // How the last top-level load happened, so reloadCurrentSource() can re-run it.
+    enum class LastLoad { None, Layer, String };
+    LastLoad m_lastLoadKind = LastLoad::None;
+    QString m_lastExternalCss; // the css last passed to an EXTERNAL loadFromString
+    bool m_inInternalLoad = false;
+
     QNetworkAccessManager *m_nam = nullptr; // lazily created for @font-face downloads
     QSet<QString> m_fontFacesSeen;          // font URLs already loaded/queued (dedupe reloads)
     int m_fontRevision = 0;                 // ++ on each newly-registered downloaded font
