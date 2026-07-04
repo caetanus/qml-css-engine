@@ -1,0 +1,34 @@
+name: tests
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+
+jobs:
+  debian:
+    name: Debian stable (Qt 6)
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            git ca-certificates meson ninja-build cmake pkg-config g++ \
+            qt6-base-dev qt6-declarative-dev qt6-declarative-private-dev \
+            libgl-dev fonts-dejavu-core dbus
+
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: meson setup build
+
+      - name: Build
+        run: ninja -C build
+
+      - name: Test
+        run: dbus-run-session -- meson test -C build --print-errorlogs
+        env:
+          QT_QPA_PLATFORM: offscreen

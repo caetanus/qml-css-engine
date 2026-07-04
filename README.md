@@ -1,5 +1,9 @@
 # qml-css-engine
 
+[![build](https://github.com/caetanus/qml-css-engine/actions/workflows/build.yml/badge.svg)](https://github.com/caetanus/qml-css-engine/actions/workflows/build.yml)
+[![tests](https://github.com/caetanus/qml-css-engine/actions/workflows/tests.yml/badge.svg)](https://github.com/caetanus/qml-css-engine/actions/workflows/tests.yml)
+
+
 **A real CSS engine for Qt Quick, 100% C++.** Style native scene-graph items with
 plain CSS — cascade, specificity, `!important`, descendant selectors scoped by the
 real ancestor chain, `:hover` on any element, `@media`, `@keyframes`, `@font-face`

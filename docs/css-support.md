@@ -28,6 +28,7 @@ through into the `style` map as raw strings but have no built-in renderer.
 | Rule | Support |
 |------|---------|
 | `@import "file.css";` | Recursive; relative to the importing file; `file://` and absolute paths; cycle-guarded |
+| `@import "https://…";` | Remote sheets: cached on disk (sha1 key, offline after first fetch); a cold URL downloads asynchronously and the theme reloads itself when the last fetch lands; relative refs inside a remote sheet resolve against its URL; failed URLs are not retried within the session |
 | `@import url("file.css");` | Same |
 | `@define-color name value;` | GTK-style; cross-references resolved (up to 5 passes); stripped before parsing |
 | `@media (min-width: Npx)` | Live; re-evaluated on `CssTheme::setViewport()` |
