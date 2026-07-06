@@ -1179,6 +1179,23 @@ void CssRect::ensureScrollable()
         "            flick.contentY = Math.max(0, Math.min(flick.contentY - dy, flick.__maxY))\n"
         "        }\n"
         "    }\n"
+        // Keyboard focus follows scroll (tab-focus study §6): when Tab moves focus to a control inside
+        // this scroll box, bring it into view — otherwise focus (and the focus ring) go off-screen and
+        // tabbing feels dead. Scrolls the minimum needed, with an 8px margin.
+        "    Connections {\n"
+        "        target: flick.Window.window\n"
+        "        function onActiveFocusItemChanged() {\n"
+        "            var fi = flick.Window.window ? flick.Window.window.activeFocusItem : null\n"
+        "            if (!fi) return\n"
+        "            var p = fi, inside = false\n"
+        "            while (p) { if (p === flick.contentItem) { inside = true; break } p = p.parent }\n"
+        "            if (!inside) return\n"
+        "            var pos = fi.mapToItem(flick.contentItem, 0, 0)\n"
+        "            var top = pos.y, bottom = pos.y + fi.height\n"
+        "            if (top < flick.contentY) flick.contentY = Math.max(0, top - 8)\n"
+        "            else if (bottom > flick.contentY + flick.height) flick.contentY = Math.min(flick.__maxY, bottom - flick.height + 8)\n"
+        "        }\n"
+        "    }\n"
         // Controls-free desktop scrollbar on the VIEWPORT layer (parent: flick keeps it out of the
         // reparented content). Persistent while the content overflows (not a touch indicator that
         // hides at rest); the thumb is DRAGGABLE and the track pages toward a click. The thumb y is
