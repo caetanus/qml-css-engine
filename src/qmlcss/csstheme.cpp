@@ -130,7 +130,14 @@ void CssTheme::applyCssTo(QObject *target) const
     // Otherwise merge the waybar alias(es) under the primary id.
     QVariantMap style;
     if (!cssPart.isEmpty()) {
+        // A `cssPart` resolves two ways, merged: the class-part `#id.part`/`.part` (waybar
+        // sub-elements), and the pseudo-element `#id::part`/`::part` (a decorative overlay, e.g.
+        // the keyboard tab ring's `::tab-stop`). Pseudo-element wins on conflict — it names the
+        // decoration itself, not a container alias.
         style = resolvePart(cssId, cssPart, classes);
+        const QVariantMap pseudo = resolveExact(cssId, classes, cssPart);
+        for (auto it = pseudo.constBegin(); it != pseudo.constEnd(); ++it)
+            style.insert(it.key(), it.value());
     } else {
         const QStringList alternateIds = cssVariantToStringList(target->property("cssAlternateId"));
         const qint64 t0 = g_applyStats.enabled ? t.nsecsElapsed() : 0;
