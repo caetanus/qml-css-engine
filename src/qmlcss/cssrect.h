@@ -187,6 +187,12 @@ public:
     // geometry/style/children changes. Must be invokable (invokeMethod by name).
     Q_INVOKABLE void requestRelayout();
 
+    // Connect each FOREIGN (non-Css) child's implicit-size signals to a relayout. A Css child
+    // self-notifies its parent on implicit change (see componentComplete), but a hand-written .qml
+    // escape hatch is a plain Item with no such wiring — so its late/dynamic implicit growth would
+    // otherwise never re-flow the box (and a scroll's contentHeight would stay short of it).
+    void watchForeignChildren();
+
 signals:
     void cssIdChanged();
     void cssAlternateIdChanged();

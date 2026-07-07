@@ -456,7 +456,28 @@ CssRect::CssRect(QQuickItem *parent)
     // (which happens during parsing, before componentComplete). It is a plain Item (no engine
     // needed), sized to us, hosting the layout participants — exactly the QML `contentHolder`.
     m_contentHolder = new QQuickItem(this);
-    connect(m_contentHolder, &QQuickItem::childrenChanged, this, [this]() { requestRelayout(); });
+    connect(m_contentHolder, &QQuickItem::childrenChanged, this, [this]() {
+        watchForeignChildren();
+        requestRelayout();
+    });
+}
+
+void CssRect::watchForeignChildren()
+{
+    if (!m_contentHolder)
+        return;
+    const auto kids = m_contentHolder->childItems();
+    for (QQuickItem *k : kids) {
+        if (!k)
+            continue;
+        // A Css child carries `style`/`cssPrimitive` and self-notifies its parent on implicit change;
+        // a foreign child (escape-hatch .qml — plain Item) has neither, so watch it here. Pointer-to-
+        // member + UniqueConnection makes this idempotent across the many childrenChanged bursts.
+        if (k->property("style").isValid() || k->property("cssPrimitive").isValid())
+            continue;
+        connect(k, &QQuickItem::implicitWidthChanged, this, &CssRect::requestRelayout, Qt::UniqueConnection);
+        connect(k, &QQuickItem::implicitHeightChanged, this, &CssRect::requestRelayout, Qt::UniqueConnection);
+    }
 }
 
 bool CssRect::hasCssIdentity() const
@@ -1321,6 +1342,7 @@ void CssRect::componentComplete()
 
     const qint64 tShell = g_mountStats.enabled ? mountTimer.nsecsElapsed() : 0;
 
+    watchForeignChildren(); // wire escape-hatch children appended during parsing
     layoutChildren();
     recompute(); // first and only full evaluation — the style is already final (see above)
 
