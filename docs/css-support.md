@@ -142,6 +142,10 @@ radial-gradient(ellipse at 30% 70%, #a, #b)
 | `border-width: <length>` | Overrides shorthand width |
 | `border-radius: <length>` | 1–4 values (CSS shorthand); percentage; true `PathArc` quarter-ellipse arcs |
 
+Borders take box-model space, like the web: a container's content holder is the **padding box**
+(children — including anchor-filled foreign hosts — start inside the border), the content area
+shrinks by the border widths, and an auto-sized box's implicit size includes its border.
+
 ### Shadow
 
 | Property | Effect |

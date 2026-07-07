@@ -617,6 +617,7 @@ void CssRect::setStyle(const QVariantMap &v)
         ensureScrollable();
     setClip(!m_flickable && (overflow == QLatin1String("hidden") || overflow == QLatin1String("clip")));
 
+    updateBorderInsets();
     recompute();
     // Pre-mount applies must NOT trigger layout: componentComplete finishes with ONE
     // requestRelayout for the whole element (the in-construction storm was O(N) flushes).
@@ -1169,7 +1170,7 @@ void CssRect::layoutChildren()
 {
     const qreal w = width();
     const qreal h = height();
-    for (QQuickItem *child : {m_render.data(), m_fastRect.data(), m_flickable ? m_flickable.data() : m_contentHolder.data()}) {
+    for (QQuickItem *child : {m_render.data(), m_fastRect.data()}) {
         if (!child)
             continue;
         child->setX(0);
@@ -1177,11 +1178,33 @@ void CssRect::layoutChildren()
         child->setWidth(w);
         child->setHeight(h);
     }
+    // The content holder (or the scroll Flickable wrapping it) is the PADDING BOX: children —
+    // including anchor-filled foreign hosts — live inside the border, like the web content area.
+    const qreal iw = std::max<qreal>(0.0, w - m_borderInsets[3] - m_borderInsets[1]);
+    const qreal ih = std::max<qreal>(0.0, h - m_borderInsets[0] - m_borderInsets[2]);
+    if (QQuickItem *content = m_flickable ? m_flickable.data() : m_contentHolder.data()) {
+        content->setX(m_borderInsets[3]);
+        content->setY(m_borderInsets[0]);
+        content->setWidth(iw);
+        content->setHeight(ih);
+    }
     if (m_flickable && m_contentHolder) {
         // The holder becomes the scrolled content: full width, height = children extent.
-        m_contentHolder->setWidth(w);
+        m_contentHolder->setWidth(iw);
         syncScrollContent();
     }
+}
+
+void CssRect::updateBorderInsets()
+{
+    if (!m_layout)
+        return;
+    QVector<double> b = m_layout->borderOf(m_style);
+    if (b == m_borderInsets)
+        return;
+    m_borderInsets = std::move(b);
+    if (isComponentComplete())
+        layoutChildren(); // border change moves the padding box even when our size didn't change
 }
 
 void CssRect::ensureScrollable()
@@ -1202,7 +1225,10 @@ void CssRect::syncScrollContent()
     // Pass the box's own padding-bottom so the last child breathes at max scroll (an inset content
     // holder starts children at y≈0, so there is no top offset to mirror).
     const qreal pb = m_layout ? m_layout->paddingOf(m_style).value(2) : 0.0;
-    syncScrollExtent(m_flickable, m_contentHolder, height(), width(), pb);
+    // The Flickable viewport is the padding box (layoutChildren), so the extents must match it.
+    syncScrollExtent(m_flickable, m_contentHolder,
+                     std::max<qreal>(0.0, height() - m_borderInsets[0] - m_borderInsets[2]),
+                     std::max<qreal>(0.0, width() - m_borderInsets[3] - m_borderInsets[1]), pb);
 }
 
 void CssRect::componentComplete()
@@ -1215,6 +1241,7 @@ void CssRect::componentComplete()
         m_theme = qobject_cast<CssTheme *>(ctx->contextProperty(QStringLiteral("cssTheme")).value<QObject *>());
         m_layout = qobject_cast<CssLayoutEngine *>(ctx->contextProperty(QStringLiteral("cssLayout")).value<QObject *>());
     }
+    updateBorderInsets(); // inline styles apply before completion, when m_layout was still null
 
     QElapsedTimer mountTimer;
     if (g_mountStats.enabled)

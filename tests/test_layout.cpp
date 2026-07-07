@@ -150,6 +150,33 @@ void LayoutTests::paddingInsetsContent()
     QTRY_COMPARE(s.kid("a")->y(), 10.0);
 }
 
+void LayoutTests::borderInsetsContentBox()
+{
+    // The content holder is the PADDING BOX (web box model): children live inside the border, the
+    // content area shrinks by the border widths, and an auto-sized box's implicit size includes the
+    // border on both axes. Child x/y stays padding-relative — the holder absorbs the border offset.
+    Scene s(QStringLiteral("#c { display: flex; padding: 4px; border: 3px solid #000; }"
+                           "#a, #b, #k { width: 20px; height: 20px; }"),
+            threeKids());
+    QVERIFY(s.root);
+    QTRY_COMPARE(s.kid("a")->x(), 4.0);
+    QTRY_COMPARE(s.kid("a")->mapToItem(s.root.data(), 0, 0).x(), 7.0); // border 3 + padding 4
+    QTRY_COMPARE(s.kid("a")->mapToItem(s.root.data(), 0, 0).y(), 7.0);
+
+    // Auto-sized box: implicit = content + padding + border.
+    Scene s2(QStringLiteral("#c { display: flex; padding: 4px; border: 3px solid #000; }"
+                            "#a { width: 20px; height: 20px; }"),
+             QStringLiteral(R"(
+                 CssRect {
+                     cssId: "c"
+                     CssRect { objectName: "a"; cssId: "a" }
+                 }
+             )"));
+    QVERIFY(s2.root);
+    QTRY_COMPARE(s2.root->implicitWidth(), 34.0);  // 20 + 4+4 + 3+3
+    QTRY_COMPARE(s2.root->implicitHeight(), 34.0);
+}
+
 void LayoutTests::childMarginOffsets()
 {
     Scene s(QStringLiteral("#c { display: flex; }"

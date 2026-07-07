@@ -220,8 +220,11 @@ private:
     // gradient, border, box-shadow, transform, transition) and push it onto the composed render
     // subtree. The equivalent of every `style`-derived binding in CssRect.qml.
     void recompute();
-    // anchors.fill equivalent: keep the render subtree + content holder sized to us.
+    // anchors.fill equivalent: paint layers span the border box; the content holder (or its scroll
+    // Flickable) is the PADDING BOX — inset by the cached border widths (web content area).
     void layoutChildren();
+    // Refresh m_borderInsets from the resolved style (style-set time, never per-resize).
+    void updateBorderInsets();
     // Applies the active transform — if _animActive (stops.length >= 2), uses the animated
     // _animRotate/_animScale/_animTx/_animTy (written each tick by applyAnim); otherwise uses the
     // static transform resolved from style["transform"]. Pivot is the element centre (CSS default,
@@ -239,6 +242,9 @@ private:
     QString m_cssPrimitive = QStringLiteral("rect");
     QString m_cssPart;
     QVariantMap m_style;
+    // Resolved border widths [t,r,b,l] — cached at style-set time so layoutChildren (per-resize
+    // hot path) never parses style strings. The content holder is inset by these (padding box).
+    QVector<double> m_borderInsets{0.0, 0.0, 0.0, 0.0};
 
     qreal m_radius = 0;
     QColor m_defaultColor = QColor(Qt::transparent);

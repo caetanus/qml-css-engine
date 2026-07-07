@@ -24,6 +24,7 @@ private slots:
 
     // Box model
     void paddingInsetsContent();
+    void borderInsetsContentBox();
     void childMarginOffsets();
     void percentAndCalcWidths();
     void viewportUnitsResolve();

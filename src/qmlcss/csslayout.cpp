@@ -499,10 +499,13 @@ void CssLayoutEngine::layout(QQuickItem *root, QQuickItem *content)
         return;
     const QVariantMap rootStyle = root->property("style").toMap();
     const QVector<double> pad = paddingOf(rootStyle);
+    // The content holder is the PADDING BOX (the container insets it by the border), so the child
+    // origin is padding-only, but the content area loses padding AND border (web box model).
+    const QVector<double> bor = borderOf(rootStyle);
     const double originX = pad[3];
     const double originY = pad[0];
-    const double cw = std::max(0.0, root->width() - pad[1] - pad[3]);
-    const double ch = std::max(0.0, root->height() - pad[0] - pad[2]);
+    const double cw = std::max(0.0, root->width() - pad[1] - pad[3] - bor[1] - bor[3]);
+    const double ch = std::max(0.0, root->height() - pad[0] - pad[2] - bor[0] - bor[2]);
 
     QString disp = styleStr(rootStyle, "display");
     if (disp.isEmpty())
@@ -576,8 +579,8 @@ void CssLayoutEngine::layout(QQuickItem *root, QQuickItem *content)
         contentW = std::max(contentW, fw);
         contentH = std::max(contentH, fh);
     }
-    const double iw = contentW + pad[1] + pad[3];
-    const double ih = contentH + pad[0] + pad[2];
+    const double iw = contentW + pad[1] + pad[3] + bor[1] + bor[3];
+    const double ih = contentH + pad[0] + pad[2] + bor[0] + bor[2];
     if (std::abs(root->implicitWidth() - iw) > 0.5) root->setImplicitWidth(iw);
     if (std::abs(root->implicitHeight() - ih) > 0.5) root->setImplicitHeight(ih);
 }

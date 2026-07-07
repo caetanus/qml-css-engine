@@ -154,8 +154,11 @@ private:
     // image source, fill mode, image opacity) and push it onto the composed background Shape /
     // Image, and forward `style`/defaults onto the composed CssRect renderer.
     void recompute();
-    // anchors.fill equivalent: keep every composed layer + content holder sized to us.
+    // anchors.fill equivalent: paint layers span the border box; the content holder (or its scroll
+    // Flickable) is the PADDING BOX — inset by the cached border widths (web content area).
     void layoutChildren();
+    // Refresh m_borderInsets from the resolved style (style-set time, never per-resize).
+    void updateBorderInsets();
     // Re-style through the reverse-slot engine path when identity changes (QML onCss*Changed).
     void maybeLoadCss();
     // overflow(-y): auto/scroll — compose the shared desktop-scroll Flickable (see cssscroll.h) and
@@ -174,6 +177,9 @@ private:
     QString m_cssPrimitive = QStringLiteral("rect");
     QString m_cssPart;
     QVariantMap m_style;
+    // Resolved border widths [t,r,b,l] — cached at style-set time so layoutChildren (per-resize
+    // hot path) never parses style strings. The content holder is inset by these (padding box).
+    QVector<double> m_borderInsets{0.0, 0.0, 0.0, 0.0};
 
     qreal m_radius = 0;
     QColor m_defaultColor = QColor(Qt::transparent);

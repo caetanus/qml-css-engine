@@ -181,7 +181,10 @@ void CssFill::ensureScrollable()
 void CssFill::syncScrollContent()
 {
     const qreal pb = m_layout ? m_layout->paddingOf(m_style).value(2) : 0.0;
-    syncScrollExtent(m_flickable, m_contentHolder, height(), width(), pb);
+    // The Flickable viewport is the padding box (layoutChildren), so the extents must match it.
+    syncScrollExtent(m_flickable, m_contentHolder,
+                     std::max<qreal>(0.0, height() - m_borderInsets[0] - m_borderInsets[2]),
+                     std::max<qreal>(0.0, width() - m_borderInsets[3] - m_borderInsets[1]), pb);
 }
 
 bool CssFill::hasCssIdentity() const
@@ -257,6 +260,7 @@ void CssFill::setStyle(const QVariantMap &v)
         return;
     m_style = v;
     emit styleChanged();
+    updateBorderInsets();
     recompute();
     // Pre-mount applies must not trigger layout (completion issues one requestRelayout).
     if (isComponentComplete()) {
@@ -462,8 +466,7 @@ void CssFill::layoutChildren()
     const qreal h = height();
     // When scrollable the Flickable takes the viewport size; the content holder lives INSIDE it and
     // gets height = children extent (syncScrollContent), not the viewport height.
-    for (QQuickItem *child : {m_bgSolid.data(), m_image.data(), m_rect.data(),
-                              m_flickable ? m_flickable.data() : m_contentHolder.data()}) {
+    for (QQuickItem *child : {m_bgSolid.data(), m_image.data(), m_rect.data()}) {
         if (!child)
             continue;
         child->setX(0);
@@ -471,10 +474,32 @@ void CssFill::layoutChildren()
         child->setWidth(w);
         child->setHeight(h);
     }
+    // The content holder (or the scroll Flickable wrapping it) is the PADDING BOX: children —
+    // including anchor-filled foreign hosts — live inside the border, like the web content area.
+    const qreal iw = std::max<qreal>(0.0, w - m_borderInsets[3] - m_borderInsets[1]);
+    const qreal ih = std::max<qreal>(0.0, h - m_borderInsets[0] - m_borderInsets[2]);
+    if (QQuickItem *content = m_flickable ? m_flickable.data() : m_contentHolder.data()) {
+        content->setX(m_borderInsets[3]);
+        content->setY(m_borderInsets[0]);
+        content->setWidth(iw);
+        content->setHeight(ih);
+    }
     if (m_flickable && m_contentHolder) {
-        m_contentHolder->setWidth(w);
+        m_contentHolder->setWidth(iw);
         syncScrollContent();
     }
+}
+
+void CssFill::updateBorderInsets()
+{
+    if (!m_layout)
+        return;
+    QVector<double> b = m_layout->borderOf(m_style);
+    if (b == m_borderInsets)
+        return;
+    m_borderInsets = std::move(b);
+    if (isComponentComplete())
+        layoutChildren(); // border change moves the padding box even when our size didn't change
 }
 
 void CssFill::componentComplete()
@@ -485,6 +510,7 @@ void CssFill::componentComplete()
         m_theme = qobject_cast<CssTheme *>(ctx->contextProperty(QStringLiteral("cssTheme")).value<QObject *>());
         m_layout = qobject_cast<CssLayoutEngine *>(ctx->contextProperty(QStringLiteral("cssLayout")).value<QObject *>());
     }
+    updateBorderInsets(); // inline styles apply before completion, when m_layout was still null
 
     // SINGLE-SHOT mount: resolve + set the style before the layers exist (recompute no-ops
     // on null layers); their first configuration below already reads the final style.
