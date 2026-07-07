@@ -72,7 +72,8 @@ private:
     double evalExpr(const QString &value, double avail) const;
     double calcUnit(const QString &tok, double avail) const;
 
-    // box-model helpers
+    // box-model helpers (public: containers read padding-bottom for scroll breathing)
+public:
     double sizeOf(const QVariantMap &style, const QString &key, double avail) const;
     // Clamp a resolved width/height by the item's min-/max-<axis> (axis = "width" | "height").
     double clampSize(const QVariantMap &style, const QString &axis, double v, double avail) const;
@@ -81,6 +82,8 @@ private:
     QVector<double> borderOf(const QVariantMap &style) const;
     QVector<double> marginOf(const QVariantMap &style) const;
     double aspectOf(const QVariantMap &style) const;
+
+private:
 
     // geometry assignment
     void place(QQuickItem *k, double x, double y, double w, double h) const;

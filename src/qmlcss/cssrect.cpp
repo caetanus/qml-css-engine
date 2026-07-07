@@ -1189,8 +1189,10 @@ void CssRect::ensureScrollable()
 
 void CssRect::syncScrollContent()
 {
-    // Bottom padding keeps the scroll end breathing like the web (children start offset ~= top padding).
-    syncScrollExtent(m_flickable, m_contentHolder, height(), width());
+    // Pass the box's own padding-bottom so the last child breathes at max scroll (an inset content
+    // holder starts children at y≈0, so there is no top offset to mirror).
+    const qreal pb = m_layout ? m_layout->paddingOf(m_style).value(2) : 0.0;
+    syncScrollExtent(m_flickable, m_contentHolder, height(), width(), pb);
 }
 
 void CssRect::componentComplete()

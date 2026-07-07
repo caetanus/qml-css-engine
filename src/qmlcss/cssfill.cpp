@@ -172,7 +172,8 @@ void CssFill::ensureScrollable()
 
 void CssFill::syncScrollContent()
 {
-    syncScrollExtent(m_flickable, m_contentHolder, height(), width());
+    const qreal pb = m_layout ? m_layout->paddingOf(m_style).value(2) : 0.0;
+    syncScrollExtent(m_flickable, m_contentHolder, height(), width(), pb);
 }
 
 bool CssFill::hasCssIdentity() const

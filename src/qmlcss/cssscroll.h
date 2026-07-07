@@ -120,13 +120,17 @@ inline QQuickItem *composeScrollFlickable(QQuickItem *owner, QQuickItem *content
     return flick;
 }
 
-// Push the laid-out content extent into the Flickable's contentHeight (with bottom breathing).
-inline void syncScrollExtent(QQuickItem *flick, QQuickItem *contentHolder, qreal ownerHeight, qreal ownerWidth)
+// Push the laid-out content extent into the Flickable's contentHeight. `bottomPad` is the box's
+// resolved padding-bottom so the last child is not jammed against the viewport edge at max scroll —
+// a padded container insets its contentHolder (children start at y≈0), so the old symmetric
+// `max(0, r.y())` yielded ZERO bottom breathing and the final card looked cut off.
+inline void syncScrollExtent(QQuickItem *flick, QQuickItem *contentHolder, qreal ownerHeight,
+                             qreal ownerWidth, qreal bottomPad = 0.0)
 {
     if (!flick || !contentHolder)
         return;
     const QRectF r = contentHolder->childrenRect();
-    const qreal pad = std::max<qreal>(0.0, r.y());
+    const qreal pad = std::max({0.0, r.y(), bottomPad});
     const qreal contentH = std::max(ownerHeight, r.y() + r.height() + pad);
     contentHolder->setHeight(contentH);
     flick->setProperty("contentWidth", ownerWidth);
