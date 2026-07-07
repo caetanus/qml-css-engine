@@ -2,6 +2,7 @@
 #include "qmlcss/cssfill.h"
 
 #include "qmlcss/csslayout.h"
+#include "qmlcss/cssscroll.h"
 #include "qmlcss/csstheme.h"
 
 #include <QJSValue>
@@ -137,7 +138,41 @@ CssFill::CssFill(QQuickItem *parent)
     // (which happens during parsing, before componentComplete). A plain Item, sized to us, hosting
     // the layout participants — exactly the QML `contentHolder`.
     m_contentHolder = new QQuickItem(this);
-    connect(m_contentHolder, &QQuickItem::childrenChanged, this, [this]() { requestRelayout(); });
+    connect(m_contentHolder, &QQuickItem::childrenChanged, this, [this]() {
+        watchForeignChildren();
+        requestRelayout();
+    });
+}
+
+void CssFill::watchForeignChildren()
+{
+    if (!m_contentHolder)
+        return;
+    const auto kids = m_contentHolder->childItems();
+    for (QQuickItem *k : kids) {
+        if (!k)
+            continue;
+        if (k->property("style").isValid() || k->property("cssPrimitive").isValid())
+            continue;
+        connect(k, &QQuickItem::implicitWidthChanged, this, &CssFill::requestRelayout, Qt::UniqueConnection);
+        connect(k, &QQuickItem::implicitHeightChanged, this, &CssFill::requestRelayout, Qt::UniqueConnection);
+    }
+}
+
+void CssFill::ensureScrollable()
+{
+    if (m_flickable || !m_contentHolder || !isComponentComplete())
+        return;
+    m_flickable = composeScrollFlickable(this, m_contentHolder);
+    if (!m_flickable)
+        return;
+    connect(m_contentHolder, &QQuickItem::childrenRectChanged, this, &CssFill::syncScrollContent);
+    layoutChildren();
+}
+
+void CssFill::syncScrollContent()
+{
+    syncScrollExtent(m_flickable, m_contentHolder, height(), width());
 }
 
 bool CssFill::hasCssIdentity() const
@@ -393,21 +428,43 @@ void CssFill::recompute()
         m_rect->setProperty("defaultColor", bgIsImage ? QColor(Qt::transparent) : m_defaultColor);
         m_rect->setProperty("defaultBorderColor", m_defaultBorderColor);
         m_rect->setProperty("defaultBorderWidth", m_defaultBorderWidth);
-        m_rect->setProperty("style", m_style);
+        // The OUTER CssFill owns the scroll; strip overflow so the inner renderer (whose content
+        // holder is empty) doesn't compose a redundant Flickable of its own.
+        QVariantMap rectStyle = m_style;
+        rectStyle.remove(QStringLiteral("overflow"));
+        rectStyle.remove(QStringLiteral("overflow-y"));
+        m_rect->setProperty("style", rectStyle);
     }
+
+    // overflow(-y): auto/scroll — the content holder becomes a desktop-scroll Flickable, shared with
+    // CssRect via cssscroll.h (owner: "cssfill *deveria* ter scroll").
+    const QString overflow = str("overflow");
+    QString overflowY = str("overflow-y");
+    if (overflowY.isEmpty())
+        overflowY = overflow;
+    if (isComponentComplete() && (overflowY == QLatin1String("auto") || overflowY == QLatin1String("scroll")))
+        ensureScrollable();
+    setClip(!m_flickable && (overflow == QLatin1String("hidden") || overflowY == QLatin1String("hidden")));
 }
 
 void CssFill::layoutChildren()
 {
     const qreal w = width();
     const qreal h = height();
-    for (QQuickItem *child : {m_bgSolid.data(), m_image.data(), m_rect.data(), m_contentHolder.data()}) {
+    // When scrollable the Flickable takes the viewport size; the content holder lives INSIDE it and
+    // gets height = children extent (syncScrollContent), not the viewport height.
+    for (QQuickItem *child : {m_bgSolid.data(), m_image.data(), m_rect.data(),
+                              m_flickable ? m_flickable.data() : m_contentHolder.data()}) {
         if (!child)
             continue;
         child->setX(0);
         child->setY(0);
         child->setWidth(w);
         child->setHeight(h);
+    }
+    if (m_flickable && m_contentHolder) {
+        m_contentHolder->setWidth(w);
+        syncScrollContent();
     }
 }
 

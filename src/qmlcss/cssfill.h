@@ -158,6 +158,14 @@ private:
     void layoutChildren();
     // Re-style through the reverse-slot engine path when identity changes (QML onCss*Changed).
     void maybeLoadCss();
+    // overflow(-y): auto/scroll — compose the shared desktop-scroll Flickable (see cssscroll.h) and
+    // move the content holder into it, exactly like CssRect. Both container types depend on the same
+    // scroll abstraction rather than duplicating it.
+    void ensureScrollable();
+    Q_SLOT void syncScrollContent();
+    // A foreign (non-Css) child does not self-notify its parent on implicit-size change; watch it so
+    // escape-hatch growth re-flows the box (mirrors CssRect).
+    void watchForeignChildren();
 
     QString m_cssId;
     QVariant m_cssAlternateId = QVariant::fromValue(QVariantList());
@@ -180,6 +188,7 @@ private:
     QPointer<QQuickItem> m_image;         // REAL QtQuick Image (the url() background)
     QPointer<QQuickItem> m_rect;          // REAL CssRect renderer (fill/border/gradient/shadow)
     QPointer<QQuickItem> m_contentHolder; // hosts declared children (the layout participants)
+    QPointer<QQuickItem> m_flickable;     // overflow: auto/scroll — composed Flickable (shared)
 };
 
 } // namespace QmlCss

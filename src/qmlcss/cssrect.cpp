@@ -1,5 +1,6 @@
 #include "qmlcss/componentcache.h"
 #include "qmlcss/cssrect.h"
+#include "qmlcss/cssscroll.h"
 
 #include "qmlcss/csslayout.h"
 #include "qmlcss/csstheme.h"
@@ -1178,107 +1179,9 @@ void CssRect::ensureScrollable()
 {
     if (m_flickable || !m_contentHolder || !isComponentComplete())
         return;
-    QQmlEngine *eng = qmlEngine(this);
-    if (!eng)
+    m_flickable = composeScrollFlickable(this, m_contentHolder);
+    if (!m_flickable)
         return;
-    QQmlComponent *comp = QmlCss::cachedComponent(eng, QStringLiteral("cssrect-flickable"),
-        "import QtQuick\n"
-        "Flickable {\n"
-        "    id: flick\n"
-        "    clip: true\n"
-        "    boundsBehavior: Flickable.StopAtBounds\n"
-        "    flickableDirection: Flickable.VerticalFlick\n"
-        // Desktop scroll, not touch: the mouse wheel moves in discrete steps with NO kinetic
-        // momentum or overshoot (StopAtBounds above). A trackpad two-finger scroll (pixelDelta)
-        // maps 1:1; a mouse notch (angleDelta, 120 units) moves ~3 lines. We drive contentY
-        // directly and clamp, so there is no flick fling.
-        "    property real __maxY: Math.max(0, contentHeight - height)\n"
-        "    WheelHandler {\n"
-        "        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad\n"
-        "        onWheel: (ev) => {\n"
-        "            var dy = ev.pixelDelta.y !== 0 ? ev.pixelDelta.y : (ev.angleDelta.y / 120) * 54\n"
-        "            flick.contentY = Math.max(0, Math.min(flick.contentY - dy, flick.__maxY))\n"
-        "        }\n"
-        "    }\n"
-        // Keyboard focus follows scroll (tab-focus study §6): when Tab moves focus to a control inside
-        // this scroll box, bring it into view — otherwise focus (and the focus ring) go off-screen and
-        // tabbing feels dead. Scrolls the minimum needed, with an 8px margin.
-        "    Connections {\n"
-        "        target: flick.Window.window\n"
-        "        function onActiveFocusItemChanged() {\n"
-        "            var fi = flick.Window.window ? flick.Window.window.activeFocusItem : null\n"
-        "            if (!fi) return\n"
-        "            var p = fi, inside = false\n"
-        "            while (p) { if (p === flick.contentItem) { inside = true; break } p = p.parent }\n"
-        "            if (!inside) return\n"
-        "            var pos = fi.mapToItem(flick.contentItem, 0, 0)\n"
-        "            var top = pos.y, bottom = pos.y + fi.height\n"
-        "            if (top < flick.contentY) flick.contentY = Math.max(0, top - 8)\n"
-        "            else if (bottom > flick.contentY + flick.height) flick.contentY = Math.min(flick.__maxY, bottom - flick.height + 8)\n"
-        "        }\n"
-        "    }\n"
-        // Controls-free desktop scrollbar on the VIEWPORT layer (parent: flick keeps it out of the
-        // reparented content). Persistent while the content overflows (not a touch indicator that
-        // hides at rest); the thumb is DRAGGABLE and the track pages toward a click. The thumb y is
-        // a one-way binding off visibleArea — we never write it (dragging writes contentY, the
-        // binding moves the thumb), so there is no feedback loop.
-        "    Rectangle {\n"
-        "        id: sbTrack\n"
-        "        parent: flick\n"
-        "        x: flick.width - width\n"
-        "        y: 0\n"
-        "        width: 12\n"
-        "        height: flick.height\n"
-        "        color: \"transparent\"\n"
-        "        visible: flick.contentHeight > flick.height + 1\n"
-        "        MouseArea {\n"
-        "            anchors.fill: parent\n"
-        "            onPressed: (m) => {\n"
-        "                if (m.y < sbThumb.y) flick.contentY = Math.max(0, flick.contentY - flick.height * 0.9)\n"
-        "                else if (m.y > sbThumb.y + sbThumb.height) flick.contentY = Math.min(flick.__maxY, flick.contentY + flick.height * 0.9)\n"
-        "            }\n"
-        "        }\n"
-        "        Rectangle {\n"
-        "            id: sbThumb\n"
-        "            x: 3\n"
-        "            width: 6\n"
-        "            radius: 3\n"
-        "            color: thumbArea.pressed ? \"#99000000\" : (thumbArea.containsMouse ? \"#77000000\" : \"#55000000\")\n"
-        "            height: Math.max(24, flick.visibleArea.heightRatio * sbTrack.height)\n"
-        "            y: flick.visibleArea.yPosition * sbTrack.height\n"
-        "            MouseArea {\n"
-        "                id: thumbArea\n"
-        "                anchors.fill: parent\n"
-        "                hoverEnabled: true\n"
-        "                preventStealing: true\n"
-        "                property real __grab: 0\n"
-        "                onPressed: (m) => __grab = m.y\n"
-        "                onPositionChanged: (m) => {\n"
-        "                    if (!pressed) return\n"
-        "                    var maxY = sbTrack.height - sbThumb.height\n"
-        "                    if (maxY <= 0) return\n"
-        "                    var ny = sbThumb.y + (m.y - __grab)\n"
-        "                    var frac = Math.max(0, Math.min(ny / maxY, 1))\n"
-        "                    flick.contentY = frac * flick.__maxY\n"
-        "                }\n"
-        "            }\n"
-        "        }\n"
-        "    }\n"
-        "}");
-    QObject *o = comp->create(qmlContext(this));
-    QQuickItem *flick = qobject_cast<QQuickItem *>(o);
-    if (!flick) {
-        if (o)
-            o->deleteLater();
-        qWarning("CssRect: failed to compose Flickable: %s", qPrintable(comp->errorString()));
-        return;
-    }
-    flick->setParent(this);
-    flick->setParentItem(this);
-    m_flickable = flick;
-    // Move the content INTO the flickable; the layout keeps operating on the same holder.
-    QQuickItem *contentItem = flick->property("contentItem").value<QQuickItem *>();
-    m_contentHolder->setParentItem(contentItem ? contentItem : flick);
     // Content extent follows the laid-out children.
     connect(m_contentHolder, &QQuickItem::childrenRectChanged, this, &CssRect::syncScrollContent);
     layoutChildren();
@@ -1286,15 +1189,8 @@ void CssRect::ensureScrollable()
 
 void CssRect::syncScrollContent()
 {
-    if (!m_flickable || !m_contentHolder)
-        return;
-    const QRectF r = m_contentHolder->childrenRect();
     // Bottom padding keeps the scroll end breathing like the web (children start offset ~= top padding).
-    const qreal pad = std::max<qreal>(0.0, r.y());
-    const qreal contentH = std::max(height(), r.y() + r.height() + pad);
-    m_contentHolder->setHeight(contentH);
-    m_flickable->setProperty("contentWidth", width());
-    m_flickable->setProperty("contentHeight", contentH);
+    syncScrollExtent(m_flickable, m_contentHolder, height(), width());
 }
 
 void CssRect::componentComplete()
