@@ -35,6 +35,7 @@ private slots:
 
     // C++ CssRect — composition translation of CssRect.qml.
     void cssRectCppComposesShapeAndContains();
+    void cssRectBorderStyleDottedStrokes();
 
     // C++ CssHr — composition translation of CssHr.qml.
     void cssHrCppComposesRealShape();

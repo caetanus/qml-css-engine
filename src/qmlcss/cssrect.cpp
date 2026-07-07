@@ -127,6 +127,7 @@ Item {
     readonly property bool borderVisible: cssIn.borderVisible !== undefined ? cssIn.borderVisible : false
     readonly property color borderColorOpaque: cssIn.borderColorOpaque !== undefined ? cssIn.borderColorOpaque : "transparent"
     readonly property real borderWidth: cssIn.borderWidth !== undefined ? cssIn.borderWidth : 0
+    readonly property string borderStyle: cssIn.borderStyle !== undefined ? cssIn.borderStyle : "solid"
     readonly property real borderAlpha: cssIn.borderAlpha !== undefined ? cssIn.borderAlpha : 1
     readonly property bool hasSideBorder: cssIn.hasSideBorder !== undefined ? cssIn.hasSideBorder : false
     readonly property var topB: cssIn.topB !== undefined ? cssIn.topB : ({})
@@ -340,6 +341,11 @@ Item {
         ShapePath {
             strokeColor: r.borderColorOpaque
             strokeWidth: r.borderWidth
+            // border-style: dotted/dashed → a dashed stroke (dashPattern is in strokeWidth units,
+            // so it scales with the border like CSS). FlatCap keeps the dots from fusing.
+            strokeStyle: r.borderStyle === "dotted" || r.borderStyle === "dashed" ? ShapePath.DashLine : ShapePath.SolidLine
+            dashPattern: r.borderStyle === "dotted" ? [1, 2] : [4, 2]
+            capStyle: ShapePath.FlatCap
             fillColor: "transparent"
             startX: r.cr0; startY: 0
             PathLine { x: Math.max(r.cr0, r.width - r.cr1); y: 0 }
@@ -855,6 +861,13 @@ static bool needsShape(const QVariantMap &style)
     }
     if (str("border-radius").contains(QLatin1Char('%')))
         return true; // %-radii resolve against geometry in the shell
+    // dotted/dashed borders are a dashed Shape stroke — Rectangle only draws solid.
+    const QString bs = str("border-style");
+    if (!bs.isEmpty() && bs != QLatin1String("solid"))
+        return true;
+    const QString bsh = str("border");
+    if (bsh.contains(QLatin1String("dotted")) || bsh.contains(QLatin1String("dashed")))
+        return true;
     return false;
 }
 
@@ -960,13 +973,21 @@ void CssRect::recompute()
         borderWidth = borderShorthand.value(QStringLiteral("width")).toReal();
     else
         borderWidth = m_defaultBorderWidth;
+    // border-style: solid (default) paints as before; dotted/dashed become a dashed Shape
+    // stroke; none/hidden hide the border; anything else (double/groove/…) falls back to solid.
+    QString borderStyle;
+    if (has("border-style"))
+        borderStyle = str("border-style").trimmed().toLower();
+    else
+        borderStyle = borderShorthand.value(QStringLiteral("style"), QStringLiteral("solid")).toString();
 
     const bool hasSideBorder = m_theme ? m_theme->hasSideBorder(m_style) : false;
     const QVariantMap topB = m_theme ? m_theme->borderSide(m_style, QStringLiteral("top"), 0, borderColor) : QVariantMap();
     const QVariantMap rightB = m_theme ? m_theme->borderSide(m_style, QStringLiteral("right"), 0, borderColor) : QVariantMap();
     const QVariantMap bottomB = m_theme ? m_theme->borderSide(m_style, QStringLiteral("bottom"), 0, borderColor) : QVariantMap();
     const QVariantMap leftB = m_theme ? m_theme->borderSide(m_style, QStringLiteral("left"), 0, borderColor) : QVariantMap();
-    const bool borderVisible = !hasSideBorder && borderWidth > 0 && borderColor.alphaF() > 0;
+    const bool borderVisible = !hasSideBorder && borderWidth > 0 && borderColor.alphaF() > 0
+        && borderStyle != QLatin1String("none") && borderStyle != QLatin1String("hidden");
 
     // --- box-shadow ---
     QVariantList shadowList;
@@ -1018,6 +1039,7 @@ void CssRect::recompute()
     in.insert(QStringLiteral("borderVisible"), QVariant::fromValue(borderVisible));
     in.insert(QStringLiteral("borderColorOpaque"), QVariant::fromValue(opaque(borderColor)));
     in.insert(QStringLiteral("borderWidth"), QVariant::fromValue(borderWidth));
+    in.insert(QStringLiteral("borderStyle"), QVariant::fromValue(borderStyle));
     in.insert(QStringLiteral("borderAlpha"), QVariant::fromValue(borderColor.alphaF()));
     in.insert(QStringLiteral("hasSideBorder"), QVariant::fromValue(hasSideBorder));
     in.insert(QStringLiteral("topB"), QVariant::fromValue(topB));

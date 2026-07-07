@@ -867,6 +867,75 @@ void QmlCssTests::cssRectCppComposesShapeAndContains()
     QVERIFY2(std::abs(kid->width() - 40.0) < 0.5, qPrintable(QString::number(kid->width())));
 }
 
+// border-style: dotted/dashed — the uniform border ring becomes a DASHED Shape stroke
+// (strokeStyle DashLine, dashPattern in strokeWidth units), and non-solid styles force the
+// Shape path of the Rectangle policy. none hides the border entirely.
+void QmlCssTests::cssRectBorderStyleDottedStrokes()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(
+        "#ring { border: 1px dotted #333333; border-radius: 3px; }"
+        "#off  { border: 2px solid #333333; border-style: none; }"));
+
+    CssLayoutEngine layout(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layout);
+
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+
+        Item {
+            CssRect { objectName: "ring"; cssId: "ring"; width: 60; height: 30 }
+            CssRect { objectName: "off";  cssId: "off";  width: 60; height: 30 }
+        }
+    )", QUrl());
+
+    QScopedPointer<QObject> object(component.create());
+    QVERIFY2(object, qPrintable(component.errorString()));
+    auto *root = qobject_cast<QQuickItem *>(object.data());
+    QVERIFY(root);
+
+    auto renderRootOf = [](QQuickItem *box) -> QQuickItem * {
+        for (QQuickItem *k : box->childItems())
+            if (k->property("radiusStr").isValid())
+                return k;
+        return nullptr;
+    };
+
+    auto *ring = root->findChild<QQuickItem *>(QStringLiteral("ring"));
+    QVERIFY(ring);
+    QQuickItem *shell = renderRootOf(ring);
+    QVERIFY2(shell, "dotted border did not compose the Shape shell (needsShape policy)");
+    QCOMPARE(shell->property("borderStyle").toString(), QStringLiteral("dotted"));
+    QVERIFY(shell->property("borderVisible").toBool());
+
+    // The stroke is genuinely dashed: a ShapePath with strokeStyle DashLine and the dot pattern.
+    bool dashed = false;
+    for (QObject *d : shell->findChildren<QObject *>()) {
+        if (!QByteArray(d->metaObject()->className()).contains("QQuickShapePath"))
+            continue;
+        if (d->property("strokeColor").value<QColor>() != QColor(QStringLiteral("#333333")))
+            continue; // fill/shadow paths
+        QCOMPARE(d->property("strokeStyle").toInt(), 2); // ShapePath.DashLine (Qt::PenStyle)
+        const QVariantList pat = d->property("dashPattern").toList();
+        QCOMPARE(pat.size(), 2);
+        QCOMPARE(pat.at(0).toReal(), 1.0);
+        QCOMPARE(pat.at(1).toReal(), 2.0);
+        dashed = true;
+    }
+    QVERIFY2(dashed, "no dashed border ShapePath found");
+
+    // border-style: none kills the ring even with width+color set.
+    auto *off = root->findChild<QQuickItem *>(QStringLiteral("off"));
+    QVERIFY(off);
+    QQuickItem *offShell = renderRootOf(off);
+    if (offShell)
+        QVERIFY(!offShell->property("borderVisible").toBool());
+}
+
 // --- C++ CssHr (composition translation of CssHr.qml) ----------------------------------------
 //
 // Proves the C++ type registers via the classic API, instantiates from QML as `qmlcss.CssHr`,

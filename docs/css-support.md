@@ -140,6 +140,7 @@ radial-gradient(ellipse at 30% 70%, #a, #b)
 | `border: <width> <style> <color>` | Shorthand; any subset/order; parsed by `parseBorder()` |
 | `border-color: <color>` | Overrides shorthand colour |
 | `border-width: <length>` | Overrides shorthand width |
+| `border-style: solid \| dotted \| dashed \| none \| hidden` | dotted/dashed = dashed Shape stroke (pattern scales with the width); none/hidden hide; other keywords fall back to solid. Uniform border only — per-side bars stay solid |
 | `border-radius: <length>` | 1–4 values (CSS shorthand); percentage; true `PathArc` quarter-ellipse arcs |
 
 Borders take box-model space, like the web: a container's content holder is the **padding box**
