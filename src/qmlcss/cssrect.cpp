@@ -474,10 +474,19 @@ void CssRect::watchForeignChildren()
         // A Css child carries `style`/`cssPrimitive` and self-notifies its parent on implicit change;
         // a foreign child (escape-hatch .qml — plain Item) has neither, so watch it here. Pointer-to-
         // member + UniqueConnection makes this idempotent across the many childrenChanged bursts.
-        if (k->property("style").isValid() || k->property("cssPrimitive").isValid())
-            continue;
-        connect(k, &QQuickItem::implicitWidthChanged, this, &CssRect::requestRelayout, Qt::UniqueConnection);
-        connect(k, &QQuickItem::implicitHeightChanged, this, &CssRect::requestRelayout, Qt::UniqueConnection);
+        const bool isCss = k->property("style").isValid() || k->property("cssPrimitive").isValid();
+        if (!isCss) {
+            connect(k, &QQuickItem::implicitWidthChanged, this, &CssRect::requestRelayout, Qt::UniqueConnection);
+            connect(k, &QQuickItem::implicitHeightChanged, this, &CssRect::requestRelayout, Qt::UniqueConnection);
+        }
+        // When THIS box scrolls, any child that GROWS must extend the scroll content. childrenRectChanged
+        // is unreliable for late/dynamic growth (offscreen it never grows, so tests pass; on a real GPU
+        // surface content does grow and the last card fell past the reachable extent — owner's report),
+        // so tie every child's height directly to the resync.
+        if (m_flickable) {
+            connect(k, &QQuickItem::heightChanged, this, &CssRect::syncScrollContent, Qt::UniqueConnection);
+            connect(k, &QQuickItem::implicitHeightChanged, this, &CssRect::syncScrollContent, Qt::UniqueConnection);
+        }
     }
 }
 
@@ -1184,6 +1193,7 @@ void CssRect::ensureScrollable()
         return;
     // Content extent follows the laid-out children.
     connect(m_contentHolder, &QQuickItem::childrenRectChanged, this, &CssRect::syncScrollContent);
+    watchForeignChildren(); // now scrollable: tie existing children's growth to the resync
     layoutChildren();
 }
 

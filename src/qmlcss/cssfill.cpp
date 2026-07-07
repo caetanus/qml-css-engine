@@ -152,10 +152,17 @@ void CssFill::watchForeignChildren()
     for (QQuickItem *k : kids) {
         if (!k)
             continue;
-        if (k->property("style").isValid() || k->property("cssPrimitive").isValid())
-            continue;
-        connect(k, &QQuickItem::implicitWidthChanged, this, &CssFill::requestRelayout, Qt::UniqueConnection);
-        connect(k, &QQuickItem::implicitHeightChanged, this, &CssFill::requestRelayout, Qt::UniqueConnection);
+        const bool isCss = k->property("style").isValid() || k->property("cssPrimitive").isValid();
+        if (!isCss) {
+            connect(k, &QQuickItem::implicitWidthChanged, this, &CssFill::requestRelayout, Qt::UniqueConnection);
+            connect(k, &QQuickItem::implicitHeightChanged, this, &CssFill::requestRelayout, Qt::UniqueConnection);
+        }
+        // When scrollable, tie any child's growth to the scroll resync (childrenRectChanged is
+        // unreliable for late/dynamic growth — see CssRect::watchForeignChildren).
+        if (m_flickable) {
+            connect(k, &QQuickItem::heightChanged, this, &CssFill::syncScrollContent, Qt::UniqueConnection);
+            connect(k, &QQuickItem::implicitHeightChanged, this, &CssFill::syncScrollContent, Qt::UniqueConnection);
+        }
     }
 }
 
@@ -167,6 +174,7 @@ void CssFill::ensureScrollable()
     if (!m_flickable)
         return;
     connect(m_contentHolder, &QQuickItem::childrenRectChanged, this, &CssFill::syncScrollContent);
+    watchForeignChildren(); // now scrollable: tie existing children's growth to the resync
     layoutChildren();
 }
 
