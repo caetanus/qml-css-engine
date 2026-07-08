@@ -170,7 +170,13 @@ private:
     void mirrorImplicit();
     // Re-style through the reverse-slot engine path when identity changes (QML onCss*Changed).
     void maybeLoadCss();
+
+protected:
+    // Protected so C++ widget subclasses (the widgets-to-cpp port) can chain their own
+    // item-change handling through the scene-attach resolve heal.
     void itemChange(ItemChange change, const ItemChangeData &data) override;
+
+private:
     // The CSS-inheriting ancestor (QML `_cssParent`): a directly-styled parent, else parent.parent.
     QQuickItem *cssParentItem() const;
     // Own style value, else the ancestor's same inherited getter (the QML inherited* chain).

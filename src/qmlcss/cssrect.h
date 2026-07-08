@@ -232,7 +232,13 @@ private:
     void applyTransform();
     // Re-style through the reverse-slot engine path when identity changes (QML onCss*Changed).
     void maybeLoadCss();
+
+protected:
+    // Protected so C++ widget subclasses (the widgets-to-cpp port) can chain their own
+    // item-change handling through the scene-attach resolve heal.
     void itemChange(ItemChange change, const ItemChangeData &data) override;
+
+private:
     // The CSS-inheriting ancestor (containing CssRect at parent.parent), or null.
     CssRect *cssParent() const;
 

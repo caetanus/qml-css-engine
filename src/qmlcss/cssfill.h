@@ -161,7 +161,13 @@ private:
     void updateBorderInsets();
     // Re-style through the reverse-slot engine path when identity changes (QML onCss*Changed).
     void maybeLoadCss();
+
+protected:
+    // Protected so C++ widget subclasses (the widgets-to-cpp port) can chain their own
+    // item-change handling through the scene-attach resolve heal.
     void itemChange(ItemChange change, const ItemChangeData &data) override;
+
+private:
     // overflow(-y): auto/scroll — compose the shared desktop-scroll Flickable (see cssscroll.h) and
     // move the content holder into it, exactly like CssRect. Both container types depend on the same
     // scroll abstraction rather than duplicating it.
