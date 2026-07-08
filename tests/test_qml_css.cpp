@@ -10,6 +10,7 @@
 #include <QQmlContext>
 #include <QQmlEngine>
 #include <QQuickItem>
+#include <QQuickWindow>
 #include <QSignalSpy>
 #include <QTest>
 #include <QTextOption>
@@ -934,6 +935,43 @@ void QmlCssTests::cssRectBorderStyleDottedStrokes()
     QQuickItem *offShell = renderRootOf(off);
     if (offShell)
         QVERIFY(!offShell->property("borderVisible").toBool());
+}
+
+// Container-created delegates (a SplitView handle, incubated view subtrees) complete BEFORE
+// they are parented into the scene: the first resolve walks a truncated ancestor chain and
+// ancestor-scoped rules miss. The item re-resolves ONCE when it joins a window.
+void QmlCssTests::scenelessResolveHealsOnSceneAttach()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(".scope .kid { background: #123456; }"));
+    CssLayoutEngine layout(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layout);
+
+    // A detached element (no parent chain): the scoped rule cannot match yet.
+    QQmlComponent kidComp(&engine);
+    kidComp.setData("import QtQuick\nimport qmlcss\nCssRect { cssPrimitive: \"div\"; cssClass: [\"kid\"] }", QUrl());
+    QScopedPointer<QObject> kidObj(kidComp.create());
+    QVERIFY2(kidObj, qPrintable(kidComp.errorString()));
+    auto *kid = qobject_cast<QQuickItem *>(kidObj.data());
+    QVERIFY(kid);
+    QVERIFY(!kid->property("style").toMap().contains(QStringLiteral("background")));
+
+    // A window hosting a .scope ancestor; parenting the kid attaches it to the scene.
+    QQmlComponent scopeComp(&engine);
+    scopeComp.setData("import QtQuick\nimport qmlcss\nCssRect { cssPrimitive: \"div\"; cssClass: [\"scope\"] }", QUrl());
+    QScopedPointer<QObject> scopeObj(scopeComp.create());
+    QVERIFY2(scopeObj, qPrintable(scopeComp.errorString()));
+    auto *scope = qobject_cast<QQuickItem *>(scopeObj.data());
+    QVERIFY(scope);
+
+    QQuickWindow window;
+    scope->setParentItem(window.contentItem());
+    kid->setParentItem(scope);
+
+    QTRY_COMPARE(kid->property("style").toMap().value(QStringLiteral("background")).toString(),
+                 QStringLiteral("#123456"));
 }
 
 // --- C++ CssHr (composition translation of CssHr.qml) ----------------------------------------

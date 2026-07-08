@@ -401,8 +401,13 @@ void CssFill::requestRelayout()
 
 void CssFill::maybeLoadCss()
 {
-    if (m_theme && hasCssIdentity())
+    if (m_theme && hasCssIdentity()) {
         m_theme->loadCss(this);
+        // A truncated resolve: container-created delegates (a SplitView handle, incubated rows)
+        // complete BEFORE they are parented, so ancestor-scoped rules miss. Remembered here and
+        // healed by itemChange once the item joins a window.
+        m_scenelessResolve = window() == nullptr;
+    }
 }
 
 void CssFill::recompute()
@@ -564,8 +569,10 @@ void CssFill::componentComplete()
     recompute();
 
     // QML Component.onCompleted.
-    if (m_theme && hasCssIdentity())
+    if (m_theme && hasCssIdentity()) {
         m_theme->loadCss(this);
+        m_scenelessResolve = window() == nullptr; // healed by itemChange on scene attach
+    }
     requestRelayout();
     if (m_layout)
         m_layout->notifyParentLayout(this);
@@ -580,3 +587,14 @@ void CssFill::geometryChange(const QRectF &newGeometry, const QRectF &oldGeometr
 }
 
 } // namespace QmlCss
+
+void QmlCss::CssFill::itemChange(QQuickItem::ItemChange change, const QQuickItem::ItemChangeData &data)
+{
+    QQuickItem::itemChange(change, data);
+    // Heal the truncated-ancestor resolve (see maybeLoadCss): one re-resolve when the item
+    // actually joins a window — zero cost for elements built inside the live scene.
+    if (change == ItemSceneChange && data.window && m_scenelessResolve && isComponentComplete()) {
+        m_scenelessResolve = false;
+        maybeLoadCss();
+    }
+}

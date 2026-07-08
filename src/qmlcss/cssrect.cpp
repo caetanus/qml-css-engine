@@ -817,8 +817,13 @@ void CssRect::requestRelayout()
 
 void CssRect::maybeLoadCss()
 {
-    if (m_theme && hasCssIdentity())
+    if (m_theme && hasCssIdentity()) {
         m_theme->loadCss(this);
+        // A truncated resolve: container-created delegates (a SplitView handle, incubated rows)
+        // complete BEFORE they are parented, so ancestor-scoped rules miss. Remembered here and
+        // healed by itemChange once the item joins a window.
+        m_scenelessResolve = window() == nullptr;
+    }
 }
 
 // Does the resolved style paint anything? Only then is the render shell worth composing.
@@ -1272,8 +1277,10 @@ void CssRect::componentComplete()
     // SINGLE-SHOT mount: resolve + apply the style BEFORE the render subtree exists.
     // recompute() no-ops while m_render is null, so the shell's very first evaluation
     // already reads the FINAL values — one pass, no default-then-restyle double work.
-    if (m_theme && hasCssIdentity())
+    if (m_theme && hasCssIdentity()) {
         m_theme->loadCss(this);
+        m_scenelessResolve = window() == nullptr; // healed by itemChange on scene attach
+    }
 
     const qint64 tResolve = g_mountStats.enabled ? mountTimer.nsecsElapsed() : 0;
 
@@ -1561,3 +1568,14 @@ void CssRect::pushFastRect()
 }
 
 } // namespace QmlCss
+
+void QmlCss::CssRect::itemChange(QQuickItem::ItemChange change, const QQuickItem::ItemChangeData &data)
+{
+    QQuickItem::itemChange(change, data);
+    // Heal the truncated-ancestor resolve (see maybeLoadCss): one re-resolve when the item
+    // actually joins a window — zero cost for elements built inside the live scene.
+    if (change == ItemSceneChange && data.window && m_scenelessResolve && isComponentComplete()) {
+        m_scenelessResolve = false;
+        maybeLoadCss();
+    }
+}

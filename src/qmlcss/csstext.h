@@ -170,6 +170,7 @@ private:
     void mirrorImplicit();
     // Re-style through the reverse-slot engine path when identity changes (QML onCss*Changed).
     void maybeLoadCss();
+    void itemChange(ItemChange change, const ItemChangeData &data) override;
     // The CSS-inheriting ancestor (QML `_cssParent`): a directly-styled parent, else parent.parent.
     QQuickItem *cssParentItem() const;
     // Own style value, else the ancestor's same inherited getter (the QML inherited* chain).
@@ -182,6 +183,7 @@ private:
     QString m_cssPrimitive = QStringLiteral("text");
     QString m_cssPart;
     QVariantMap m_style;
+    bool m_scenelessResolve = false; // last resolve ran without a window (truncated ancestors)
     QString m_text;
     bool m_styledText = false;
 

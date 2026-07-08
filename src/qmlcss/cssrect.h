@@ -232,6 +232,7 @@ private:
     void applyTransform();
     // Re-style through the reverse-slot engine path when identity changes (QML onCss*Changed).
     void maybeLoadCss();
+    void itemChange(ItemChange change, const ItemChangeData &data) override;
     // The CSS-inheriting ancestor (containing CssRect at parent.parent), or null.
     CssRect *cssParent() const;
 
@@ -242,6 +243,7 @@ private:
     QString m_cssPrimitive = QStringLiteral("rect");
     QString m_cssPart;
     QVariantMap m_style;
+    bool m_scenelessResolve = false; // last resolve ran without a window (truncated ancestors)
     // Resolved border widths [t,r,b,l] — cached at style-set time so layoutChildren (per-resize
     // hot path) never parses style strings. The content holder is inset by these (padding box).
     QVector<double> m_borderInsets{0.0, 0.0, 0.0, 0.0};

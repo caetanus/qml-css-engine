@@ -161,6 +161,7 @@ private:
     void updateBorderInsets();
     // Re-style through the reverse-slot engine path when identity changes (QML onCss*Changed).
     void maybeLoadCss();
+    void itemChange(ItemChange change, const ItemChangeData &data) override;
     // overflow(-y): auto/scroll — compose the shared desktop-scroll Flickable (see cssscroll.h) and
     // move the content holder into it, exactly like CssRect. Both container types depend on the same
     // scroll abstraction rather than duplicating it.
@@ -177,6 +178,7 @@ private:
     QString m_cssPrimitive = QStringLiteral("rect");
     QString m_cssPart;
     QVariantMap m_style;
+    bool m_scenelessResolve = false; // last resolve ran without a window (truncated ancestors)
     // Resolved border widths [t,r,b,l] — cached at style-set time so layoutChildren (per-resize
     // hot path) never parses style strings. The content holder is inset by these (padding box).
     QVector<double> m_borderInsets{0.0, 0.0, 0.0, 0.0};

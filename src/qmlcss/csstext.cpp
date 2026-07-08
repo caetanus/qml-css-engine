@@ -407,8 +407,13 @@ void CssText::mirrorImplicit()
 void CssText::maybeLoadCss()
 {
     // QML: if (cssTheme && hasCssIdentity()) cssTheme.loadCss(root)
-    if (m_theme && hasCssIdentity())
+    if (m_theme && hasCssIdentity()) {
         m_theme->loadCss(this);
+        // A truncated resolve: container-created delegates (a SplitView handle, incubated rows)
+        // complete BEFORE they are parented, so ancestor-scoped rules miss. Remembered here and
+        // healed by itemChange once the item joins a window.
+        m_scenelessResolve = window() == nullptr;
+    }
 }
 
 void CssText::componentComplete()
@@ -422,8 +427,10 @@ void CssText::componentComplete()
 
     // SINGLE-SHOT mount: resolve + set the style before the Text exists (the apply helpers
     // no-op on a null label); the composed Text's first configuration is already final.
-    if (m_theme && hasCssIdentity())
+    if (m_theme && hasCssIdentity()) {
         m_theme->loadCss(this);
+        m_scenelessResolve = window() == nullptr; // healed by itemChange on scene attach
+    }
 
     if (QQmlEngine *eng = qmlEngine(this)) {
         // The REAL QtQuick Text, via the Qt type-system (we forward everything onto it).
@@ -573,3 +580,14 @@ void CssText::onAncestorInheritedChanged()
 }
 
 } // namespace QmlCss
+
+void QmlCss::CssText::itemChange(QQuickItem::ItemChange change, const QQuickItem::ItemChangeData &data)
+{
+    QQuickItem::itemChange(change, data);
+    // Heal the truncated-ancestor resolve (see maybeLoadCss): one re-resolve when the item
+    // actually joins a window — zero cost for elements built inside the live scene.
+    if (change == ItemSceneChange && data.window && m_scenelessResolve && isComponentComplete()) {
+        m_scenelessResolve = false;
+        maybeLoadCss();
+    }
+}
