@@ -156,6 +156,16 @@ void CssText::setText(const QString &v)
     emit textChanged();
 }
 
+void CssText::setStyledText(bool v)
+{
+    if (m_styledText == v)
+        return;
+    m_styledText = v;
+    if (m_label)
+        m_label->setProperty("textFormat", m_styledText ? 4 : 0); // Text.StyledText : PlainText
+    emit styledTextChanged();
+}
+
 void CssText::setDefaultColor(const QColor &v)
 {
     if (m_defaultColor == v)
@@ -265,8 +275,9 @@ void CssText::applyToText()
     const qreal fallbackPx = pointSize * 96.0 / 72.0;
     t->setProperty("lineHeight", m_theme ? m_theme->parseLineHeight(lh, fallbackPx) : fallbackPx);
 
-    // Transpiled JSX text is literal — never rich text.
-    t->setProperty("textFormat", 0); // Text.PlainText
+    // Transpiled JSX text is literal — PlainText unless the widget opted into StyledText
+    // (menu mnemonics underline via <u>).
+    t->setProperty("textFormat", m_styledText ? 4 : 0); // Text.StyledText : Text.PlainText
     t->setProperty("verticalAlignment", static_cast<int>(Qt::AlignVCenter));
 
     // padding (QML boxSideLength side order: left=3, right=1, top=0, bottom=2).

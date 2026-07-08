@@ -63,6 +63,9 @@ class CssText : public QQuickItem {
 
     // The label content (QML: property alias text: root.text — the Text's own text).
     Q_PROPERTY(QString text READ text WRITE setText NOTIFY textChanged)
+    // Opt-in Text.StyledText for the tiny HTML subset (<u>/<b>/<i>) — desktop affordances like
+    // menu mnemonics. Default stays PlainText: transpiled JSX text is literal.
+    Q_PROPERTY(bool styledText READ styledText WRITE setStyledText NOTIFY styledTextChanged)
 
     // Fallbacks when the theme leaves the label unstyled (the QML default* props).
     Q_PROPERTY(QColor defaultColor READ defaultColor WRITE setDefaultColor NOTIFY defaultColorChanged)
@@ -108,6 +111,9 @@ public:
     QString text() const { return m_text; }
     void setText(const QString &v);
 
+    bool styledText() const { return m_styledText; }
+    void setStyledText(bool v);
+
     QColor defaultColor() const { return m_defaultColor; }
     void setDefaultColor(const QColor &v);
     QString defaultFontFamily() const { return m_defaultFontFamily; }
@@ -134,6 +140,7 @@ signals:
     void styleChanged();
     void hasCssIdentityChanged();
     void textChanged();
+    void styledTextChanged();
     void defaultColorChanged();
     void defaultFontFamilyChanged();
     void defaultFontSizeChanged();
@@ -176,6 +183,7 @@ private:
     QString m_cssPart;
     QVariantMap m_style;
     QString m_text;
+    bool m_styledText = false;
 
     QColor m_defaultColor = QColor(Qt::black);
     QString m_defaultFontFamily = QStringLiteral("Sans Serif");
