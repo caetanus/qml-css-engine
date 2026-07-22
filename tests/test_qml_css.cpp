@@ -2398,3 +2398,59 @@ void QmlCssTests::rectanglePolicyFastPathAndSwap()
 }
 
 QTEST_MAIN(QmlCssTests)
+
+void QmlCssTests::layoutReplacedForeignBoxKeepsIntrinsicSize()
+{
+    CssTheme theme;
+    CssLayoutEngine layoutEngine(&theme);
+
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+
+    // Default block container (align-items stretch): "wrap" holds only a foreign Item with a
+    // 140×140 intrinsic — it must keep 140×140, NOT stretch to the 500px cross axis (the
+    // escape-hatch / qml-module wrap: a distorted gauge was the reported bug). "wide" holds an
+    // 800×400 foreign — capped to the container width with the ratio preserved → 500×250.
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+
+        CssRect {
+            cssPrimitive: ""
+            width: 500; height: 600
+
+            CssRect {
+                objectName: "wrap"; cssPrimitive: ""
+                Item { implicitWidth: 140; implicitHeight: 140 }
+            }
+            CssRect {
+                objectName: "wide"; cssPrimitive: ""
+                Item { implicitWidth: 800; implicitHeight: 400 }
+            }
+            CssRect { objectName: "plain"; cssPrimitive: ""; style: ({ "height": "20px" }) }
+        }
+    )", QUrl());
+
+    QScopedPointer<QObject> object(component.create());
+    QVERIFY2(object, qPrintable(component.errorString()));
+    auto *root = qobject_cast<QQuickItem *>(object.data());
+    QVERIFY(root);
+
+    auto *wrap = root->findChild<QQuickItem *>(QStringLiteral("wrap"));
+    auto *wide = root->findChild<QQuickItem *>(QStringLiteral("wide"));
+    auto *plain = root->findChild<QQuickItem *>(QStringLiteral("plain"));
+    QVERIFY(wrap && wide && plain);
+
+    layoutEngine.layout(root, contentHolderOf(wrap));
+
+    // Intrinsic, unstretched.
+    QVERIFY2(std::abs(wrap->width() - 140.0) < 0.5, qPrintable(QString::number(wrap->width())));
+    QVERIFY2(std::abs(wrap->height() - 140.0) < 0.5, qPrintable(QString::number(wrap->height())));
+    // Capped at the container, ratio kept.
+    QVERIFY2(std::abs(wide->width() - 500.0) < 0.5, qPrintable(QString::number(wide->width())));
+    QVERIFY2(std::abs(wide->height() - 250.0) < 0.5, qPrintable(QString::number(wide->height())));
+    // An ORDINARY box (no foreign content) still stretches to the container width.
+    QVERIFY2(std::abs(plain->width() - 500.0) < 0.5, qPrintable(QString::number(plain->width())));
+}

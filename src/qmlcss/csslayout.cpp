@@ -1,7 +1,8 @@
 #include "csslayout.h"
 
-#include "csstheme.h"
+#include "cssfill.h"
 #include "cssrect.h"
+#include "csstheme.h"
 
 #include <QMetaMethod>
 #include <QQuickItem>
@@ -57,9 +58,37 @@ double jsParseFloat(const QString &s)
     return ok ? v : std::nan("");
 }
 
+// A REPLACED-like box: a Css container whose content is ONLY foreign (non-Css) items — the
+// escape-hatch / qml-module wrap. The web never cross-stretches a replaced element: it keeps the
+// intrinsic size, capped at the container with the ratio preserved (max-width:100% behaviour).
+// Returns the foreign child carrying the intrinsic size, or null when the box is ordinary.
+static QQuickItem *replacedForeignContent(QQuickItem *box);
+
 bool isLayoutChild(QQuickItem *k)
 {
     return k && (k->property("style").isValid() || k->property("cssPrimitive").isValid());
+}
+
+static QQuickItem *replacedForeignContent(QQuickItem *box)
+{
+    QQuickItem *holder = nullptr;
+    if (auto *r = qobject_cast<CssRect *>(box))
+        holder = r->layoutContentHolder();
+    else if (auto *f = qobject_cast<CssFill *>(box))
+        holder = f->layoutContentHolder();
+    if (!holder)
+        return nullptr;
+    QQuickItem *foreignChild = nullptr;
+    const auto kids = holder->childItems();
+    for (QQuickItem *k : kids) {
+        if (!k->isVisible())
+            continue;
+        if (isLayoutChild(k))
+            return nullptr; // real Css content — an ordinary container
+        if (k->implicitWidth() > 0 && k->implicitHeight() > 0)
+            foreignChild = k;
+    }
+    return foreignChild;
 }
 
 bool isTextPrimitive(QQuickItem *k)
@@ -641,6 +670,26 @@ QPair<double, double> CssLayoutEngine::layoutFlex(const QList<QQuickItem *> &flo
         }
         if (std::isnan(w)) w = flow[i]->implicitWidth();
         if (std::isnan(h)) h = flow[i]->implicitHeight();
+        // Replaced-foreign inference (owner 2026-07-22: the wrap "precisa inferir um css-provável
+        // pela janela pai"): with NO author sizing at all, a box holding only a foreign component
+        // takes the component's intrinsic size, shrunk RATIO-PRESERVED to fit the container width
+        // (the web's replaced-element + max-width:100% behaviour) — and is exempted from the
+        // cross-axis stretch below. Guarded by the cheap checks first; the holder walk is tiny.
+        bool replaced = false;
+        if (!wExplicit && !hExplicit && std::isnan(ar)) {
+            if (QQuickItem *rep = replacedForeignContent(flow[i])) {
+                double iw = rep->implicitWidth(), ih = rep->implicitHeight();
+                const double maxW = cw - mar[3] - mar[1];
+                if (!std::isnan(cw) && cw > 0 && iw > maxW && maxW > 0) {
+                    const double k = maxW / iw;
+                    iw *= k;
+                    ih *= k;
+                }
+                w = iw;
+                h = ih;
+                replaced = true;
+            }
+        }
         // Clamp the natural size by min-/max-<axis> so content-sizing (and the container's implicit
         // size) respects a max-width — a paragraph with max-width contributes its clamped width.
         w = clampSize(ks, QStringLiteral("width"), w, cw);
@@ -651,8 +700,8 @@ QPair<double, double> CssLayoutEngine::layoutFlex(const QList<QQuickItem *> &flo
         // flex-basis sets the base main-axis size; flex-grow/shrink distribute free space from here.
         const double basis = sizeOf(ks, QStringLiteral("flex-basis"), mainAvail);
         if (!std::isnan(basis)) mains[i] = basis;
-        cfixed[i] = horizontal ? (hExplicit || (!std::isnan(ar) && wExplicit))
-                               : (wExplicit || (!std::isnan(ar) && hExplicit));
+        cfixed[i] = replaced || (horizontal ? (hExplicit || (!std::isnan(ar) && wExplicit))
+                                            : (wExplicit || (!std::isnan(ar) && hExplicit)));
 
         double g = 0;
         const QString fg = styleStr(ks, "flex-grow");

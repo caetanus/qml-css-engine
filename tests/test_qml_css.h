@@ -121,4 +121,8 @@ private slots:
     // Shape x Rectangle policy: rectangle-safe styles compose a cheap QQuickRectangle; a
     // reapply that needs Shape features swaps the composition, and back.
     void rectanglePolicyFastPathAndSwap();
+
+    // A box holding ONLY a foreign (non-Css) component behaves like a web REPLACED element:
+    // intrinsic size, no cross-axis stretch, capped at the container with the ratio kept.
+    void layoutReplacedForeignBoxKeepsIntrinsicSize();
 };

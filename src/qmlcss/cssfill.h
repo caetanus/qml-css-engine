@@ -76,6 +76,10 @@ class CssFill : public QQuickItem {
 public:
     explicit CssFill(QQuickItem *parent = nullptr);
 
+    // Engine-internal: the layout pass inspects a CHILD box's content to classify it (e.g. the
+    // replaced-foreign inference) — direct pointer, no list-property indirection in the hot path.
+    QQuickItem *layoutContentHolder() const { return m_contentHolder; }
+
     QString cssId() const { return m_cssId; }
     void setCssId(const QString &v);
 
