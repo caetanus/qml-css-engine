@@ -97,8 +97,9 @@ pkgconfig.generate(
   requires: ['Qt6Core', 'Qt6Gui', 'Qt6Qml', 'Qt6Quick', 'Qt6Network'],
 )
 
-# Tests run only when this is built on its own (not when consumed as a subproject).
-if not meson.is_subproject()
+# Tests build when standalone, or when a parent opts in via `-Dtests=enabled` (the app does this so
+# `meson test` from the app runs the engine suites too); `-Dtests=disabled` forces them off.
+if get_option('tests').enabled() or (not meson.is_subproject() and not get_option('tests').disabled())
   qt6_test_dep = dependency(
     'qt6',
     modules: ['Core', 'Gui', 'Qml', 'Quick', 'Test'],

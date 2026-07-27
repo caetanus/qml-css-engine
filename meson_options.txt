@@ -1,0 +1,6 @@
+option(
+  'tests',
+  type: 'feature',
+  value: 'auto',
+  description: 'Build and register the engine test suites (css/qml-css/layout). Auto: on when built standalone, off when consumed as a subproject unless a parent enables it.',
+)
