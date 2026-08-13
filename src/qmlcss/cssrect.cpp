@@ -129,6 +129,15 @@ Item {
     readonly property real borderWidth: cssIn.borderWidth !== undefined ? cssIn.borderWidth : 0
     readonly property string borderStyle: cssIn.borderStyle !== undefined ? cssIn.borderStyle : "solid"
     readonly property real borderAlpha: cssIn.borderAlpha !== undefined ? cssIn.borderAlpha : 1
+    // outline: drawn OUTSIDE the border box and NOT part of the layout (CSS semantics) — the
+    // keyboard focus ring lives here, so a control can carry its own `:focus { outline }` instead
+    // of an app-level overlay tracking the focused item.
+    readonly property bool outlineVisible: cssIn.outlineVisible !== undefined ? cssIn.outlineVisible : false
+    readonly property color outlineColor: cssIn.outlineColor !== undefined ? cssIn.outlineColor : "transparent"
+    readonly property real outlineWidth: cssIn.outlineWidth !== undefined ? cssIn.outlineWidth : 0
+    readonly property string outlineStyle: cssIn.outlineStyle !== undefined ? cssIn.outlineStyle : "solid"
+    readonly property real outlineAlpha: cssIn.outlineAlpha !== undefined ? cssIn.outlineAlpha : 1
+    readonly property real outlineOffset: cssIn.outlineOffset !== undefined ? cssIn.outlineOffset : 0
     readonly property bool hasSideBorder: cssIn.hasSideBorder !== undefined ? cssIn.hasSideBorder : false
     readonly property var topB: cssIn.topB !== undefined ? cssIn.topB : ({})
     readonly property var rightB: cssIn.rightB !== undefined ? cssIn.rightB : ({})
@@ -356,6 +365,49 @@ Item {
             PathArc { x: 0; y: r.height - r.cr3; radiusX: r.cr3; radiusY: r.cr3; direction: PathArc.Clockwise }
             PathLine { x: 0; y: r.cr0 }
             PathArc { x: r.cr0; y: 0; radiusX: r.cr0; radiusY: r.cr0; direction: PathArc.Clockwise }
+        }
+        }
+    }
+
+    // --- outline: the border path INFLATED outward, drawn outside the box; lazy ----------
+    // CSS: the outline sits `outline-offset` px outside the border edge, does not take layout
+    // space, and never affects the box. The Shape is oversized by the inflate distance and
+    // negatively positioned, so the stroke lands outside our own bounds (no clip on the shell).
+    Loader {
+        active: r.outlineVisible
+        // d = how far the stroke CENTRE sits outside the border edge.
+        readonly property real d: r.outlineOffset + r.outlineWidth / 2
+        x: -d; y: -d
+        width: r.width + 2 * d; height: r.height + 2 * d
+        sourceComponent: Shape {
+        id: ol
+        anchors.fill: parent
+        preferredRendererType: Shape.CurveRenderer
+        opacity: r.outlineAlpha
+        // Corner radii grow with the inflate distance (concentric rounding, as CSS does).
+        readonly property real dd: r.outlineOffset + r.outlineWidth / 2
+        readonly property real ow: r.width + 2 * dd
+        readonly property real oh: r.height + 2 * dd
+        readonly property real o0: r.cr0 > 0 ? r.cr0 + dd : 0
+        readonly property real o1: r.cr1 > 0 ? r.cr1 + dd : 0
+        readonly property real o2: r.cr2 > 0 ? r.cr2 + dd : 0
+        readonly property real o3: r.cr3 > 0 ? r.cr3 + dd : 0
+        ShapePath {
+            strokeColor: r.outlineColor
+            strokeWidth: r.outlineWidth
+            strokeStyle: r.outlineStyle === "dotted" || r.outlineStyle === "dashed" ? ShapePath.DashLine : ShapePath.SolidLine
+            dashPattern: r.outlineStyle === "dotted" ? [1, 2] : [4, 2]
+            capStyle: ShapePath.FlatCap
+            fillColor: "transparent"
+            startX: ol.o0; startY: 0
+            PathLine { x: Math.max(ol.o0, ol.ow - ol.o1); y: 0 }
+            PathArc { x: ol.ow; y: ol.o1; radiusX: ol.o1; radiusY: ol.o1; direction: PathArc.Clockwise }
+            PathLine { x: ol.ow; y: Math.max(ol.o1, ol.oh - ol.o2) }
+            PathArc { x: ol.ow - ol.o2; y: ol.oh; radiusX: ol.o2; radiusY: ol.o2; direction: PathArc.Clockwise }
+            PathLine { x: ol.o3; y: ol.oh }
+            PathArc { x: 0; y: ol.oh - ol.o3; radiusX: ol.o3; radiusY: ol.o3; direction: PathArc.Clockwise }
+            PathLine { x: 0; y: ol.o0 }
+            PathArc { x: ol.o0; y: 0; radiusX: ol.o0; radiusY: ol.o0; direction: PathArc.Clockwise }
         }
         }
     }
@@ -835,6 +887,8 @@ static bool stylePaints(const QVariantMap &style)
         "border", "border-color", "border-width",
         "border-top", "border-right", "border-bottom", "border-left",
         "box-shadow",
+        // outline paints outside the box (the focus ring) — it too demands the Shape shell.
+        "outline", "outline-color", "outline-width", "outline-style", "outline-offset",
     };
     for (const char *k : paintKeys) {
         if (!style.value(QLatin1String(k)).toString().isEmpty())
@@ -873,6 +927,11 @@ static bool needsShape(const QVariantMap &style)
     const QString bsh = str("border");
     if (bsh.contains(QLatin1String("dotted")) || bsh.contains(QLatin1String("dashed")))
         return true;
+    // outline paints OUTSIDE the box (the focus ring) — a Rectangle cannot draw it at all.
+    for (const char *k : { "outline", "outline-width", "outline-style", "outline-color" }) {
+        if (!str(k).isEmpty())
+            return true;
+    }
     return false;
 }
 
@@ -994,6 +1053,32 @@ void CssRect::recompute()
     const bool borderVisible = !hasSideBorder && borderWidth > 0 && borderColor.alphaF() > 0
         && borderStyle != QLatin1String("none") && borderStyle != QLatin1String("hidden");
 
+    // --- outline (drawn OUTSIDE the box, never part of the layout) ---
+    // Same grammar as `border` (shorthand `outline: 1px dotted #52616e` + longhands), plus
+    // `outline-offset`. This is what a control's own `:focus { outline: … }` rule paints — the
+    // native, per-control keyboard focus ring.
+    QVariantMap outlineShorthand;
+    if (m_theme && has("outline"))
+        outlineShorthand = m_theme->parseBorder(str("outline"));
+    QColor outlineColor;
+    if (has("outline-color") && m_theme)
+        outlineColor = m_theme->parseColor(str("outline-color"));
+    else if (outlineShorthand.contains(QStringLiteral("color")))
+        outlineColor = outlineShorthand.value(QStringLiteral("color")).value<QColor>();
+    qreal outlineWidth = 0;
+    if (has("outline-width"))
+        outlineWidth = parseLeadingFloat(str("outline-width"), 0);
+    else if (outlineShorthand.contains(QStringLiteral("width")))
+        outlineWidth = outlineShorthand.value(QStringLiteral("width")).toReal();
+    QString outlineStyle;
+    if (has("outline-style"))
+        outlineStyle = str("outline-style").trimmed().toLower();
+    else
+        outlineStyle = outlineShorthand.value(QStringLiteral("style"), QStringLiteral("solid")).toString();
+    const qreal outlineOffset = has("outline-offset") ? parseLeadingFloat(str("outline-offset"), 0) : 0;
+    const bool outlineVisible = outlineWidth > 0 && outlineColor.alphaF() > 0
+        && outlineStyle != QLatin1String("none") && outlineStyle != QLatin1String("hidden");
+
     // --- box-shadow ---
     QVariantList shadowList;
     if (m_theme && has("box-shadow"))
@@ -1046,6 +1131,12 @@ void CssRect::recompute()
     in.insert(QStringLiteral("borderWidth"), QVariant::fromValue(borderWidth));
     in.insert(QStringLiteral("borderStyle"), QVariant::fromValue(borderStyle));
     in.insert(QStringLiteral("borderAlpha"), QVariant::fromValue(borderColor.alphaF()));
+    in.insert(QStringLiteral("outlineVisible"), QVariant::fromValue(outlineVisible));
+    in.insert(QStringLiteral("outlineColor"), QVariant::fromValue(opaque(outlineColor)));
+    in.insert(QStringLiteral("outlineWidth"), QVariant::fromValue(outlineWidth));
+    in.insert(QStringLiteral("outlineStyle"), QVariant::fromValue(outlineStyle));
+    in.insert(QStringLiteral("outlineAlpha"), QVariant::fromValue(outlineColor.alphaF()));
+    in.insert(QStringLiteral("outlineOffset"), QVariant::fromValue(outlineOffset));
     in.insert(QStringLiteral("hasSideBorder"), QVariant::fromValue(hasSideBorder));
     in.insert(QStringLiteral("topB"), QVariant::fromValue(topB));
     in.insert(QStringLiteral("rightB"), QVariant::fromValue(rightB));
