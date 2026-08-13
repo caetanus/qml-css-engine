@@ -121,6 +121,12 @@ void CssTheme::applyCssTo(QObject *target) const
     // rule — the web hovers ANY element, not just interactive ones).
     if (target->property("cssEngineHover").toBool())
         classes << QStringLiteral("hover");
+    // `:focus` is a LIVE item state, not something an author sets: read it straight off the
+    // item's native activeFocus, exactly as `:hover` rides the composed HoverHandler above.
+    // Widgets therefore never have to hand-declare a "focus" cssState — every focusable box gets
+    // `:focus` (and the default focus ring) for free, including ones added later.
+    if (target->property("activeFocus").toBool() && !classes.contains(QStringLiteral("focus")))
+        classes << QStringLiteral("focus");
     const QString cssPart = target->property("cssPart").toString();
     // Type selectors (`button {}`) match this element's primitive.
     const QString cssPrimitive = target->property("cssPrimitive").toString();

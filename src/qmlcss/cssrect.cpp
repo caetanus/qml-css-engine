@@ -1391,6 +1391,13 @@ void CssRect::componentComplete()
         if (m_layout)
             m_layout->notifyParentLayout(this);
     });
+    // `:focus` is a live item state (see CssTheme: the class list reads activeFocus directly), so a
+    // focus change must re-run the cascade on this box — the same way a cssState change does. This
+    // is what gives EVERY focusable box its focus ring without the widget declaring anything.
+    connect(this, &QQuickItem::activeFocusChanged, this, [this]() {
+        emit cssStateChanged();
+        maybeLoadCss();
+    });
     // An ancestor's inherited text props re-propagate to us (CSS inheritance).
     if (QObject *anc = cssInheritingAncestor(this))
         connect(anc, SIGNAL(inheritedChanged()), this, SIGNAL(inheritedChanged()));
