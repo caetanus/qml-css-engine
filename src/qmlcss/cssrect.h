@@ -296,6 +296,10 @@ private:
     QPointer<QQuickItem> m_flickable;
     // Fast paint path: a REAL QQuickRectangle when the style is rectangle-safe.
     QPointer<QQuickItem> m_fastRect;
+    // The fast Rectangle that already received its FIRST style (a transition animates a change,
+    // never the first style). A pointer compare per push — no meta-object lookup on the hot path;
+    // QPointer, so a Rectangle recreated at a recycled address still counts as new.
+    QPointer<QQuickItem> m_primedFast;
 
     // Engine-driven hover tracking (see cssHoverStyled/cssEngineHover above).
     bool m_hoverStyled = false;

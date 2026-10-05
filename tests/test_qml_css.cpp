@@ -2346,6 +2346,67 @@ void QmlCssTests::cssRepeaterReordersWithoutRecreating()
     QCOMPARE(rows().value(QStringLiteral("row-a")), a);
 }
 
+// A transition animates a CHANGE, never the first style. The fast Rectangle received
+// transitionMs before its first colours, so every new element with a `transition` faded in from
+// the defaults — a freshly created button "lit up" (and a border came in black). The first style
+// must land at once; a later class change must still animate. The Shape shell never had the bug
+// (its first cssIn lands before its Behaviors are live); its case stays as the guarantee.
+void QmlCssTests::transitionSkipsFirstStyle()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(R"(
+        .btn { background-color: #2244aa; border: 1px solid #ffcc00; border-radius: 4px;
+               transition: background-color 400ms linear; }
+        .btn.on { background-color: #aa4422; }
+    )"));
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect { cssClass: ["btn"]; cssPrimitive: "div"; width: 80; height: 24 }
+    )", QUrl());
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+    QQuickItem *rect = nullptr;
+    for (QQuickItem *k : root->findChildren<QQuickItem *>())
+        if (QByteArray(k->metaObject()->className()).contains("QQuickRectangle")) rect = k;
+    QVERIFY2(rect, "a solid box should take the fast Rectangle path");
+
+    // First style: final colours at once, not mid-fade from the defaults.
+    QCOMPARE(rect->property("color").value<QColor>(), QColor(QStringLiteral("#2244aa")));
+    QObject *border = qvariant_cast<QObject *>(rect->property("border"));
+    QVERIFY(border);
+    QCOMPARE(border->property("color").value<QColor>(), QColor(QStringLiteral("#ffcc00")));
+
+    // A change still animates: not there at once, there after the transition.
+    root->setProperty("cssClass", QVariant(QStringList{QStringLiteral("btn"), QStringLiteral("on")}));
+    QVERIFY(rect->property("color").value<QColor>() != QColor(QStringLiteral("#aa4422")));
+    QTRY_COMPARE_WITH_TIMEOUT(rect->property("color").value<QColor>(), QColor(QStringLiteral("#aa4422")), 2000);
+
+    // The Shape shell (a per-side border forces it): its fill path is at the final colour at birth.
+    QQmlComponent shellComponent(&engine);
+    shellComponent.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect { cssClass: ["shell"]; cssPrimitive: "div"; width: 80; height: 24 }
+    )", QUrl());
+    theme.loadFromString(QStringLiteral(R"(
+        .shell { background-color: #2244aa; border-left: 3px solid #ffcc00;
+                 transition: background-color 400ms linear; }
+    )"));
+    QScopedPointer<QObject> shell(shellComponent.create());
+    QVERIFY2(shell, qPrintable(shellComponent.errorString()));
+    QObject *fillPath = nullptr;
+    for (QObject *k : shell->findChildren<QObject *>())
+        if (!fillPath && QByteArray(k->metaObject()->className()).contains("QQuickShapePath")) fillPath = k;
+    QVERIFY2(fillPath, "a per-side border should take the Shape path");
+    QCOMPARE(fillPath->property("fillColor").value<QColor>(), QColor(QStringLiteral("#2244aa")));
+}
+
 // The Shape x Rectangle policy: a rectangle-safe style composes a REAL QQuickRectangle
 // (batchable scene-graph node) and NO Shape shell; a reapply that demands Shape features
 // (gradient) swaps the composition — and back.

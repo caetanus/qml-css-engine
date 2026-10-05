@@ -27,6 +27,7 @@ private slots:
     void buttonLabelInheritsColor();
 
     // New CSS property mapping tests.
+    void transitionSkipsFirstStyle();
     void cssRectZIndex();
     void cssRectOverflowHidden();
     void cssTextDecorationUnderline();

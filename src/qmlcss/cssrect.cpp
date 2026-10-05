@@ -1618,7 +1618,10 @@ void CssRect::pushFastRect()
         solid = m_theme->parseColor(bg);
     if (!solid.isValid())
         solid = m_defaultColor;
-    m_fastRect->setProperty("transitionMs", m_transMs);
+    // A transition animates a CHANGE, never the first style: the first push sets the colours with
+    // transitions off (re-enabled at the end), or every new element faded in from the defaults.
+    const bool first = m_primedFast != m_fastRect;
+    m_fastRect->setProperty("transitionMs", first ? 0 : m_transMs);
     m_fastRect->setProperty("transitionEasing", m_transEasing);
     m_fastRect->setProperty("color", solid.isValid() ? solid : QColor(Qt::transparent));
 
@@ -1663,6 +1666,10 @@ void CssRect::pushFastRect()
     if (border) {
         border->setProperty("width", borderOn ? borderWidth : 0.0);
         border->setProperty("color", borderOn ? borderColor : QColor(Qt::transparent));
+    }
+    if (first) {
+        m_primedFast = m_fastRect;
+        m_fastRect->setProperty("transitionMs", m_transMs);
     }
 }
 
