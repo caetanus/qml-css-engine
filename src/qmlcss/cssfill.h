@@ -161,6 +161,10 @@ private:
     // anchors.fill equivalent: paint layers span the border box; the content holder (or its scroll
     // Flickable) is the PADDING BOX — inset by the cached border widths (web content area).
     void layoutChildren();
+    // Compose a render layer from a QML snippet, stacked just below `above`. `configure` runs
+    // BETWEEN beginCreate and completeCreate, so the layer completes with its final properties.
+    QQuickItem *composeLayer(const char *qml, QQuickItem *above, void (*configure)(CssFill *, QQuickItem *) = nullptr);
+    void ensureImageLayers(); // the solid + Image layers exist only once a url() background shows up
     // Refresh m_borderInsets from the resolved style (style-set time, never per-resize).
     void updateBorderInsets();
     // Re-style through the reverse-slot engine path when identity changes (QML onCss*Changed).

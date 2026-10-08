@@ -5,6 +5,8 @@
 #include <QtQml/qqml.h>
 
 #include <QColor>
+#include <QImage>
+#include <QTemporaryDir>
 #include <QElapsedTimer>
 #include <QFont>
 #include <QQmlComponent>
@@ -674,6 +676,72 @@ void QmlCssTests::deepInheritanceIsLinear()
     QCOMPARE(labelText->property("color").value<QColor>(), QColor(255, 0, 0));
     QCOMPARE(labelText->property("font").value<QFont>().family(), QStringLiteral("Serif"));
     QVERIFY2(timer.elapsed() < 2000, qPrintable(QStringLiteral("deep inheritance took %1 ms").arg(timer.elapsed())));
+}
+
+void QmlCssTests::fillImageLayersAreLazy()
+{
+    // A CssFill composes its solid + Image layers only once a url() background appears; a plain
+    // box carries just the renderer. When the image arrives the layers sit BELOW the renderer and
+    // the declared children, and the image shows the resolved source.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString png = dir.filePath(QStringLiteral("bg.png"));
+    QImage img(4, 4, QImage::Format_ARGB32);
+    img.fill(Qt::red);
+    QVERIFY(img.save(png));
+
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(".plain { background-color: #123456; }\n"
+                                        ".pic { background: url(\"%1\"); background-size: cover; }")
+                             .arg(QUrl::fromLocalFile(png).toString()));
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssFill {
+            objectName: "fill"; cssClass: "plain"; width: 80; height: 40
+            Item { objectName: "kid"; width: 10; height: 10 }
+        }
+    )", QUrl());
+    QScopedPointer<QObject> object(component.create());
+    QVERIFY2(object, qPrintable(component.errorString()));
+    auto *fill = qobject_cast<QQuickItem *>(object.data());
+    QVERIFY(fill);
+
+    const auto imageLayer = [fill]() -> QQuickItem * {
+        for (QQuickItem *k : fill->childItems())
+            if (QByteArray(k->metaObject()->className()).contains("QQuickImage"))
+                return k;
+        return nullptr;
+    };
+    const auto indexOfClass = [fill](const char *cls) {
+        const QList<QQuickItem *> kids = fill->childItems();
+        for (int i = 0; i < kids.size(); ++i)
+            if (QByteArray(kids[i]->metaObject()->className()).contains(cls))
+                return i;
+        return -1;
+    };
+    QCOMPARE(imageLayer(), nullptr); // plain box: no image layers composed
+    QVERIFY(indexOfClass("CssRect") >= 0);
+
+    fill->setProperty("cssClass", QStringLiteral("pic"));
+    QQuickItem *image = imageLayer();
+    QVERIFY2(image, "url() background did not compose the Image layer");
+    QVERIFY(image->isVisible());
+    QCOMPARE(image->property("source").toUrl(), QUrl::fromLocalFile(png));
+    QCOMPARE(image->size(), QSizeF(80, 40));
+    // Painted order: image under the renderer, the renderer under the declared children.
+    auto *kid = fill->findChild<QQuickItem *>(QStringLiteral("kid"));
+    QVERIFY(kid);
+    const int holder = fill->childItems().indexOf(contentHolderOf(kid));
+    QVERIFY(holder >= 0);
+    QVERIFY(indexOfClass("QQuickImage") < indexOfClass("CssRect"));
+    QVERIFY(indexOfClass("CssRect") < holder);
 }
 
 // --- New CSS property mapping tests ---------------------------------------------------------

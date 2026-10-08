@@ -26,6 +26,7 @@ private slots:
     void layoutBoxSizingBorderBox();
     void buttonLabelInheritsColor();
     void deepInheritanceIsLinear();
+    void fillImageLayersAreLazy();
 
     // New CSS property mapping tests.
     void transitionSkipsFirstStyle();

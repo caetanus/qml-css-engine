@@ -429,6 +429,8 @@ void CssFill::recompute()
     const bool bgIsImage = isCssUrl(imageValue);
     const QString bgImageSource = imageSource(imageValue);
 
+    if (bgIsImage)
+        ensureImageLayers();
     if (m_bgSolid) {
         m_bgSolid->setProperty("fillColor", solidColor);
         m_bgSolid->setVisible(bgIsImage);
@@ -510,6 +512,45 @@ void CssFill::updateBorderInsets()
         layoutChildren(); // border change moves the padding box even when our size didn't change
 }
 
+QQuickItem *CssFill::composeLayer(const char *qml, QQuickItem *above, void (*configure)(CssFill *, QQuickItem *))
+{
+    QQmlEngine *eng = qmlEngine(this);
+    if (!eng)
+        return nullptr;
+    QQmlComponent *comp = QmlCss::cachedComponent(eng, QLatin1String(qml), qml); // runtime snippet: key = content
+    QObject *o = comp->beginCreate(qmlContext(this));
+    if (!o) {
+        qWarning("CssFill: failed to compose layer: %s", qPrintable(comp->errorString()));
+        return nullptr;
+    }
+    auto *item = qobject_cast<QQuickItem *>(o);
+    if (!item) {
+        comp->completeCreate();
+        o->deleteLater();
+        return nullptr;
+    }
+    item->setParentItem(this);
+    if (above)
+        item->stackBefore(above); // declared children (the content holder) stay on top
+    if (configure)
+        configure(this, item);
+    comp->completeCreate();
+    return item;
+}
+
+void CssFill::ensureImageLayers()
+{
+    if (m_bgSolid || !isComponentComplete())
+        return;
+    // Bottom → top: solid, image, then the existing renderer and the content holder.
+    QQuickItem *top = m_rect ? m_rect.data() : m_contentHolder.data();
+    m_image = composeLayer(kImageShell, top);
+    m_bgSolid = composeLayer(kBgSolidShell, m_image ? m_image.data() : top);
+    for (QQuickItem *layer : {m_bgSolid.data(), m_image.data()})
+        if (layer)
+            layer->setSize(size());
+}
+
 void CssFill::componentComplete()
 {
     QQuickItem::componentComplete();
@@ -520,36 +561,20 @@ void CssFill::componentComplete()
     }
     updateBorderInsets(); // inline styles apply before completion, when m_layout was still null
 
-    // SINGLE-SHOT mount: resolve + set the style before the layers exist (recompute no-ops
-    // on null layers); their first configuration below already reads the final style.
-    // (style already resolved+registered above — single-shot mount)
-
-    if (QQmlEngine *eng = qmlEngine(this)) {
-        // Compose bottom -> top; stackBefore(contentHolder) keeps the declared children on top.
-        auto compose = [&](const char *qml) -> QQuickItem * {
-            QQmlComponent *comp = QmlCss::cachedComponent(eng, QLatin1String(qml), qml); // runtime snippet: key = content
-            QObject *o = comp->create(qmlContext(this));
-            if (!o) {
-                qWarning("CssFill: failed to compose layer: %s", qPrintable(comp->errorString()));
-                return nullptr;
-            }
-            auto *item = qobject_cast<QQuickItem *>(o);
-            if (!item) {
-                o->deleteLater();
-                return nullptr;
-            }
-            item->setParentItem(this);
-            if (m_contentHolder)
-                item->stackBefore(m_contentHolder);
-            return item;
-        };
-
-        m_bgSolid = compose(kBgSolidShell);
-        m_image = compose(kImageShell);
-        // The CssRect renderer — our OWN registered type, composed via the type-system so the QML
-        // engine runs its componentComplete (which builds its Shape/MultiEffect render subtree).
-        m_rect = compose("import QtQuick\nimport qmlcss\nCssRect { cssPrimitive: \"\" }");
+    // SINGLE-SHOT mount: resolve + set the style BEFORE any layer exists (recompute no-ops on null
+    // layers), so each layer's first configuration is already the final one. Composing first and
+    // styling after configured every layer twice — the renderer's whole Shape subtree included.
+    if (m_theme && hasCssIdentity()) {
+        m_theme->loadCss(this);
+        m_scenelessResolve = window() == nullptr; // healed by itemChange on scene attach
     }
+
+    // The CssRect renderer — our OWN registered type, composed via the type-system so the QML
+    // engine runs its componentComplete (which builds its Shape/MultiEffect render subtree) —
+    // receives the resolved style before it completes. The solid + Image layers behind it are
+    // composed lazily (ensureImageLayers): most boxes never declare a url() background.
+    m_rect = composeLayer("import QtQuick\nimport qmlcss\nCssRect { cssPrimitive: \"\" }", m_contentHolder,
+                          [](CssFill *self, QQuickItem *rect) { self->m_rect = rect; self->recompute(); });
 
     // React to implicit-size / visibility changes like the QML on*Changed handlers.
     connect(this, &QQuickItem::implicitWidthChanged, this, [this]() {
@@ -568,14 +593,8 @@ void CssFill::componentComplete()
     if (QObject *anc = cssInheritingAncestor(this))
         connect(anc, SIGNAL(inheritedChanged()), this, SIGNAL(inheritedChanged()));
 
+    recompute(); // overflow/scroll + clip need the completed item; layers already hold the style
     layoutChildren();
-    recompute();
-
-    // QML Component.onCompleted.
-    if (m_theme && hasCssIdentity()) {
-        m_theme->loadCss(this);
-        m_scenelessResolve = window() == nullptr; // healed by itemChange on scene attach
-    }
     requestRelayout();
     if (m_layout)
         m_layout->notifyParentLayout(this);
