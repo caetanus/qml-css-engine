@@ -5,6 +5,7 @@
 #include <QtQml/qqml.h>
 
 #include <QColor>
+#include <QElapsedTimer>
 #include <QFont>
 #include <QQmlComponent>
 #include <QQmlContext>
@@ -637,6 +638,42 @@ void QmlCssTests::buttonLabelInheritsColor()
     QVERIFY2(labelText, "CssText did not compose a Text");
     const QColor color = labelText->property("color").value<QColor>();
     QCOMPARE(color, QColor(255, 255, 255));
+}
+
+void QmlCssTests::deepInheritanceIsLinear()
+{
+    // A label 22 boxes below the only element that sets a colour. Resolving an inherited value
+    // must walk that chain ONCE: probing each ancestor by calling its getter (which climbs the
+    // rest of the chain) and then climbing again doubled the work per level — 2^22 here.
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(".top { color: #ff0000; font-family: Serif; }"));
+    CssLayoutEngine layoutEngine(&theme);
+
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+
+    constexpr int depth = 22;
+    QString qml = QStringLiteral("import QtQuick\nimport qmlcss\nCssRect { cssClass: \"top\"\n");
+    for (int i = 0; i < depth; ++i)
+        qml += QStringLiteral("CssRect { cssClass: \"b%1\"\n").arg(i);
+    qml += QStringLiteral("CssText { objectName: \"label\"; text: \"deep\" }\n");
+    for (int i = 0; i <= depth; ++i)
+        qml += QStringLiteral("}\n");
+
+    QElapsedTimer timer;
+    timer.start();
+    QQmlComponent component(&engine);
+    component.setData(qml.toUtf8(), QUrl());
+    QScopedPointer<QObject> object(component.create());
+    QVERIFY2(object, qPrintable(component.errorString()));
+    auto *label = object->findChild<QQuickItem *>(QStringLiteral("label"));
+    QVERIFY(label);
+    QQuickItem *labelText = composedText(label);
+    QVERIFY(labelText);
+    QCOMPARE(labelText->property("color").value<QColor>(), QColor(255, 0, 0));
+    QCOMPARE(labelText->property("font").value<QFont>().family(), QStringLiteral("Serif"));
+    QVERIFY2(timer.elapsed() < 2000, qPrintable(QStringLiteral("deep inheritance took %1 ms").arg(timer.elapsed())));
 }
 
 // --- New CSS property mapping tests ---------------------------------------------------------

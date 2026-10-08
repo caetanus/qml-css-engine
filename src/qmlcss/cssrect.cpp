@@ -727,7 +727,10 @@ static QObject *cssInheritingAncestor(const QQuickItem *self)
 {
     QQuickItem *holder = self->parentItem();
     QQuickItem *box = holder ? holder->parentItem() : nullptr;
-    if (box && box->property("inheritedColor").isValid())
+    // Probe that the box TAKES PART in inheritance (declares the getter) — never call the getter
+    // itself here: it climbs the ancestors, and the caller then climbs them again, doubling the
+    // work at every level (2^depth while no ancestor sets the value).
+    if (box && box->metaObject()->indexOfProperty("inheritedColor") >= 0)
         return box;
     return nullptr;
 }

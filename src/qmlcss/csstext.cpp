@@ -206,7 +206,7 @@ QQuickItem *CssText::cssParentItem() const
             return p;
     }
     QQuickItem *pp = p ? p->parentItem() : nullptr;
-    if (pp && pp->property("inheritedColor").isValid())
+    if (pp && pp->metaObject()->indexOfProperty("inheritedColor") >= 0) // existence, not the getter
         return pp;
     return nullptr;
 }
