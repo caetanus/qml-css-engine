@@ -434,14 +434,20 @@ void CssText::componentComplete()
 
     if (QQmlEngine *eng = qmlEngine(this)) {
         // The REAL QtQuick Text, via the Qt type-system (we forward everything onto it).
+        // Configured BETWEEN beginCreate and completeCreate: a QQuickText that is not yet complete
+        // defers its text layout, so the ~20 property writes of the first applyToText() cost ONE
+        // layout (and one font match) at completion instead of one per write.
         {
             QQmlComponent *comp = QmlCss::cachedComponent(eng, QStringLiteral("csstext-bf5e2923"),
                 "import QtQuick\nText {}");
-            if (QObject *o = comp->create(qmlContext(this))) {
+            if (QObject *o = comp->beginCreate(qmlContext(this))) {
                 if (QQuickItem *label = qobject_cast<QQuickItem *>(o)) {
                     label->setParentItem(this);
                     m_label = label;
+                    applyToText();
+                    comp->completeCreate();
                 } else {
+                    comp->completeCreate();
                     o->deleteLater();
                 }
             } else {
@@ -455,7 +461,6 @@ void CssText::componentComplete()
     }
 
     if (m_label) {
-        m_label->setProperty("text", m_text);
         // The composed Text's implicit size drives ours; re-flow the parent on change.
         connect(m_label, &QQuickItem::implicitWidthChanged, this, [this]() {
             mirrorImplicit();
