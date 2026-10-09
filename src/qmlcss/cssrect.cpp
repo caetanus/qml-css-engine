@@ -1337,6 +1337,10 @@ void CssRect::ensureScrollable()
         return;
     // Content extent follows the laid-out children.
     connect(m_contentHolder, &QQuickItem::childrenRectChanged, this, &CssRect::syncScrollContent);
+    // scrollTop / scrollHeight / clientHeight follow the Flickable.
+    for (const char *sig : {SIGNAL(contentYChanged()), SIGNAL(contentHeightChanged()), SIGNAL(heightChanged())})
+        connect(m_flickable, sig, this, SIGNAL(scrollChanged()));
+    emit scrollChanged();
     watchForeignChildren(); // now scrollable: tie existing children's growth to the resync
     layoutChildren();
 }

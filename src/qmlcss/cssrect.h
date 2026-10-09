@@ -94,6 +94,11 @@ private:
     Q_PROPERTY(qreal _animRotate READ animRotate WRITE setAnimRotate NOTIFY animChanged)
     Q_PROPERTY(qreal _animScale READ animScale WRITE setAnimScale NOTIFY animChanged)
     Q_PROPERTY(qreal _animTx READ animTx WRITE setAnimTx NOTIFY animChanged)
+    // The scroll position of an `overflow: auto` box, as the DOM names it (0 when it does not
+    // scroll): an app windows a long list on these, e.g. `onScroll` near the end loads more.
+    Q_PROPERTY(qreal scrollTop READ scrollTop NOTIFY scrollChanged)
+    Q_PROPERTY(qreal scrollHeight READ scrollHeight NOTIFY scrollChanged)
+    Q_PROPERTY(qreal clientHeight READ clientHeight NOTIFY scrollChanged)
     Q_PROPERTY(qreal _animTy READ animTy WRITE setAnimTy NOTIFY animChanged)
 
     // Normalised animation position 0→1; driven by the composed NumberAnimation (see
@@ -107,6 +112,9 @@ private:
     Q_CLASSINFO("DefaultProperty", "content")
 
 public:
+    qreal scrollTop() const { return m_flickable ? m_flickable->property("contentY").toReal() : 0.0; }
+    qreal scrollHeight() const { return m_flickable ? m_flickable->property("contentHeight").toReal() : height(); }
+    qreal clientHeight() const { return m_flickable ? m_flickable->height() : height(); }
     explicit CssRect(QQuickItem *parent = nullptr);
 
     // Engine-internal: the layout pass inspects a CHILD box's content to classify it (e.g. the
@@ -198,6 +206,7 @@ public:
     void watchForeignChildren();
 
 signals:
+    void scrollChanged();
     void cssIdChanged();
     void cssAlternateIdChanged();
     void cssClassChanged();
