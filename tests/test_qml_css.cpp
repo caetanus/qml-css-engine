@@ -2620,3 +2620,63 @@ void QmlCssTests::layoutReplacedForeignBoxKeepsIntrinsicSize()
     // An ORDINARY box (no foreign content) still stretches to the container width.
     QVERIFY2(std::abs(plain->width() - 500.0) < 0.5, qPrintable(QString::number(plain->width())));
 }
+
+void QmlCssTests::cssRepeaterKeysObjectsById()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(".row { height: 10px; }"));
+    CssLayoutEngine layoutEngine(&theme);
+
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect {
+            id: box
+            cssPrimitive: ""
+            width: 200; height: 200
+            property string json: '[{"id":1,"t":"a"},{"id":2,"t":"b"},{"id":3,"t":"c"}]'
+            style: ({ "display": "flex", "flex-direction": "column" })
+            CssRepeater {
+                model: JSON.parse(box.json)
+                delegate: Component {
+                    CssRect { objectName: "row-" + modelData.id; property string label: modelData.t
+                              cssClass: ["row"]; cssPrimitive: "div" }
+                }
+            }
+        }
+    )", QUrl());
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+
+    auto rows = [&]() {
+        QHash<QString, QQuickItem *> out;
+        for (QQuickItem *k : root->findChildren<QQuickItem *>()) {
+            if (k->objectName().startsWith(QLatin1String("row-")) && k->parentItem())
+                out.insert(k->objectName(), k);
+        }
+        return out;
+    };
+    const auto before = rows();
+    QCOMPARE(before.size(), 3);
+    QPointer<QQuickItem> one = before.value(QStringLiteral("row-1"));
+    QPointer<QQuickItem> two = before.value(QStringLiteral("row-2"));
+    QVERIFY(one && two);
+
+    // Fresh objects (a new JSON.parse): 2 moves first, 1's text changed, 3 gone, 4 new.
+    root->setProperty("json", QStringLiteral(R"([{"id":2,"t":"b"},{"id":1,"t":"A"},{"id":4,"t":"d"}])"));
+    QCoreApplication::processEvents();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    const auto after = rows();
+    QCOMPARE(after.value(QStringLiteral("row-1")), one.data());   // the same instances
+    QCOMPARE(after.value(QStringLiteral("row-2")), two.data());
+    QCOMPARE(one->property("label").toString(), QStringLiteral("A"));   // updated in place
+    QVERIFY(after.contains(QStringLiteral("row-4")));
+    QVERIFY(!after.contains(QStringLiteral("row-3")));
+    // Document order (the layout's walk) follows the model: 2 before 1.
+    const QList<QQuickItem *> order = one->parentItem()->childItems();
+    QVERIFY(order.indexOf(two.data()) < order.indexOf(one.data()));
+}

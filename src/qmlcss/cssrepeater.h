@@ -47,6 +47,7 @@ private:
     };
 
     void rebuild();          // diff m_rows against the new model
+    bool createRow(int i, const QVariant &data, Row &row);
     void destroyRow(Row &row);
     void restack();          // enforce model order among the holder's children
     void notifyLayout();

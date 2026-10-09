@@ -1,6 +1,8 @@
 #include "qmlcss/cssrepeater.h"
 
 #include <QDebug>
+#include <QHash>
+#include <QSet>
 #include <QJSValue>
 #include <QMetaMethod>
 #include <QQmlContext>
@@ -34,6 +36,7 @@ QVariantList toList(const QVariant &v)
     }
     return {};
 }
+
 
 } // namespace
 
@@ -85,28 +88,108 @@ void CssRepeater::destroyRow(Row &row)
         row.context->deleteLater();
 }
 
+namespace {
+
+// An entry's key when it is an object with an "id" (a JSON row from the app's model); empty
+// otherwise.
+QString keyOf(const QVariant &v)
+{
+    if (v.metaType().id() != QMetaType::QVariantMap)
+        return {};
+    const QVariantMap m = v.toMap();
+    const auto it = m.constFind(QStringLiteral("id"));
+    return it == m.cend() ? QString() : it->toString();
+}
+
+} // namespace
+
+bool CssRepeater::createRow(int i, const QVariant &data, Row &row)
+{
+    row.data = data;
+    // createRow stores the context via qmlContext(item) — keep our own pointer for index
+    // updates on later moves.
+    QQmlContext *creation = m_delegate->creationContext();
+    if (!creation)
+        creation = qmlContext(this);
+    auto *ctx = new QQmlContext(creation, this);
+    ctx->setBaseUrl(creation->baseUrl());
+    ctx->setContextProperty(QStringLiteral("modelData"), data);
+    ctx->setContextProperty(QStringLiteral("index"), i);
+    QObject *o = m_delegate->create(ctx);
+    auto *item = qobject_cast<QQuickItem *>(o);
+    if (!item) {
+        if (o)
+            o->deleteLater();
+        delete ctx;
+        qWarning("CssRepeater: failed to create delegate: %s", qPrintable(m_delegate->errorString()));
+        return false;
+    }
+    item->setParent(this);
+    item->setParentItem(parentItem() ? parentItem() : this);
+    row.item = item;
+    row.context = ctx;
+    return true;
+}
+
 void CssRepeater::rebuild()
 {
     if (!m_delegate)
         return;
     const QVariantList data = toList(m_model);
 
-    // Reconcile by VALUE, stable first-match: surviving entries keep their delegate.
+    // KEYED when every entry is an object with a distinct "id": rows match by id in O(n), and a
+    // surviving row whose content changed gets the new value as its modelData IN PLACE. A model
+    // rebuilt from fresh JSON (every object new, most of them equal, some edited) keeps every
+    // delegate instead of re-creating the edited ones — and skips the O(n²) value matching.
+    QStringList keys;
+    keys.reserve(data.size());
+    bool keyed = !data.isEmpty();
+    {
+        QSet<QString> seen;
+        for (const QVariant &d : data) {
+            const QString k = keyOf(d);
+            if (k.isEmpty() || seen.contains(k)) { keyed = false; break; }
+            seen.insert(k);
+            keys.append(k);
+        }
+    }
+
     QVector<Row> next;
     next.reserve(data.size());
     QVector<bool> used(m_rows.size(), false);
     bool changed = false;
+    QHash<QString, int> byKey;
+    if (keyed) {
+        for (int j = 0; j < m_rows.size(); ++j)
+            if (m_rows[j].item) {
+                const QString k = keyOf(m_rows[j].data);
+                if (!k.isEmpty() && !byKey.contains(k))
+                    byKey.insert(k, j);
+            }
+    }
     for (int i = 0; i < data.size(); ++i) {
         int found = -1;
-        for (int j = 0; j < m_rows.size(); ++j) {
-            if (!used[j] && m_rows[j].item && m_rows[j].data == data.at(i)) {
-                found = j;
-                break;
+        if (keyed) {
+            const auto it = byKey.constFind(keys.at(i));
+            if (it != byKey.cend() && !used[*it])
+                found = *it;
+        } else {
+            // Reconcile by VALUE, stable first-match: surviving entries keep their delegate.
+            for (int j = 0; j < m_rows.size(); ++j) {
+                if (!used[j] && m_rows[j].item && m_rows[j].data == data.at(i)) {
+                    found = j;
+                    break;
+                }
             }
         }
         if (found >= 0) {
             used[found] = true;
             Row row = m_rows[found];
+            if (keyed && row.data != data.at(i)) {
+                row.data = data.at(i);
+                if (row.context)
+                    row.context->setContextProperty(QStringLiteral("modelData"), row.data);
+            }
             if (row.context)
                 row.context->setContextProperty(QStringLiteral("index"), i);
             if (found != i)
@@ -114,30 +197,8 @@ void CssRepeater::rebuild()
             next.append(row);
         } else {
             Row row;
-            row.data = data.at(i);
-            // createRow stores the context via qmlContext(item) — keep our own pointer
-            // for index updates on later moves.
-            QQmlContext *creation = m_delegate->creationContext();
-            if (!creation)
-                creation = qmlContext(this);
-            auto *ctx = new QQmlContext(creation, this);
-            ctx->setBaseUrl(creation->baseUrl());
-            ctx->setContextProperty(QStringLiteral("modelData"), data.at(i));
-            ctx->setContextProperty(QStringLiteral("index"), i);
-            QObject *o = m_delegate->create(ctx);
-            auto *item = qobject_cast<QQuickItem *>(o);
-            if (!item) {
-                if (o)
-                    o->deleteLater();
-                delete ctx;
-                qWarning("CssRepeater: failed to create delegate: %s",
-                         qPrintable(m_delegate->errorString()));
+            if (!createRow(i, data.at(i), row))
                 continue;
-            }
-            item->setParent(this);
-            item->setParentItem(parentItem() ? parentItem() : this);
-            row.item = item;
-            row.context = ctx;
             next.append(row);
             changed = true;
         }
