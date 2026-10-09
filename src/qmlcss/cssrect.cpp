@@ -1337,9 +1337,11 @@ void CssRect::ensureScrollable()
         return;
     // Content extent follows the laid-out children.
     connect(m_contentHolder, &QQuickItem::childrenRectChanged, this, &CssRect::syncScrollContent);
-    // scrollTop / scrollHeight / clientHeight follow the Flickable.
+    // scrollTop / scrollHeight / clientHeight follow the Flickable — QUEUED, like the DOM's scroll
+    // event: the content height changes inside a layout pass (a list's model just changed), and a
+    // handler that grows the model there (load more near the end) re-entered that very binding.
     for (const char *sig : {SIGNAL(contentYChanged()), SIGNAL(contentHeightChanged()), SIGNAL(heightChanged())})
-        connect(m_flickable, sig, this, SIGNAL(scrollChanged()));
+        connect(m_flickable, sig, this, SIGNAL(scrollChanged()), Qt::QueuedConnection);
     emit scrollChanged();
     watchForeignChildren(); // now scrollable: tie existing children's growth to the resync
     layoutChildren();
