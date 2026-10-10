@@ -70,6 +70,12 @@ public:
     // when no height animation is running.
     qreal targetHeight() const;
 
+    // 5v-2: a row recycled by a virtual CssRepeater starts clean — no engine hover left from the row's
+    // previous record, no geometry transition still ticking (snapped to its target), and the fast fill
+    // re-pushed with transitions off so a colour change caused by the NEW record is not faded from the
+    // OLD record's colour. Called after the row was rebound to its new record, under its ancestors.
+    void resetTransientState();
+
 private:
 
     // Renderer defaults (used when the style omits the longhand) — the QML `default*` props,

@@ -4,6 +4,8 @@
 #include "qmlcss/csscontentholder.h"
 #include "qmlcss/csslayout.h"
 #include "qmlcss/csslength.h"
+#include "qmlcss/cssrect.h"
+#include "qmlcss/csstheme.h"
 #include "csstheme_p.h" // LayoutBatchGuard
 
 #include <QAccessible>
@@ -73,6 +75,7 @@ CssRepeater::~CssRepeater()
         m_layout->unregisterVirtualRepeater(m_registeredHolder, this);
     for (const int s : std::as_const(m_order))
         destroyRow(m_pool[s]);
+    trimRecycle(0);
     m_order.clear();
     m_pool.clear();
 }
@@ -90,6 +93,10 @@ void CssRepeater::setDelegate(QQmlComponent *c)
     if (m_delegate == c)
         return;
     m_delegate = c;
+    // Parked rows are instances of the old delegate: they never come back. Rows still materialized
+    // keep living as before, but are destroyed (not parked) when they leave.
+    ++m_delegateGen;
+    trimRecycle(0);
     emit delegateChanged();
     if (isComponentComplete())
         rebuild();
@@ -122,8 +129,10 @@ void CssRepeater::setVirtualize(bool v)
 void CssRepeater::componentComplete()
 {
     QQuickItem::componentComplete();
-    if (QQmlContext *ctx = qmlContext(this))
+    if (QQmlContext *ctx = qmlContext(this)) {
         m_layout = qobject_cast<CssLayoutEngine *>(ctx->contextProperty(QStringLiteral("cssLayout")).value<QObject *>());
+        m_theme = qobject_cast<CssTheme *>(ctx->contextProperty(QStringLiteral("cssTheme")).value<QObject *>());
+    }
     registerWithEngine();
     // Virtual and registered: materialize nothing yet — the holder's first layout (which runs when
     // its box completes, with the scroll composed and the container style resolved) decides between
@@ -143,6 +152,7 @@ void CssRepeater::itemChange(ItemChange change, const ItemChangeData &data)
         // No layout will window us any more (detached, or a holder already taken): eager.
         watchFlickable(nullptr);
         m_mode = Mode::Eager;
+        trimRecycle(0);
     }
 }
 
@@ -240,8 +250,99 @@ bool CssRepeater::createRow(int i, const QVariant &data, Row &row)
     }
     row.item = item;
     row.context = ctx;
+    row.itemGen = m_delegateGen;
     ++m_matCount;
     return true;
+}
+
+void CssRepeater::retireRow(Row &row)
+{
+    // Park only a whole, current-delegate row, and only while the pool has room (its capacity is the
+    // window's row count): everything else is destroyed as before.
+    if (int(m_recycle.size()) >= m_recycleCap || !row.item || !row.context || row.itemGen != m_delegateGen) {
+        destroyRow(row);
+        return;
+    }
+    QElapsedTimer t;
+    if (Detail::g_phaseStats.enabled)
+        t.start();
+    // Detached: it neither paints nor takes part in layout (the hide cascade notifies once, at its top;
+    // we are inside the caller's layout batch). Its QObject parent stays us, so it dies with us.
+    row.item->setParentItem(nullptr);
+    m_recycle.append(Parked{ row.item, row.context, m_theme ? m_theme->reapplyEpoch() : 0, row.itemGen });
+    --m_matCount;
+    row.item = nullptr;
+    row.context = nullptr;
+    if (Detail::g_phaseStats.enabled)
+        Detail::g_phaseStats.time("repeater.park", t.nsecsElapsed());
+}
+
+bool CssRepeater::rebindRow(int i, Row &row)
+{
+    while (!m_recycle.isEmpty()) {
+        Parked p = std::move(m_recycle.last());
+        m_recycle.removeLast();
+        if (!p.item || !p.context) { // half of it died while parked: drop the rest
+            if (p.item)
+                p.item->deleteLater();
+            if (p.context)
+                p.context->deleteLater();
+            continue;
+        }
+        QElapsedTimer t;
+        if (Detail::g_phaseStats.enabled)
+            t.start();
+        // The rebind transaction (contract 8/9), all inside the caller's layout batch and before the
+        // next frame — no frame shows the row half old, half new:
+        // (1) back under its real ancestors FIRST: every restyle below resolves against them.
+        p.item->setParentItem(parentItem() ? parentItem() : this);
+        // A theme reapply while it was parked resolved it without those ancestors: once, again, now.
+        if (m_theme && p.reapplyEpoch != m_theme->reapplyEpoch()) {
+            if (auto *box = qobject_cast<CssBox *>(p.item.data()))
+                m_theme->restyle(box);
+        }
+        row.item = p.item;
+        row.context = p.context;
+        row.itemGen = p.itemGen;
+        ++m_matCount;
+        // (2) the new record: its bindings (text, class={row.status} -> identityChanged -> restyle) run.
+        p.context->setContextProperty(QStringLiteral("modelData"), row.data);
+        p.context->setContextProperty(QStringLiteral("index"), i);
+        // (3) nothing of the previous record's transient state survives (certified rows are passive:
+        // no focus; hover and transitions are engine state). The row is a handful of items.
+        QVarLengthArray<QQuickItem *, 32> stack;
+        stack.append(p.item.data());
+        while (!stack.isEmpty()) {
+            QQuickItem *k = stack.last();
+            stack.removeLast();
+            if (auto *rect = qobject_cast<CssRect *>(k))
+                rect->resetTransientState();
+            for (QQuickItem *c : k->childItems())
+                stack.append(c);
+        }
+        Q_ASSERT(!p.item->hasActiveFocus());
+        if (Detail::g_phaseStats.enabled)
+            Detail::g_phaseStats.time("repeater.rebind", t.nsecsElapsed());
+        return true;
+    }
+    return false;
+}
+
+void CssRepeater::trimRecycle(int cap)
+{
+    while (int(m_recycle.size()) > cap) {
+        QElapsedTimer t;
+        if (Detail::g_phaseStats.enabled)
+            t.start();
+        Parked p = std::move(m_recycle.last());
+        m_recycle.removeLast();
+        if (p.item)
+            p.item->deleteLater();
+        if (p.context)
+            p.context->deleteLater();
+        if (Detail::g_phaseStats.enabled)
+            Detail::g_phaseStats.time("repeater.destroyRow", t.nsecsElapsed());
+    }
 }
 
 void CssRepeater::rebuild()
@@ -351,7 +452,7 @@ void CssRepeater::finishOrder(bool *changed)
         Row &r = pool[s];
         if (r.gen == m_gen)
             continue;
-        destroyRow(r);
+        retireRow(r); // parked while windowed and the pool has room (5v-2)
         if (m_keyIndexValid && !r.key.isEmpty()) {
             const auto it = m_byKey.constFind(r.key);
             if (it != m_byKey.cend() && *it == s)
@@ -368,6 +469,7 @@ void CssRepeater::finishOrder(bool *changed)
         m_free = QVector<int>();
         m_next = QVector<int>();
         m_byKey.clear();
+        trimRecycle(0);
     }
 }
 
@@ -661,6 +763,9 @@ bool CssRepeater::materialize(int a, int b, bool sweepAll)
     a = std::max(a, 0);
     b = std::min(b, n - 1);
     bool changed = false;
+    // Recycling (5v-2) only while windowed: the pool holds at most one window of rows. Leaving rows
+    // are parked first, so the entering ones below take them instead of creating new delegates.
+    m_recycleCap = m_mode == Mode::Windowed && a <= b ? b - a + 1 : 0;
     // Rows leaving: everything outside [a, b] (only the previous range can hold items, unless a
     // reconciliation just moved them).
     const int lo = sweepAll ? 0 : std::max(m_matFirst, 0);
@@ -673,7 +778,7 @@ bool CssRepeater::materialize(int a, int b, bool sweepAll)
                 continue;
             Row &row = pool[order[i]];
             if (!row.item.isNull() || !row.context.isNull()) {
-                destroyRow(row);
+                retireRow(row);
                 changed = true;
             }
         }
@@ -691,7 +796,8 @@ bool CssRepeater::materialize(int a, int b, bool sweepAll)
         if (!row.item) {
             if (row.context) // its item died under us: drop the orphaned context before recreating
                 destroyRow(row);
-            if (!createRow(i, row.data, row))
+            // A parked row if there is one (in any mode: a flip to eager consumes the pool first).
+            if (!rebindRow(i, row) && !createRow(i, row.data, row))
                 continue;
             if (anchor->parentItem() == row.item->parentItem())
                 row.item->stackAfter(anchor);
@@ -706,6 +812,7 @@ bool CssRepeater::materialize(int a, int b, bool sweepAll)
         m_matFirst = 0;
         m_matLast = -1;
     }
+    trimRecycle(m_recycleCap); // what the window did not take back, beyond its bound (all, unless windowed)
     return changed;
 }
 

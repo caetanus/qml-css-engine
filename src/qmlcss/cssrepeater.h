@@ -11,6 +11,7 @@
 namespace QmlCss {
 
 class CssLayoutEngine;
+class CssTheme;
 
 // Keyed repeater with FLYWEIGHT semantics — Solid's <For>: when the model array changes,
 // entries whose VALUE survives keep their existing delegate (moved/re-stacked to the new
@@ -27,6 +28,11 @@ class CssLayoutEngine;
 // intersect [contentY - viewport, contentY + 2 * viewport] of the enclosing scroll box; the layout
 // engine places that window at its logical positions and publishes the LOGICAL extent. Not eligible
 // (or accessibility active) -> every row exists, exactly the eager behaviour.
+// RECYCLING (5v-2): in windowed mode a row leaving the window is PARKED (detached from the holder, still
+// our QObject child) in a pool bounded by the window's row count, and a row entering takes a parked one
+// and REBINDS it — re-parented into the holder first (CSS resolves under its real ancestors), then
+// modelData/index, then its transient state reset (hover, transitions) — instead of creating a new
+// delegate. The pool drains on clear, on leaving windowed mode, on a delegate change and with us.
 class CssRepeater : public QQuickItem {
     Q_OBJECT
     Q_PROPERTY(QVariant model READ model WRITE setModel NOTIFY modelChanged)
@@ -51,6 +57,9 @@ public:
     int rowCount() const { return m_matCount; }
     int materializedCount() const { return m_matCount; }
     int logicalCount() const { return int(m_order.size()); }
+    // Recycling pool (5v-2): detached rows kept for reuse, and its current bound.
+    int pooledCount() const { return int(m_recycle.size()); }
+    int poolCapacity() const { return m_recycleCap; }
 
     // --- layout-engine interface (5v-1) -----------------------------------------------------------
     // What the container's own style allows: a vertical scroll box laying its holder out as ONE
@@ -98,7 +107,15 @@ private:
         QVariant incoming;              // staged new modelData of a matched row (the JS pass, 5c)
         int pos = -1;                   // logical index after the last reconciliation (-1: new row)
         quint32 gen = 0;                // reconciliation that claimed it (m_gen)
+        quint32 itemGen = 0;            // m_delegateGen of the delegate that built `item`
         bool hasIncoming = false;
+    };
+    // A row item parked in the recycling pool (5v-2): detached, not materialized, reusable.
+    struct Parked {
+        QPointer<QQuickItem> item;
+        QPointer<QQmlContext> context;
+        quint64 reapplyEpoch = 0;       // the theme's reapplyEpoch() when it was parked
+        quint32 itemGen = 0;
     };
     // Eager: every row exists. Pending: virtual, waiting for the holder's first layout to decide
     // (nothing materialized). Windowed: only the window exists.
@@ -119,6 +136,12 @@ private:
     const Row &rowAt(int i) const { return m_pool[m_order[i]]; }
     bool createRow(int i, const QVariant &data, Row &row);
     void destroyRow(Row &row);
+    // Recycling pool (5v-2). retireRow: park the row's item if the pool has room, else destroy it.
+    // rebindRow: give logical row i a parked item (false: the pool is empty). trimRecycle: destroy
+    // parked items beyond `cap` (0 drains).
+    void retireRow(Row &row);
+    bool rebindRow(int i, Row &row);
+    void trimRecycle(int cap);
     void restack();          // enforce model order among the holder's children
     void notifyLayout();
 
@@ -153,6 +176,7 @@ private:
     bool m_rebuilding = false;
     bool m_rebuildPending = false;
     QPointer<CssLayoutEngine> m_layout; // resolved at completion; brackets each reconciliation
+    QPointer<CssTheme> m_theme;         // resolved at completion; restyles rows recycled across a reapply
 
     // virtual mode
     bool m_virtualize = false;
@@ -165,6 +189,12 @@ private:
     VirtualFlow m_flow;
     QPointer<QQuickItem> m_registeredHolder;
     QPointer<QQuickItem> m_flick;
+
+    // recycling pool (5v-2): parked items, LIFO; capacity = the window's row count while windowed, 0
+    // otherwise. Its storage keeps its capacity: no allocation per scroll in the steady state.
+    QVector<Parked> m_recycle;
+    int m_recycleCap = 0;
+    quint32 m_delegateGen = 0; // bumped by setDelegate: items of an older delegate are never parked
 };
 
 } // namespace QmlCss

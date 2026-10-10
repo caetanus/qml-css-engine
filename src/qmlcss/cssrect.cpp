@@ -1414,6 +1414,25 @@ bool CssRect::animateGeometry(QLatin1String prop, qreal target)
     return true;
 }
 
+void CssRect::resetTransientState()
+{
+    setCssEngineHover(false); // a restyle only when it was on
+    if (m_widthAnim && m_widthAnim->state() == QAbstractAnimation::Running) {
+        m_widthAnim->stop();
+        setWidth(m_widthAnimTarget);
+    }
+    if (m_heightAnim && m_heightAnim->state() == QAbstractAnimation::Running) {
+        m_heightAnim->stop();
+        setHeight(m_heightAnimTarget);
+    }
+    // A Behavior written while disabled stops its running animation and writes the target directly
+    // (QQuickBehavior::write) — exactly pushFastRect()'s "first style" path.
+    if (m_fastRect && m_transMs > 0) {
+        m_primedFast = nullptr;
+        pushFastRect();
+    }
+}
+
 void CssRect::setCssHoverStyled(bool v)
 {
     if (m_hoverStyled == v)

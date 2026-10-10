@@ -509,6 +509,7 @@ void CssTheme::restyleTarget(QObject *target)
 void CssTheme::reapplyAll()
 {
     const LayoutBatchGuard batch(m_layoutEngine); // N applies, ONE layout flush
+    ++m_reapplyEpoch;
     // Re-entrant call (applyCssTo() below triggers another reapplyAll(), e.g. a reload mid-apply):
     // the OUTER call already has m_walkingBindings set and is range-for'ing over m_bindings, so this
     // prune must not run (it would resize the list the outer loop is iterating) and this walk must

@@ -4606,8 +4606,13 @@ struct VirtualScene {
         window.setColor(Qt::white);
     }
 
-    QString mount(bool virtualize, const QVariantList &rows)
+    QString mount(bool virtualize, const QVariantList &rows, const char *delegate = nullptr)
     {
+        static const char *const kDefaultDelegate = R"(
+                        CssRect { cssClass: ["row"]; cssPrimitive: "div"
+                            CssText { cssClass: ["id"]; text: "" + modelData.id }
+                            CssText { objectName: "label"; cssClass: ["label"]; text: "" + modelData.label }
+                        })";
         QQmlComponent c(&engine);
         c.setData(QByteArray(R"(
             import QtQuick
@@ -4638,11 +4643,7 @@ struct VirtualScene {
                 CssRepeater {
                     model: list.rows
                     virtualize: )") + (virtualize ? "true" : "false") + R"(
-                    delegate: Component {
-                        CssRect { cssClass: ["row"]; cssPrimitive: "div"
-                            CssText { cssClass: ["id"]; text: "" + modelData.id }
-                            CssText { objectName: "label"; cssClass: ["label"]; text: "" + modelData.label }
-                        }
+                    delegate: Component {)" + (delegate ? delegate : kDefaultDelegate) + R"(
                     }
                 }
             }
@@ -4725,11 +4726,15 @@ QString checkVirtualRows(const VirtualScene &s, const QVariantList &model)
 struct CreateDestroyCounts {
     qint64 created = 0, destroyed = 0;
 };
+// Rows that ENTERED / LEFT the window: since 5v-2 an entering row is created or rebound from the
+// recycling pool, a leaving one destroyed or parked in it.
 CreateDestroyCounts takeCounts()
 {
     CreateDestroyCounts c;
-    c.created = Detail::g_phaseStats.buckets.value("repeater.beginCreate").count;
-    c.destroyed = Detail::g_phaseStats.buckets.value("repeater.destroyRow").count;
+    c.created = Detail::g_phaseStats.buckets.value("repeater.beginCreate").count
+        + Detail::g_phaseStats.buckets.value("repeater.rebind").count;
+    c.destroyed = Detail::g_phaseStats.buckets.value("repeater.destroyRow").count
+        + Detail::g_phaseStats.buckets.value("repeater.park").count;
     Detail::g_phaseStats.buckets.clear();
     return c;
 }
@@ -5278,4 +5283,320 @@ void QmlCssTests::repeaterKeyedOpsBench()
     }
     Detail::g_phaseStats.enabled = wasOn;
     Detail::g_phaseStats.buckets.clear();
+}
+
+// ---- Step 5v-2: bounded recycling pool -------------------------------------------------------------
+
+namespace {
+
+// kVirtualCss's geometry; the row's colour comes from an ANCESTOR-SCOPED rule on its record's status
+// (a row resolved without its `.list` ancestor — detached — would lose it), plus an engine-hover rule.
+const char *const kPoolCss = R"(
+    .list { display: flex; flex-direction: column; overflow-y: auto; padding: 8px; gap: 2px; }
+    .row { display: flex; flex-direction: row; height: 20px; gap: 4px; }
+    .list .a { background-color: #dd2222; }
+    .list .b { background-color: #2222dd; }
+    .row:hover { background-color: #22dd22; }
+    .id { width: 48px; color: #203040; font-size: 12px; }
+    .label { flex: 1; color: #102030; font-size: 12px; }
+)";
+const char *const kPoolDelegate = R"(
+                        CssRect { cssClass: ["row", modelData.status]; cssPrimitive: "div"
+                            CssText { cssClass: ["id"]; text: "" + modelData.id }
+                            CssText { objectName: "label"; cssClass: ["label"]; text: "" + modelData.label }
+                        })";
+
+QVariantList makePoolRows(int n)
+{
+    QVariantList rows;
+    rows.reserve(n);
+    for (int i = 0; i < n; ++i)
+        rows.append(QVariantMap{ { QStringLiteral("id"), i + 1 },
+                                 { QStringLiteral("label"), QStringLiteral("row %1").arg(i) },
+                                 { QStringLiteral("status"), i % 2 ? QStringLiteral("b") : QStringLiteral("a") } });
+    return rows;
+}
+
+// The largest window: rows intersecting [contentY - viewport, contentY + 2 viewport], plus rounding.
+constexpr int kMaxWindow = int(3 * kViewH / kPitch) + 2;
+
+QString bgOf(QQuickItem *row)
+{
+    return row->property("style").toMap().value(QStringLiteral("background-color")).toString().toLower();
+}
+
+// Every materialized row's background is its record's status colour (`a`/`b` -> the given colours).
+QString checkPoolColors(const VirtualScene &s, const QString &a, const QString &b)
+{
+    for (QQuickItem *row : s.rows()) {
+        const int i = VirtualScene::indexOf(row);
+        const QString want = i % 2 ? b : a;
+        if (bgOf(row) != want)
+            return QStringLiteral("row %1 background '%2', want '%3'").arg(i).arg(bgOf(row), want);
+    }
+    return QString();
+}
+
+// The repeater's detached rows (parked in the pool): QObject children of the repeater, no parent item.
+QList<QPointer<QQuickItem>> parkedRows(CssRepeater *rep)
+{
+    QList<QPointer<QQuickItem>> out;
+    for (QQuickItem *k : rep->findChildren<QQuickItem *>(Qt::FindDirectChildrenOnly))
+        if (!k->parentItem())
+            out.append(k);
+    return out;
+}
+
+void flushDeletes()
+{
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QCoreApplication::processEvents();
+}
+
+struct PhaseStatsOn {
+    bool was = Detail::g_phaseStats.enabled;
+    PhaseStatsOn() { Detail::g_phaseStats.enabled = true; Detail::g_phaseStats.buckets.clear(); }
+    ~PhaseStatsOn() { Detail::g_phaseStats.enabled = was; Detail::g_phaseStats.buckets.clear(); }
+};
+qint64 bucketCount(const char *k) { return Detail::g_phaseStats.buckets.value(k).count; }
+
+} // namespace
+
+void QmlCssTests::virtualPoolBoundsCreations()
+{
+    const PhaseStatsOn stats;
+    VirtualScene s(QString::fromLatin1(kVirtualCss));
+    const QVariantList model = makeVirtualRows(10000);
+    QVERIFY2(s.mount(true, model).isEmpty(), "mount");
+    // Top to bottom in viewport steps, the way a user scrolls.
+    int steps = 0;
+    for (qreal cy = 0; cy < s.maxContentY() + kViewH; cy += kViewH, ++steps) {
+        s.setContentY(std::min(cy, s.maxContentY()));
+        QVERIFY2(s.rep->pooledCount() <= s.rep->poolCapacity(),
+                 qPrintable(QStringLiteral("pool %1 > capacity %2").arg(s.rep->pooledCount()).arg(s.rep->poolCapacity())));
+        QVERIFY(s.rep->poolCapacity() <= kMaxWindow);
+        if (steps % 97 == 0) {
+            const QString bad = checkVirtualRows(s, model);
+            QVERIFY2(bad.isEmpty(), qPrintable(bad));
+        }
+    }
+    const QString bad = checkVirtualRows(s, model);
+    QVERIFY2(bad.isEmpty(), qPrintable(bad));
+    const qint64 created = bucketCount("repeater.beginCreate");
+    fprintf(stderr, "[5v-2] traversal of 10000 rows in %d steps: created %lld, rebound %lld, parked %lld, destroyed %lld\n",
+            steps, static_cast<long long>(created), static_cast<long long>(bucketCount("repeater.rebind")),
+            static_cast<long long>(bucketCount("repeater.park")), static_cast<long long>(bucketCount("repeater.destroyRow")));
+    QVERIFY2(created <= 2 * kMaxWindow, qPrintable(QStringLiteral("%1 rows created (bound %2)").arg(created).arg(2 * kMaxWindow)));
+    // Memory stays flat: what is alive after the traversal is the window plus the bounded pool.
+    flushDeletes();
+    const int alive = int(s.rep->findChildren<QQuickItem *>(Qt::FindDirectChildrenOnly).size());
+    QVERIFY2(alive <= 2 * kMaxWindow, qPrintable(QString::number(alive)));
+}
+
+void QmlCssTests::virtualPoolRecycledRowsAreCorrect()
+{
+    const PhaseStatsOn stats;
+    const QVariantList model = makePoolRows(2000);
+    VirtualScene eager(QString::fromLatin1(kPoolCss));
+    VirtualScene virt(QString::fromLatin1(kPoolCss));
+    QVERIFY2(eager.mount(false, model, kPoolDelegate).isEmpty(), "eager mount");
+    QVERIFY2(virt.mount(true, model, kPoolDelegate).isEmpty(), "virtual mount");
+    const QString red = QStringLiteral("#dd2222"), blue = QStringLiteral("#2222dd");
+    // Far and back, in viewport steps and in jumps.
+    for (qreal cy = 0; cy < virt.maxContentY(); cy += kViewH * 3.7)
+        virt.setContentY(cy);
+    virt.setContentY(virt.maxContentY());
+    virt.setContentY(0);
+    virt.setContentY(20000);
+    QVERIFY2(bucketCount("repeater.rebind") > 0, "no row was recycled");
+    for (const qreal cy : { 0.0, 1234.0, 20001.0, virt.maxContentY() }) {
+        virt.setContentY(cy);
+        const QString bad = checkVirtualRows(virt, model);
+        QVERIFY2(bad.isEmpty(), qPrintable(bad));
+        const QString badColor = checkPoolColors(virt, red, blue);
+        QVERIFY2(badColor.isEmpty(), qPrintable(badColor));
+    }
+    eager.window.show();
+    virt.window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&eager.window));
+    QVERIFY(QTest::qWaitForWindowExposed(&virt.window));
+    for (const qreal cy : { 0.0, 1234.0, eager.maxContentY() }) {
+        eager.setContentY(cy);
+        virt.setContentY(cy);
+        const QImage a = eager.grab();
+        const QImage b = virt.grab();
+        QCOMPARE(a.size(), b.size());
+        int diff = 0;
+        for (int y = 0; y < a.height(); ++y)
+            for (int x = 0; x < a.width(); ++x)
+                diff += a.pixel(x, y) != b.pixel(x, y);
+        QVERIFY2(diff == 0, qPrintable(QStringLiteral("contentY %1: %2 pixels differ").arg(cy).arg(diff)));
+    }
+}
+
+void QmlCssTests::virtualPoolResetsState()
+{
+    const QString red = QStringLiteral("#dd2222"), blue = QStringLiteral("#2222dd");
+    const qreal far = 5000 * kPitch;
+    {
+        // Engine hover on a row that is then recycled: the record it lands on is not hovered.
+        VirtualScene s(QString::fromLatin1(kPoolCss));
+        QVERIFY2(s.mount(true, makePoolRows(10000), kPoolDelegate).isEmpty(), "mount");
+        QPointer<QQuickItem> hovered;
+        for (QQuickItem *row : s.rows())
+            if (VirtualScene::indexOf(row) == 3)
+                hovered = row;
+        QVERIFY(hovered);
+        QVERIFY(hovered->setProperty("cssEngineHover", true));
+        QCOMPARE(bgOf(hovered), QStringLiteral("#22dd22"));
+        s.setContentY(far);
+        QVERIFY2(hovered && s.rows().contains(hovered.data()), "the hovered row was not recycled into the window");
+        QCOMPARE(hovered->property("cssEngineHover").toBool(), false);
+        const QString bad = checkPoolColors(s, red, blue);
+        QVERIFY2(bad.isEmpty(), qPrintable(bad));
+    }
+    {
+        // A long background transition: a recycled row whose new record has the OTHER status shows the
+        // new colour at once instead of fading from the previous record's.
+        VirtualScene s(QString::fromLatin1(kPoolCss) + QStringLiteral(" .row { transition: background-color 5000ms linear; }"));
+        QVERIFY2(s.mount(true, makePoolRows(10000), kPoolDelegate).isEmpty(), "mount");
+        QHash<QQuickItem *, int> before;
+        for (QQuickItem *row : s.rows())
+            before.insert(row, VirtualScene::indexOf(row) % 2);
+        s.setContentY(far + kPitch); // shifts parity for some rows, keeps it for others
+        int flipped = 0;
+        for (QQuickItem *row : s.rows()) {
+            if (!before.contains(row) || before.value(row) == VirtualScene::indexOf(row) % 2)
+                continue;
+            ++flipped;
+            QQuickItem *fill = nullptr;
+            for (QQuickItem *k : row->childItems())
+                if (QByteArray(k->metaObject()->className()).startsWith("QQuickRectangle"))
+                    fill = k;
+            QVERIFY2(fill, "no fast-path Rectangle on the row");
+            const QColor want(VirtualScene::indexOf(row) % 2 ? blue : red);
+            QCOMPARE(fill->property("color").value<QColor>(), want);
+        }
+        QVERIFY2(flipped > 0, "no recycled row changed status");
+    }
+}
+
+void QmlCssTests::virtualPoolDrains()
+{
+    const QString fixed = QString::fromLatin1(kVirtualCss);
+    VirtualScene s(fixed);
+    const int baseline = s.theme.registeredCount();
+    const QVariantList model = makeVirtualRows(1000);
+    QVERIFY2(s.mount(true, model).isEmpty(), "mount");
+    // One viewport down the window spans [0, 3 viewports); back at the top it spans [0, 2 viewports):
+    // the rows of the third viewport leave and nothing enters — they stay parked.
+    const auto park = [&]() -> QList<QPointer<QQuickItem>> {
+        s.setContentY(kViewH);
+        s.setContentY(0);
+        flushDeletes(); // only parked rows remain detached (destroyed ones are gone)
+        return parkedRows(s.rep);
+    };
+    const auto allDead = [](const QList<QPointer<QQuickItem>> &ps) {
+        for (const auto &p : ps)
+            if (p)
+                return false;
+        return true;
+    };
+    const auto noDetached = [&]() { return parkedRows(s.rep).isEmpty(); };
+
+    // clear
+    QList<QPointer<QQuickItem>> parked = park();
+    QVERIFY2(!parked.isEmpty() && s.rep->pooledCount() == parked.size(),
+             qPrintable(QStringLiteral("parked %1, pool %2").arg(parked.size()).arg(s.rep->pooledCount())));
+    s.setRows({});
+    QCOMPARE(s.rep->pooledCount(), 0);
+    flushDeletes();
+    QVERIFY(allDead(parked));
+    QVERIFY(noDetached());
+
+    // eligibility flips to eager (auto-height rows): the pool drains, every row is in the holder
+    s.setRows(model);
+    parked = park();
+    QVERIFY(!parked.isEmpty());
+    s.theme.loadFromString(fixed + QStringLiteral(" .row { height: auto; }"));
+    QCOMPARE(s.rep->materializedCount(), 1000);
+    QCOMPARE(s.rep->pooledCount(), 0);
+    flushDeletes();
+    QVERIFY(noDetached());
+    s.theme.loadFromString(fixed);
+    QVERIFY(s.rows().size() < 1000);
+
+    // virtualize turned off
+    parked = park();
+    QVERIFY(!parked.isEmpty());
+    s.rep->setVirtualize(false);
+    QCOMPARE(s.rep->pooledCount(), 0);
+    flushDeletes();
+    QVERIFY(noDetached());
+    s.rep->setVirtualize(true);
+    QVERIFY(QMetaObject::invokeMethod(s.list, "requestRelayout"));
+    QVERIFY(s.rows().size() < 1000);
+
+    // delegate change: parked rows of the old delegate never come back
+    parked = park();
+    QVERIFY(!parked.isEmpty());
+    QQmlComponent other(&s.engine);
+    other.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect { cssClass: ["row"]; cssPrimitive: "div" }
+    )", QUrl());
+    QVERIFY2(other.isReady(), qPrintable(other.errorString()));
+    QQmlComponent *const original = s.rep->delegate();
+    s.rep->setDelegate(&other);
+    QCOMPARE(s.rep->pooledCount(), 0);
+    flushDeletes();
+    QVERIFY(allDead(parked));
+
+    // destruction: nothing parked survives the repeater; the census returns to its baseline
+    s.rep->setDelegate(original);
+    parked = park();
+    QVERIFY(!parked.isEmpty());
+    // The row contexts the repeater created (its QObject children), parked rows' included.
+    QList<QPointer<QQmlContext>> contexts;
+    for (QQmlContext *c : s.rep->findChildren<QQmlContext *>(Qt::FindDirectChildrenOnly))
+        contexts.append(c);
+    QVERIFY(contexts.size() >= parked.size());
+    s.root.reset();
+    flushDeletes();
+    QVERIFY(allDead(parked));
+    for (const auto &c : contexts)
+        QVERIFY(!c);
+    QCOMPARE(s.theme.registeredCount(), baseline);
+}
+
+void QmlCssTests::virtualPoolThemeReload()
+{
+    VirtualScene s(QString::fromLatin1(kPoolCss));
+    QVERIFY2(s.mount(true, makePoolRows(2000), kPoolDelegate).isEmpty(), "mount");
+    s.setContentY(kViewH); // see virtualPoolDrains: back at the top, the third viewport's rows stay parked
+    s.setContentY(0);
+    const int parked = s.rep->pooledCount();
+    QVERIFY2(parked > 0, "nothing parked");
+    QString css = QString::fromLatin1(kPoolCss);
+    css.replace(QStringLiteral("#dd2222"), QStringLiteral("#aa8800")).replace(QStringLiteral("#2222dd"), QStringLiteral("#0088aa"));
+    const QString a = QStringLiteral("#aa8800"), b = QStringLiteral("#0088aa");
+    {
+        const PhaseStatsOn stats;
+        const int registered = s.theme.registeredCount();
+        s.theme.loadFromString(css);
+        // Bounded: every registered element (visible or parked) is applied at most once.
+        const qint64 applies = bucketCount("css.apply");
+        QVERIFY2(applies <= registered, qPrintable(QStringLiteral("%1 applies for %2 registered").arg(applies).arg(registered)));
+    }
+    QString bad = checkPoolColors(s, a, b);
+    QVERIFY2(bad.isEmpty(), qPrintable(bad));
+    // The parked rows come back: styled by the NEW sheet, under their real ancestors.
+    {
+        const PhaseStatsOn stats;
+        s.setContentY(kViewH);
+        QVERIFY2(bucketCount("repeater.rebind") >= parked, "parked rows were not reused");
+    }
+    bad = checkPoolColors(s, a, b);
+    QVERIFY2(bad.isEmpty(), qPrintable(bad));
 }

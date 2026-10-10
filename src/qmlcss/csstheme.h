@@ -261,6 +261,10 @@ public:
     QQuickItem *nearestCssElementOf(QQuickItem *item) const;
     // Bumped by every rule rebuild; a node of an older generation is stale.
     quint64 ruleGeneration() const { return m_generation; }
+    // Bumped by every reapplyAll() (theme reload, viewport/@media, font registration). An element that
+    // was out of the tree during one — a row parked in a CssRepeater's recycling pool (5v-2) — was
+    // re-resolved without its ancestors, and must be restyled once it is back under them.
+    quint64 reapplyEpoch() const { return m_reapplyEpoch; }
 
     // Step 5a sharing census: walks every window reachable from a registered box and counts, OUTSIDE
     // any timed section: live CssRect/CssFill/CssText (lean vs composed), composed QQuickText labels,
@@ -293,6 +297,7 @@ private:
     // const.
     mutable QHash<QString, CssContextNode *> m_contextNodes;
     quint64 m_generation = 1;
+    quint64 m_reapplyEpoch = 0;
 
     QVariantMap resolveImpl(const QList<CssAncestorInfo> &ancestors, const QString &id,
                             const QStringList &classes, const QString &pseudoElement,

@@ -261,4 +261,14 @@ private slots:
     void repeaterReentrantModelChangeIsDeferred();
     void virtualListIdentityOps();
     void repeaterKeyedOpsBench();
+
+    // Step 5v-2: rows leaving the virtual window are parked in a BOUNDED pool and rebound to rows
+    // entering it — a full traversal creates ~one window of rows, recycled rows show their new record
+    // (data, class, pixels), carry no hover/transition state over, the pool drains on clear / eager /
+    // delegate change / destruction, and a theme reload while rows are parked stays bounded and correct.
+    void virtualPoolBoundsCreations();
+    void virtualPoolRecycledRowsAreCorrect();
+    void virtualPoolResetsState();
+    void virtualPoolDrains();
+    void virtualPoolThemeReload();
 };
