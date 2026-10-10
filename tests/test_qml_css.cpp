@@ -3631,3 +3631,34 @@ void QmlCssTests::everyIdentityTypeIsACssBox()
     QVERIFY2(ico, qPrintable(icon.errorString()));
     QVERIFY(!qobject_cast<CssBox *>(ico.data()));
 }
+
+// 4b-1: resolving a CssBox reads its identity and its ancestors' identities by member, not by name.
+// Proven with a box whose Q_PROPERTY getters are bypassed: the theme must use classList(), so a value
+// placed only in the typed view is what matches.
+void QmlCssTests::identityReadsAreTyped()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(".outer .inner { background-color: #123456; }"));
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent c(&engine);
+    c.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect { cssPrimitive: "div"; cssClass: ["outer"]; width: 50; height: 50
+            CssRect { objectName: "inner"; cssPrimitive: "div"; cssClass: ["inner"] } }
+    )", QUrl());
+    QScopedPointer<QObject> root(c.create());
+    QVERIFY2(root, qPrintable(c.errorString()));
+    QQuickWindow window;
+    qobject_cast<QQuickItem *>(root.data())->setParentItem(window.contentItem());
+    auto *inner = root->findChild<QQuickItem *>(QStringLiteral("inner"));
+    QVERIFY(inner);
+    QCOMPARE(inner->property("style").toMap().value(QStringLiteral("background-color")).toString(),
+             QStringLiteral("#123456"));
+    const int before = Detail::g_namedIdentityReads;
+    theme.loadCss(inner);
+    QCOMPARE(Detail::g_namedIdentityReads - before, 0); // the box AND its CssBox ancestor: typed
+}

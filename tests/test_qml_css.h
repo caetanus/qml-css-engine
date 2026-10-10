@@ -182,4 +182,8 @@ private slots:
     // 4b-1: every element type that carries a CSS identity is a CssBox, and the typed accessors
     // return what QML set. CssIcon (style sink, no identity) is NOT a CssBox.
     void everyIdentityTypeIsACssBox();
+
+    // 4b-1 Task 2: resolving a CssBox reads its identity and its ancestors' identities by
+    // member, not by name.
+    void identityReadsAreTyped();
 };

@@ -2,6 +2,7 @@
 #include "csstheme_p.h"
 
 #include "csslayout.h"
+#include "qmlcss/cssbox.h"
 #include "valueparser.h"
 
 #include <QCryptographicHash>
@@ -87,14 +88,24 @@ static QList<CssAncestorInfo> collectCssAncestors(QObject *target)
     if (!item)
         return chain;
     for (QQuickItem *p = nextCssAncestorHop(item); p; p = nextCssAncestorHop(p)) {
-        const QMetaObject *mo = p->metaObject();
-        if (mo->indexOfProperty("cssPrimitive") < 0 && mo->indexOfProperty("cssClass") < 0)
-            continue;
         CssAncestorInfo info;
-        info.id = p->property("cssId").toString();
-        info.classes = cssVariantToStringList(p->property("cssClass"));
-        info.classes += cssVariantToStringList(p->property("cssState"));
-        info.primitive = p->property("cssPrimitive").toString();
+        if (auto *box = qobject_cast<CssBox *>(p)) {
+            // A CssBox always qualifies as "an element": every box has cssPrimitive/cssClass,
+            // the same probe the by-name path below runs for foreign items.
+            info.id = box->cssId();
+            info.classes = box->classList();
+            info.classes += box->stateList();
+            info.primitive = box->cssPrimitive();
+        } else {
+            const QMetaObject *mo = p->metaObject();
+            if (mo->indexOfProperty("cssPrimitive") < 0 && mo->indexOfProperty("cssClass") < 0)
+                continue;
+            ++Detail::g_namedIdentityReads;
+            info.id = p->property("cssId").toString();
+            info.classes = cssVariantToStringList(p->property("cssClass"));
+            info.classes += cssVariantToStringList(p->property("cssState"));
+            info.primitive = p->property("cssPrimitive").toString();
+        }
         chain.prepend(info); // the walk is inner→outer; the chain is outer→inner
     }
     return chain;
@@ -112,25 +123,43 @@ void CssTheme::applyCssTo(QObject *target) const
         return;
 
     // Identity is read straight off the CssQmlItem target (re-read every apply, so a
-    // later cssClass change is reflected on the next apply / reload).
-    const QString cssId = target->property("cssId").toString();
+    // later cssClass change is reflected on the next apply / reload). Typed for a CssBox
+    // (one qobject_cast, then member access); by name only for a foreign item.
+    auto *box = qobject_cast<CssBox *>(target);
+    QString cssId;
     // Authored classes + runtime state classes (`cssState`: hover/active/focus/…) so
     // pseudo-class rules like `.counter:hover` resolve when the widget reports the state.
-    QStringList classes = cssVariantToStringList(target->property("cssClass"));
-    classes += cssVariantToStringList(target->property("cssState"));
+    QStringList classes;
+    QString cssPart;
+    // Type selectors (`button {}`) match this element's primitive.
+    QString cssPrimitive;
+    if (box) {
+        cssId = box->cssId();
+        classes = box->classList();
+        classes += box->stateList();
+        cssPart = box->cssPart();
+        cssPrimitive = box->cssPrimitive();
+    } else {
+        ++Detail::g_namedIdentityReads;
+        cssId = target->property("cssId").toString();
+        classes = cssVariantToStringList(target->property("cssClass"));
+        classes += cssVariantToStringList(target->property("cssState"));
+        cssPart = target->property("cssPart").toString();
+        cssPrimitive = target->property("cssPrimitive").toString();
+    }
     // Engine-tracked hover (a composed HoverHandler on elements with an applicable :hover
-    // rule — the web hovers ANY element, not just interactive ones).
+    // rule — the web hovers ANY element, not just interactive ones). CssRect-only, stays
+    // by name on purpose (out of scope here) — not counted: it is a live render state, not
+    // an identity field.
     if (target->property("cssEngineHover").toBool())
         classes << QStringLiteral("hover");
     // `:focus` is a LIVE item state, not something an author sets: read it straight off the
     // item's native activeFocus, exactly as `:hover` rides the composed HoverHandler above.
     // Widgets therefore never have to hand-declare a "focus" cssState — every focusable box gets
     // `:focus` (and the default focus ring) for free, including ones added later.
-    if (target->property("activeFocus").toBool() && !classes.contains(QStringLiteral("focus")))
+    const bool hasFocus = box ? box->hasActiveFocus() : target->property("activeFocus").toBool();
+    if (hasFocus && !classes.contains(QStringLiteral("focus")))
         classes << QStringLiteral("focus");
-    const QString cssPart = target->property("cssPart").toString();
-    // Type selectors (`button {}`) match this element's primitive.
-    const QString cssPrimitive = target->property("cssPrimitive").toString();
 
     // A part target (`#tray.item`, `#cpu.graph`) resolves ONLY that part — excluding the
     // bare `#id` base — so a sub-element doesn't inherit the container's own background.
@@ -146,7 +175,8 @@ void CssTheme::applyCssTo(QObject *target) const
         for (auto it = pseudo.constBegin(); it != pseudo.constEnd(); ++it)
             style.insert(it.key(), it.value());
     } else {
-        const QStringList alternateIds = cssVariantToStringList(target->property("cssAlternateId"));
+        const QStringList alternateIds = box ? box->alternateIdList()
+                                              : cssVariantToStringList(target->property("cssAlternateId"));
         const qint64 t0 = g_applyStats.enabled ? t.nsecsElapsed() : 0;
         const QList<CssAncestorInfo> ancestors = collectCssAncestors(target);
         const qint64 t1 = g_applyStats.enabled ? t.nsecsElapsed() : 0;
