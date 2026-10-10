@@ -21,6 +21,7 @@
 #include <QNetworkRequest>
 #include <QQuickItem>
 #include <QRegularExpression>
+#include <QScopeGuard>
 #include <QStandardPaths>
 #include <QVarLengthArray>
 #include <QUrl>
@@ -209,7 +210,12 @@ void CssTheme::loadCss(QObject *target)
         // m_bindings is already null; compact once the dead outnumber the live (amortised O(1)).
         connect(target, &QObject::destroyed, this, [this](QObject *obj) {
             m_registered.remove(obj);
-            if (++m_deadBindings > m_bindings.size() / 2) {
+            // Never resize m_bindings while reapplyAll() (below) is range-for'ing over it — applyCssTo()
+            // could, in principle, destroy a registered object synchronously (today everything uses
+            // deleteLater, so this hasn't been observed, but the guard is cheap and the alternative is
+            // UB). Compaction just waits for the next death or reapplyAll's own prune.
+            ++m_deadBindings;
+            if (!m_walkingBindings && m_deadBindings > m_bindings.size() / 2) {
                 m_bindings.removeIf([](const QPointer<QObject> &p) { return p.isNull(); });
                 m_deadBindings = 0;
             }
@@ -261,7 +267,11 @@ void CssTheme::reapplyAll()
     const LayoutBatchGuard batch(m_layoutEngine); // N applies, ONE layout flush
     m_bindings.removeIf([](const QPointer<QObject> &p) { return p.isNull(); });
     m_deadBindings = 0;
-    for (const QPointer<QObject> &p : m_bindings) {
+    // Guard the walk below: a destroyed-object lambda firing mid-loop (applyCssTo() destroying a
+    // registered object synchronously) must not resize m_bindings out from under the range-for.
+    m_walkingBindings = true;
+    const auto resetWalking = qScopeGuard([this] { m_walkingBindings = false; });
+    for (const QPointer<QObject> &p : std::as_const(m_bindings)) {
         if (p) {
             if (g_applyStats.enabled) ++g_applyStats.fromAll;
             applyCssTo(p);

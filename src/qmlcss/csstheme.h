@@ -12,7 +12,6 @@
 #include <QVariantMap>
 
 class QNetworkAccessManager;
-class QmlCssTests;
 
 namespace QmlCss {
 class CssLayoutEngine;
@@ -75,9 +74,6 @@ struct CssFontFace {
 
 class CssTheme : public QObject {
     Q_OBJECT
-    // The registry-stress test calls the private reapplyAll() directly (mass-destruction + full
-    // reapply), instead of going through a whole reload/setViewport cycle just to reach it.
-    friend class ::QmlCssTests;
     Q_PROPERTY(bool loaded READ isLoaded NOTIFY loadedChanged)
     // Current viewport (window) size — exposed so QML can resolve `vw`/`vh` units.
     Q_PROPERTY(qreal viewportWidth READ viewportWidth NOTIFY viewportChanged)
@@ -319,6 +315,11 @@ private:
     QList<QPointer<QObject>> m_bindings;
     QSet<QObject *> m_registered;
     int m_deadBindings = 0;
+    // Set while reapplyAll() range-for's over m_bindings: applyCssTo() could, in principle, destroy
+    // a registered object synchronously (today everything uses deleteLater, so this is a guard against
+    // a future caller, not an observed bug) — the destroyed-object lambda must not resize the list
+    // it's being walked over, so compaction is deferred to the next death or to reapplyAll's own prune.
+    bool m_walkingBindings = false;
     bool m_loaded = false;
     QStringList m_requestedLayer;  // the paths last passed to loadLayered (for reloads)
     QString m_stylePrelude;        // config-derived CSS prepended (lowest priority) on load

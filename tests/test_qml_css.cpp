@@ -3090,6 +3090,8 @@ void QmlCssTests::themeRegistryForgetsDestroyedItems()
     const int before = theme.registeredCount();
     theme.loadCss(root.get());
     QCOMPARE(theme.registeredCount(), before);
-    // A full reapply after mass destruction still works (no dangling entries).
-    theme.reapplyAll();
+    // A full reapply after mass destruction still works (no dangling entries). reapplyAll() is
+    // private; reload through the PUBLIC path — loadFromString() unconditionally calls
+    // rebuildRules() then reapplyAll() (cssthemeloader.cpp) — rather than reach around it.
+    theme.loadFromString(QStringLiteral(".row { height: 10px; }"));
 }
