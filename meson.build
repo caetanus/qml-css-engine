@@ -75,10 +75,10 @@ qml_css_engine_qt_sources = qt6.preprocess(
 
 qml_css_engine_include = include_directories('src')
 
-# CssTextLayout ports QQuickText's layout code literally, which elides through the private QTextEngine
-# (QQuickTextPrivate::elidedText does the same); the lean CssText resets a layout's font-engine cache before the
-# render thread reads it (QTextEngine) and reads the LayoutMirroring a composed label would inherit
-# (QQuickItemPrivate). Private to the library: no installed header includes them.
+# Private Qt, all in csstext.cpp: the lean CssText's private handoff (SQ_LEAN_TEXT_HANDOFF=private) resets a
+# layout's font-engine cache before the render thread reads it (QTextEngine), and it reads the LayoutMirroring a
+# composed label would inherit (QQuickItemPrivate). CssTextLayout elides through public API only. Private to the
+# library: no installed header includes them.
 qt6_gui_private_dep = dependency('qt6', modules: ['Core', 'Gui'], private_headers: true)
 qt6_quick_private_dep = dependency('qt6', modules: ['Core', 'Gui', 'Qml', 'Quick'], private_headers: true)
 

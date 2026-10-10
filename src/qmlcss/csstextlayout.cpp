@@ -5,9 +5,6 @@
 #include <QTextOption>
 #include <QtMath>
 
-#include <QtGui/private/qfixed_p.h>
-#include <QtGui/private/qtextengine_p.h>
-
 #include <cfloat>
 #include <climits>
 
@@ -114,12 +111,20 @@ struct QuickTextPort {
         height += (lineHeightMode == FixedHeight) ? lineHeight : line.height() * lineHeight;
     }
 
+    // QQuickText elides a layout range with the private QTextEngine::elidedText(mode, width, 0, start, count)
+    // (qquicktext.cpp 742, 953); the public QFontMetricsF::elidedText of the same range and font gives the same
+    // string for every case the oracle holds it to. ElideRight is the only mode CssText uses.
+    QString publicElidedText(qreal width, int start, int count) const
+    {
+        Q_ASSERT(elideMode == Qt::ElideRight);
+        return QFontMetricsF(layout->font()).elidedText(layout->text().mid(start, count), Qt::ElideRight, width);
+    }
+
     // QQuickTextPrivate::elidedText (qquicktext.cpp 739-762), PlainText (!styledText).
     QString elidedText(qreal lineWidth, const QTextLine &line, const QTextLine *nextLine = nullptr) const
     {
         if (nextLine) {
-            return layout->engine()->elidedText(Qt::TextElideMode(elideMode), QFixed::fromReal(lineWidth), 0,
-                                                line.textStart(), line.textLength() + nextLine->textLength());
+            return publicElidedText(lineWidth, line.textStart(), line.textLength() + nextLine->textLength());
         } else {
             QString elideText = layout->text().mid(line.textStart(), line.textLength());
             // QFontMetrics won't help eliding styled text.
@@ -267,12 +272,7 @@ struct QuickTextPort {
                             break;
 
                         truncated = true;
-                        elideText = layout->engine()->elidedText(
-                                Qt::TextElideMode(elideMode),
-                                QFixed::fromReal(line.width()),
-                                0,
-                                line.textStart(),
-                                line.textLength());
+                        elideText = publicElidedText(line.width(), line.textStart(), line.textLength());
                         elideStart = line.textStart();
                         elideEnd = elideStart + line.textLength();
                     } else {

@@ -8,9 +8,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Qml Quick Network)
-# CssTextLayout elides through the private QTextEngine, as QQuickTextPrivate does; the lean CssText resets a
-# layout's font-engine cache (QTextEngine) and reads the inherited LayoutMirroring (QQuickItemPrivate).
-# Library-private.
+# Private Qt, all in csstext.cpp: the lean CssText's private handoff resets a layout's font-engine cache
+# (QTextEngine) and reads the inherited LayoutMirroring (QQuickItemPrivate). Library-private.
 find_package(Qt6 REQUIRED COMPONENTS GuiPrivate QuickPrivate)
 qt_standard_project_setup()
 

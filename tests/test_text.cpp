@@ -34,17 +34,18 @@ struct PlacedLine {
     QRectF rect;
     int textStart = 0;
     int textLength = 0;
+    QString text; // the characters the line shows (an elided line: the elided string itself)
     bool operator==(const PlacedLine &o) const
     {
-        return rect == o.rect && textStart == o.textStart && textLength == o.textLength;
+        return rect == o.rect && textStart == o.textStart && textLength == o.textLength && text == o.text;
     }
 };
 
 QString describe(const PlacedLine &l)
 {
-    return QStringLiteral("[%1,%2 %3x%4 text %5+%6]")
+    return QStringLiteral("[%1,%2 %3x%4 text %5+%6 \"%7\"]")
         .arg(l.rect.x()).arg(l.rect.y()).arg(l.rect.width()).arg(l.rect.height())
-        .arg(l.textStart).arg(l.textLength);
+        .arg(l.textStart).arg(l.textLength).arg(l.text);
 }
 
 // QQuickTextUtil::alignedX/alignedY (qquicktextutil.cpp 48-79) — the class is not exported, so the two
@@ -76,7 +77,8 @@ void appendLines(QList<PlacedLine> *out, const QTextLayout *layout, int count, Q
 {
     for (int i = 0; i < count && i < layout->lineCount(); ++i) {
         const QTextLine line = layout->lineAt(i);
-        out->append({ line.naturalTextRect().translated(origin), line.textStart(), line.textLength() });
+        out->append({ line.naturalTextRect().translated(origin), line.textStart(), line.textLength(),
+                      layout->text().mid(line.textStart(), line.textLength()) });
     }
 }
 
@@ -198,6 +200,46 @@ QList<Case> cases()
     c.append({ "rtl-hebrew-right", [] { auto p = base(QStringLiteral(u"שלום עולם"));
                                         p.horizontalAlignment = Qt::AlignRight; return p; }(), 300, 50 });
     c.append({ "fallback-emoji-cjk", base(QStringLiteral(u"Hi 😀 你好 世界 こんにちは")), 120, kAuto });
+    // Elision (Task 1b: the port elides through public API only). "join" = a wrapped line elided together with
+    // the next one because the box holds one line (qquicktext.cpp 919-941); "single" = the only line is too wide
+    // (qquicktext.cpp 953).
+    auto elided = [](QString text, int wrap) { auto p = base(text); p.wrapMode = wrap; p.elide = Qt::ElideRight;
+                                               return p; };
+    c.append({ "elide-join-letter-spacing", [&] { auto p = elided(kLong, QTextOption::WordWrap);
+                                                  p.font.setLetterSpacing(QFont::AbsoluteSpacing, 2); return p; }(),
+               150, 20 });
+    c.append({ "elide-join-word-spacing", [&] { auto p = elided(kLong, QTextOption::WordWrap);
+                                                p.font.setWordSpacing(5); return p; }(), 150, 20 });
+    c.append({ "elide-join-uppercase", [&] { auto p = elided(kLong, QTextOption::WordWrap);
+                                             p.font.setCapitalization(QFont::AllUppercase); return p; }(), 150, 20 });
+    c.append({ "elide-join-rtl-hebrew", elided(QStringLiteral(u"שלום עולם, מה שלומך היום ומה שלום המשפחה"),
+                                               QTextOption::WordWrap), 100, 20 });
+    c.append({ "elide-join-rtl-arabic", elided(QStringLiteral(u"مرحبا بالعالم، كيف حالك اليوم يا صديقي العزيز"),
+                                               QTextOption::WordWrap), 100, 20 });
+    c.append({ "elide-single-rtl-hebrew", elided(QStringLiteral(u"שלום עולם, מה שלומך היום"), QTextOption::NoWrap),
+               60, kAuto });
+    c.append({ "elide-single-rtl-arabic", elided(QStringLiteral(u"مرحبا بالعالم، كيف حالك اليوم"),
+                                                 QTextOption::NoWrap), 60, kAuto });
+    c.append({ "elide-newline-one-line-box", elided(QStringLiteral("first\nsecond"), QTextOption::WordWrap), 200, 20 });
+    // The joined range ends with the U+2028 the newline became: line 1 wraps, line 2 ends at the newline.
+    c.append({ "elide-join-range-has-line-separator",
+               elided(QStringLiteral("alpha beta delta\nsecond paragraph"), QTextOption::WordWrap), 90, 20 });
+    c.append({ "elide-join-range-has-line-separator-tight", elided(QStringLiteral("ab cd\nx"), QTextOption::WordWrap),
+               30, 20 });
+    c.append({ "elide-single-letter-spacing", [&] { auto p = elided(kLong, QTextOption::NoWrap);
+                                                    p.font.setLetterSpacing(QFont::AbsoluteSpacing, 2); return p; }(),
+               60, kAuto });
+    c.append({ "elide-single-word-spacing", [&] { auto p = elided(kLong, QTextOption::NoWrap);
+                                                  p.font.setWordSpacing(5); return p; }(), 60, kAuto });
+    c.append({ "elide-single-uppercase", [&] { auto p = elided(kLong, QTextOption::NoWrap);
+                                               p.font.setCapitalization(QFont::AllUppercase); return p; }(), 60, kAuto });
+    c.append({ "elide-single-fractional-13.8pt", [&] { auto p = elided(kLong, QTextOption::NoWrap);
+                                                       p.font.setPointSizeF(13.8); return p; }(), 73.5, kAuto });
+    // WordWrap, one unbreakable word wider than the box: a single line, elided by the 953 path.
+    c.append({ "elide-single-unbreakable-word", elided(QStringLiteral("Supercalifragilisticexpialidocious"),
+                                                       QTextOption::WordWrap), 90, kAuto });
+    c.append({ "elide-single-emoji-cjk", elided(QStringLiteral(u"Hi 😀 你好 世界 こんにちは"), QTextOption::NoWrap),
+               70, kAuto });
     c.append({ "elide-zero-avail-width", [] { auto p = base(kLong); p.elide = Qt::ElideRight; p.leftPadding = 10;
                                               p.rightPadding = 10; return p; }(), 15, 30 });
     return c;
