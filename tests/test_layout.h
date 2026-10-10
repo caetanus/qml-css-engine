@@ -32,4 +32,8 @@ private slots:
 
     // Absolute positioning
     void absoluteAndInsetPlacement();
+
+    // Golden flex geometry (step 4b-3 Task 1): pins TODAY's layoutFlex output case by case so
+    // the upcoming typed-style refactor (Task 2) can be proven byte-identical.
+    void flexGeometryGolden();
 };
