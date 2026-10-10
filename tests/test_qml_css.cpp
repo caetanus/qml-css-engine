@@ -3147,3 +3147,68 @@ void QmlCssTests::stateChangeRestylesOnlyTheSubtree()
     Detail::g_applyStats.enabled = false;
     QCOMPARE(applied, quint64(1)); // exactly the one registered descendant (cell7)
 }
+
+void QmlCssTests::cssRepeaterSwapKeepsDocumentOrder()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(".row { height: 10px; }"));
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect {
+            id: box
+            cssPrimitive: ""
+            width: 200; height: 400
+            property var order: []
+            style: ({ "display": "flex", "flex-direction": "column" })
+            CssRect { objectName: "header"; cssClass: ["row"]; cssPrimitive: "div" }
+            CssRepeater {
+                model: box.order
+                delegate: Component { CssRect { objectName: "r" + modelData; cssClass: ["row"]; cssPrimitive: "div" } }
+            }
+            CssRect { objectName: "footer"; cssClass: ["row"]; cssPrimitive: "div" }
+        }
+    )", QUrl());
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+    auto *box = qobject_cast<CssRect *>(root.get());
+    QVERIFY(box);
+
+    auto docOrder = [&]() {
+        QStringList names;
+        for (QQuickItem *k : box->layoutContentHolder()->childItems())
+            if (!k->objectName().isEmpty())
+                names << k->objectName();
+        return names;
+    };
+    auto expect = [](const QStringList &rows) {
+        return QStringList{QStringLiteral("header")} + rows + QStringList{QStringLiteral("footer")};
+    };
+    QStringList ids;
+    for (int i = 0; i < 50; ++i)
+        ids << QString::number(i);
+    QVariantList model;
+    for (const QString &s : ids) model << s;
+    root->setProperty("order", model);                       // create (rows land after the footer!)
+    QStringList rows;
+    for (const QString &s : ids) rows << (QStringLiteral("r") + s);
+    QCOMPARE(docOrder(), expect(rows));
+
+    std::swap(model[1], model[48]);                          // swap
+    std::swap(rows[1], rows[48]);
+    root->setProperty("order", model);
+    QCOMPARE(docOrder(), expect(rows));
+
+    model.removeAt(20); rows.removeAt(20);                   // remove
+    root->setProperty("order", model);
+    QCOMPARE(docOrder(), expect(rows));
+
+    model.append(QStringLiteral("x")); rows << QStringLiteral("rx"); // append
+    root->setProperty("order", model);
+    QCOMPARE(docOrder(), expect(rows));
+}

@@ -151,4 +151,7 @@ private slots:
     void themeRegistryForgetsDestroyedItems();
     // Step 2 Task 2: a class/state change restyles its subtree only, not every registered object.
     void stateChangeRestylesOnlyTheSubtree();
+    // Step 2 Task 3: restack keeps document order through create/swap/remove/append, including
+    // when new rows land after a static sibling (the footer).
+    void cssRepeaterSwapKeepsDocumentOrder();
 };

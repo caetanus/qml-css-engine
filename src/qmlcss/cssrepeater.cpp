@@ -10,6 +10,8 @@
 #include <QMetaMethod>
 #include <QQmlContext>
 #include <QQmlEngine>
+#include <QVarLengthArray>
+#include <algorithm>
 
 namespace QmlCss {
 
@@ -229,14 +231,79 @@ void CssRepeater::rebuild()
 
 void CssRepeater::restack()
 {
-    // Document order == childItems order: place each row right after US in model order, so
-    // the layout engine walks them in sequence. stackAfter chains keep it O(n).
+    // Document order == childItems order: rows must sit right after US, in model order. stackAfter()
+    // costs two linear sibling searches EVEN for an item already in place, so calling it for every row
+    // made each rebuild O(n^2). Move only what is out of place:
+    //  - fast path: rows already contiguous after us in model order (create at the end, append,
+    //    remove, update, clear) → no calls;
+    //  - otherwise keep the longest run of rows whose CURRENT order already matches the model (longest
+    //    increasing subsequence of their sibling positions) and move the others after their model
+    //    predecessor — a swap moves 2 rows. A final O(n) check falls back to the full loop if a
+    //    foreign sibling still sits between rows (always correct).
+    QQuickItem *parent = parentItem();
+    if (!parent)
+        return;
+    QVarLengthArray<QQuickItem *, 256> items;
+    for (const Row &row : m_rows)
+        if (row.item)
+            items.append(row.item);
+    const int n = int(items.size());
+    if (n == 0)
+        return;
+
+    const QList<QQuickItem *> siblings = parent->childItems();
+    QHash<const QQuickItem *, int> pos;
+    pos.reserve(siblings.size());
+    for (int i = 0; i < siblings.size(); ++i)
+        pos.insert(siblings[i], i);
+    const int selfPos = pos.value(this, -1);
+
+    bool inPlace = true;
+    for (int i = 0; i < n && inPlace; ++i)
+        inPlace = pos.value(items[i], -1) == selfPos + 1 + i;
+    if (inPlace)
+        return;
+
+    // Longest increasing subsequence (patience sorting, O(n log n)) over positions after us.
+    QVarLengthArray<int, 256> p(n), prev(n), tails;
+    for (int i = 0; i < n; ++i) {
+        p[i] = pos.value(items[i], -1);
+        prev[i] = -1;
+        if (p[i] <= selfPos)
+            continue; // before us: must move
+        int lo = 0, hi = int(tails.size());
+        while (lo < hi) {
+            const int mid = (lo + hi) / 2;
+            if (p[tails[mid]] < p[i]) lo = mid + 1; else hi = mid;
+        }
+        if (lo > 0)
+            prev[i] = tails[lo - 1];
+        if (lo == tails.size()) tails.append(i); else tails[lo] = i;
+    }
+    QVarLengthArray<bool, 256> keep(n);
+    std::fill(keep.begin(), keep.end(), false);
+    for (int i = tails.isEmpty() ? -1 : tails.last(); i >= 0; i = prev[i])
+        keep[i] = true;
+
     QQuickItem *anchor = this;
-    for (Row &row : m_rows) {
-        if (!row.item)
-            continue;
-        row.item->stackAfter(anchor);
-        anchor = row.item;
+    for (int i = 0; i < n; ++i) {
+        if (!keep[i])
+            items[i]->stackAfter(anchor);
+        anchor = items[i];
+    }
+
+    // Kept rows may still have a foreign sibling between them: verify once, fall back if so.
+    const QList<QQuickItem *> after = parent->childItems();
+    const int self2 = int(after.indexOf(this));
+    bool ok = self2 >= 0 && self2 + n < after.size() + 1;
+    for (int i = 0; ok && i < n; ++i)
+        ok = after.value(self2 + 1 + i) == items[i];
+    if (!ok) {
+        anchor = this;
+        for (int i = 0; i < n; ++i) {
+            items[i]->stackAfter(anchor);
+            anchor = items[i];
+        }
     }
 }
 
