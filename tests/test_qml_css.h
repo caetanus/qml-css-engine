@@ -139,4 +139,11 @@ private slots:
     void contentHolderReportsLateForeignChild();
     void scrollExtentFollowsLayoutOnClear();
     void scrollExtentFollowsLateCssChildGrowth();
+
+    // Task 4 review fixes: the scroll extent must use TARGET (not mid-transition) geometry for
+    // flow children, keep the old childrenRect() padding-top breathing, and still pick up a
+    // foreign child whose height is set explicitly (no Css children at all).
+    void scrollExtentUsesTransitionTarget();
+    void scrollExtentKeepsPaddingTopBreathing();
+    void scrollExtentFollowsForeignChildSetHeight();
 };

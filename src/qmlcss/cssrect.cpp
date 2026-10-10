@@ -1316,6 +1316,19 @@ void CssRect::layoutChildren()
     if (m_flickable && m_contentHolder) {
         // The holder becomes the scrolled content: full width, height = children extent.
         m_contentHolder->setWidth(iw);
+        // Task 4 review finding #5: on a resize, geometryChange() calls layoutChildren() (here)
+        // and then, when the SIZE changed, requestRelayout() — both synchronous, same call stack,
+        // so this publish is never visible on screen even when the relayout corrects it right
+        // after. It looked skippable (publish once, not twice), but it is NOT: this call uses the
+        // stale m_extentTop/m_extentBottom with the box's NEW iw/ih, while the relayout's
+        // setLaidOutExtent only republishes when the extent itself CHANGED (its own dedup guard).
+        // A resize that changes only this box's own height/width without moving any child (no
+        // flex/grid reflow — e.g. fixed-size children) leaves the extent unchanged, so the
+        // relayout's publish is skipped entirely; THIS call is then the only place the new
+        // ownerHeight/ownerWidth ever reaches syncScrollExtent's max(ownerHeight, ...). Dropping it
+        // would leave contentHeight/contentWidth stale after such a resize. Left as-is — the fix
+        // would have to teach setLaidOutExtent's dedup about owner-size changes too, which is as
+        // much bookkeeping as the call it would save.
         syncScrollContent();
     }
 }
@@ -1449,6 +1462,11 @@ void CssRect::geometryChange(const QRectF &newGeometry, const QRectF &oldGeometr
     layoutChildren();
     if (newGeometry.size() != oldGeometry.size())
         requestRelayout();
+}
+
+qreal CssRect::targetHeight() const
+{
+    return (m_heightAnim && m_heightAnim->state() == QAbstractAnimation::Running) ? m_heightAnimTarget : height();
 }
 
 bool CssRect::animateGeometry(QLatin1String prop, qreal target)

@@ -83,6 +83,9 @@ public:
     // Called by CssLayoutEngine after each layout of this box: the vertical extent of the children it
     // placed. Drives the scroll contentHeight (instead of QQuickItem::childrenRect()).
     void setLaidOutExtent(qreal top, qreal bottom);
+    // Engine-internal: CssLayoutEngine::layout() checks this BEFORE walking children to publish
+    // the scroll extent — only scroll boxes need that work (Task 4 review finding #3).
+    bool hasScroll() const { return m_flickable; }
 
     QString cssId() const { return m_cssId; }
     void setCssId(const QString &v);

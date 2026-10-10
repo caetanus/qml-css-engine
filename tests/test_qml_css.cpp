@@ -2897,3 +2897,153 @@ void QmlCssTests::scrollExtentFollowsLateCssChildGrowth()
     // 20 + 400 = 420px of content: the last row must be reachable.
     QTRY_VERIFY_WITH_TIMEOUT(flick->property("contentHeight").toReal() >= 419.0, 2000);
 }
+
+// Task 4 review finding #1: a flow child mid `transition: height` must publish its TARGET
+// extent, not the pre-transition `k->height()` — place() sets x/y synchronously but animates
+// width/height via CssRect::animateGeometry, and nothing re-publishes the extent as the
+// animation ticks (Css children have no parent-relayout hook on geometry ticks). The restyle's
+// own relayout must therefore publish the TARGET (420px) extent synchronously.
+void QmlCssTests::scrollExtentUsesTransitionTarget()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(R"(
+        .list { overflow-y: auto; display: flex; flex-direction: column; }
+        .row { height: 20px; transition: height 400ms linear; }
+        .row.tall { height: 400px; }
+    )"));
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect {
+            cssClass: ["list"]
+            cssPrimitive: "div"
+            width: 200; height: 150
+            CssRect { cssClass: ["row"]; cssPrimitive: "div" }
+            CssRect { objectName: "last"; cssClass: ["row"]; cssPrimitive: "div" }
+        }
+    )", QUrl());
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+    QQuickItem *flick = nullptr;
+    for (QQuickItem *k : root->findChildren<QQuickItem *>()) {
+        if (QString::fromLatin1(k->metaObject()->className()).contains(QLatin1String("Flickable"))) {
+            flick = k;
+            break;
+        }
+    }
+    QVERIFY2(flick, "overflow-y: auto did not compose a Flickable");
+    // Two 20px rows fit the 150px viewport.
+    QTRY_COMPARE_WITH_TIMEOUT(flick->property("contentHeight").toReal(), 150.0, 2000);
+
+    auto *last = root->findChild<QQuickItem *>(QStringLiteral("last"));
+    QVERIFY(last);
+    last->setProperty("cssClass", QVariant(QStringList{QStringLiteral("row"), QStringLiteral("tall")}));
+    // Assert IMMEDIATELY (no QTRY, no event processing): the restyle's own synchronous relayout
+    // must already publish the TARGET extent (20 + 400 = 420px), before the height animation
+    // has ticked even once.
+    QVERIFY2(flick->property("contentHeight").toReal() >= 419.0,
+             qPrintable(QStringLiteral("contentHeight published pre-transition height: %1")
+                             .arg(flick->property("contentHeight").toReal())));
+}
+
+// Task 4 review finding #2: the old QQuickItem::childrenRect()-based extent gave bottom
+// breathing equal to padding-top when padding-top > padding-bottom (r.y() == padding-top).
+// The layout-pass extent must reproduce that: extentTop is the MINIMUM child y (== padding-top
+// here, since the flex column starts children at originY), not an initial-0.0 that can only
+// shrink via std::min and so can never go positive.
+//
+// Derivation (matches git show b161c08:src/qmlcss/cssscroll.h, the old implementation): content
+// holder is the PADDING box (cssrect.cpp layoutChildren insets it by the BORDER only), so
+// children start at y == originY == padding-top == 30. r = contentHolder->childrenRect() then has
+// r.y() == 30 (first row's y) and r.height() == 200 (10 rows x 20px). pad = max(0, r.y()=30,
+// bottomPad=0) = 30. contentH = max(ownerHeight=150, r.y()+r.height()+pad = 30+200+30 = 260) = 260.
+void QmlCssTests::scrollExtentKeepsPaddingTopBreathing()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(R"(
+        .list { overflow-y: auto; display: flex; flex-direction: column; padding-top: 30px; padding-bottom: 0px; }
+        .row { height: 20px; }
+    )"));
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect {
+            id: box
+            cssClass: ["list"]
+            cssPrimitive: "div"
+            width: 200; height: 150
+            CssRepeater {
+                model: 10
+                delegate: Component {
+                    CssRect { cssClass: ["row"]; cssPrimitive: "div" }
+                }
+            }
+        }
+    )", QUrl());
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+    QQuickItem *flick = nullptr;
+    for (QQuickItem *k : root->findChildren<QQuickItem *>()) {
+        if (QString::fromLatin1(k->metaObject()->className()).contains(QLatin1String("Flickable"))) {
+            flick = k;
+            break;
+        }
+    }
+    QVERIFY2(flick, "overflow-y: auto did not compose a Flickable");
+    // 30 (origin/padding-top) + 200 (10 rows x 20px) + 30 (bottom breathing == padding-top, the
+    // old childrenRect() behaviour) == 260.
+    QTRY_COMPARE_WITH_TIMEOUT(flick->property("contentHeight").toReal(), 260.0, 2000);
+}
+
+// Task 4 review finding (foreign children): a scroll box with NO Css children at all must still
+// pick up a foreign (non-Css) child's EXPLICIT height — abs/foreign children keep using their
+// current geometry (y()+height()), never the flow-target path (there is no flow).
+void QmlCssTests::scrollExtentFollowsForeignChildSetHeight()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(R"(
+        .list { overflow-y: auto; display: flex; flex-direction: column; }
+    )"));
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect {
+            cssClass: ["list"]
+            cssPrimitive: "div"
+            width: 200; height: 150
+        }
+    )", QUrl());
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+    auto *box = qobject_cast<CssRect *>(root.get());
+    QVERIFY(box);
+    QQuickItem *flick = nullptr;
+    for (QQuickItem *k : root->findChildren<QQuickItem *>()) {
+        if (QString::fromLatin1(k->metaObject()->className()).contains(QLatin1String("Flickable"))) {
+            flick = k;
+            break;
+        }
+    }
+    QVERIFY2(flick, "overflow-y: auto did not compose a Flickable");
+
+    auto *foreign = new QQuickItem;
+    foreign->setParent(box->layoutContentHolder());
+    foreign->setParentItem(box->layoutContentHolder());
+    foreign->setHeight(500); // explicit height, NOT implicit
+    QTRY_VERIFY_WITH_TIMEOUT(flick->property("contentHeight").toReal() >= 499.0, 2000);
+}

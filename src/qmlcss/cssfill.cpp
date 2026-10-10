@@ -515,6 +515,11 @@ void CssFill::layoutChildren()
     }
     if (m_flickable && m_contentHolder) {
         m_contentHolder->setWidth(iw);
+        // Task 4 review finding #5 (see CssRect::layoutChildren for the full derivation): NOT
+        // skippable even though geometryChange() may run a synchronous requestRelayout() right
+        // after this — a resize that doesn't move any child leaves the extent unchanged, so the
+        // relayout's setLaidOutExtent dedup-skips its own publish, and this call is then the only
+        // place the box's new own size reaches syncScrollExtent's max(ownerHeight, ...).
         syncScrollContent();
     }
 }

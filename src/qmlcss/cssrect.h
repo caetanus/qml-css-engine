@@ -69,6 +69,12 @@ public:
     // writes directly). Idempotent while already animating toward the same target.
     bool animateGeometry(QLatin1String prop, qreal target);
 
+    // Task 4 review finding #1: CssLayoutEngine::layout()'s scroll-extent walk must use this, not
+    // height(), for a CssRect child — while a `transition: height` is ticking (animateGeometry),
+    // height() is the CURRENT animated frame, not where the box is headed. Falls back to height()
+    // when no height animation is running.
+    qreal targetHeight() const;
+
 private:
 
     // Renderer defaults (used when the style omits the longhand) — the QML `default*` props,
@@ -115,6 +121,9 @@ public:
     qreal scrollTop() const { return m_flickable ? m_flickable->property("contentY").toReal() : 0.0; }
     qreal scrollHeight() const { return m_flickable ? m_flickable->property("contentHeight").toReal() : height(); }
     qreal clientHeight() const { return m_flickable ? m_flickable->height() : height(); }
+    // Engine-internal: CssLayoutEngine::layout() checks this BEFORE walking children to publish
+    // the scroll extent — only scroll boxes need that work (Task 4 review finding #3).
+    bool hasScroll() const { return m_flickable; }
     explicit CssRect(QQuickItem *parent = nullptr);
 
     // Engine-internal: the layout pass inspects a CHILD box's content to classify it (e.g. the

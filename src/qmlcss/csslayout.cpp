@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <limits>
 
 namespace QmlCss {
 
@@ -616,20 +617,49 @@ void CssLayoutEngine::layout(QQuickItem *root, QQuickItem *content)
 
     // Vertical extent of what this pass placed — the scroll contentHeight source (never
     // QQuickItem::childrenRect(), see cssscroll.h). O(children), same walk the pass already did.
-    double extentTop = 0.0, extentBottom = 0.0;
-    const auto extend = [&](const QList<QQuickItem *> &items) {
-        for (QQuickItem *k : items) {
-            extentTop = std::min(extentTop, k->y());
-            extentBottom = std::max(extentBottom, k->y() + k->height());
-        }
-    };
-    extend(flow);
-    extend(abs);
-    extend(foreign);
-    if (auto *r = qobject_cast<CssRect *>(root))
-        r->setLaidOutExtent(extentTop, extentBottom);
-    else if (auto *f = qobject_cast<CssFill *>(root))
-        f->setLaidOutExtent(extentTop, extentBottom);
+    // Only a scroll box needs this (Task 4 review finding #3): the qobject_casts + children walk
+    // are skipped entirely for the common non-scrolling box. A box that becomes scrollable later
+    // (CssRect/CssFill::ensureScrollable) calls requestRelayout() right after composing the
+    // Flickable, so its first publish happens on that very next layout() — hasScroll() is already
+    // true by the time this runs.
+    CssRect *scrollRect = qobject_cast<CssRect *>(root);
+    CssFill *scrollFill = scrollRect ? nullptr : qobject_cast<CssFill *>(root);
+    if ((scrollRect && scrollRect->hasScroll()) || (scrollFill && scrollFill->hasScroll())) {
+        // extentTop is the real MINIMUM child y (Task 4 review finding #2) — starts at +infinity
+        // so it converges down to the first child's y (== padding-top for the common flex-column
+        // case), never an initial 0.0 that can only shrink via std::min and so can never report
+        // positive breathing room at the top; falls back to 0 for a scroll box with no children.
+        // (syncScrollExtent still clamps the overall pad at 0 — that clamp is unaffected.)
+        double extentTop = std::numeric_limits<double>::infinity();
+        double extentBottom = 0.0;
+        // Invisible / `display: none` children are deliberately excluded (flow/abs already skip
+        // them above; `foreign` only ever collects visible items) — CSS semantics drop them from
+        // flow, unlike the OLD QQuickItem::childrenRect()-based extent this replaced, which counted
+        // them regardless of visibility.
+        const auto extend = [&](const QList<QQuickItem *> &items) {
+            for (QQuickItem *k : items) {
+                const double top = k->y();
+                // Task 4 review finding #1: a CssRect child mid `transition: height`
+                // (CssRect::animateGeometry) has not reached its final height yet — use the
+                // TARGET height, or the extent lags a whole transition behind (a scroll box
+                // couldn't be scrolled to content that is already visually there).
+                double h = k->height();
+                if (CssRect *box = qobject_cast<CssRect *>(k))
+                    h = box->targetHeight();
+                extentTop = std::min(extentTop, top);
+                extentBottom = std::max(extentBottom, top + h);
+            }
+        };
+        extend(flow);
+        extend(abs);
+        extend(foreign);
+        if (std::isinf(extentTop))
+            extentTop = 0.0;
+        if (scrollRect)
+            scrollRect->setLaidOutExtent(extentTop, extentBottom);
+        else
+            scrollFill->setLaidOutExtent(extentTop, extentBottom);
+    }
 }
 
 // --- flexbox ----------------------------------------------------------------------------
