@@ -2794,4 +2794,106 @@ void QmlCssTests::contentHolderReportsLateForeignChild()
     foreign->setImplicitWidth(40);
     foreign->setImplicitHeight(50);
     QTRY_COMPARE_WITH_TIMEOUT(box->implicitHeight(), 50.0, 1000);
+
+    QSignalSpy removed(holder, &CssContentHolder::childRemoved);
+    foreign->setParentItem(nullptr);
+    QCOMPARE(removed.count(), 1);
+}
+
+void QmlCssTests::scrollExtentFollowsLayoutOnClear()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(R"(
+        .list { overflow-y: auto; display: flex; flex-direction: column; }
+        .row { height: 20px; }
+    )"));
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect {
+            id: box
+            cssClass: ["list"]
+            cssPrimitive: "div"
+            width: 200; height: 150
+            property int count: 50
+            CssRepeater {
+                model: box.count
+                delegate: Component {
+                    CssRect { cssClass: ["row"]; cssPrimitive: "div" }
+                }
+            }
+        }
+    )", QUrl());
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+
+    QQuickItem *flick = nullptr;
+    for (QQuickItem *k : root->findChildren<QQuickItem *>()) {
+        if (QString::fromLatin1(k->metaObject()->className()).contains(QLatin1String("Flickable"))) {
+            flick = k;
+            break;
+        }
+    }
+    QVERIFY2(flick, "overflow-y: auto did not compose a Flickable");
+    // 50 rows x 20px.
+    QTRY_VERIFY_WITH_TIMEOUT(flick->property("contentHeight").toReal() >= 995.0, 2000);
+
+    // Clearing shrinks the extent back to the viewport — computed by the layout pass.
+    root->setProperty("count", 0);
+    QTRY_COMPARE_WITH_TIMEOUT(flick->property("contentHeight").toReal(), 150.0, 2000);
+
+    // Growing again follows too.
+    root->setProperty("count", 10);
+    QTRY_VERIFY_WITH_TIMEOUT(flick->property("contentHeight").toReal() >= 195.0, 2000);
+}
+
+// The bug a436d14 fixed: a CSS child that grows AFTER mount must extend the scroll content (the last
+// card was cut off on a real GPU when the extent followed childrenRectChanged). The extent now comes
+// from the layout pass: the child's growth notifies the parent, whose relayout republishes it.
+void QmlCssTests::scrollExtentFollowsLateCssChildGrowth()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(R"(
+        .list { overflow-y: auto; display: flex; flex-direction: column; }
+        .row { height: 20px; }
+        .row.tall { height: 400px; }
+    )"));
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect {
+            cssClass: ["list"]
+            cssPrimitive: "div"
+            width: 200; height: 150
+            CssRect { cssClass: ["row"]; cssPrimitive: "div" }
+            CssRect { objectName: "last"; cssClass: ["row"]; cssPrimitive: "div" }
+        }
+    )", QUrl());
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+    QQuickItem *flick = nullptr;
+    for (QQuickItem *k : root->findChildren<QQuickItem *>()) {
+        if (QString::fromLatin1(k->metaObject()->className()).contains(QLatin1String("Flickable"))) {
+            flick = k;
+            break;
+        }
+    }
+    QVERIFY2(flick, "overflow-y: auto did not compose a Flickable");
+    QTRY_COMPARE_WITH_TIMEOUT(flick->property("contentHeight").toReal(), 150.0, 2000); // 40px fits
+
+    auto *last = root->findChild<QQuickItem *>(QStringLiteral("last"));
+    QVERIFY(last);
+    last->setProperty("cssClass", QVariant(QStringList{QStringLiteral("row"), QStringLiteral("tall")}));
+    // 20 + 400 = 420px of content: the last row must be reachable.
+    QTRY_VERIFY_WITH_TIMEOUT(flick->property("contentHeight").toReal() >= 419.0, 2000);
 }

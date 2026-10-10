@@ -137,4 +137,6 @@ private slots:
     void layoutCountsChildVisits();
     void cssRepeaterAppendAndClearAreLinear();
     void contentHolderReportsLateForeignChild();
+    void scrollExtentFollowsLayoutOnClear();
+    void scrollExtentFollowsLateCssChildGrowth();
 };

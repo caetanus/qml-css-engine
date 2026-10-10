@@ -1339,8 +1339,6 @@ void CssRect::ensureScrollable()
     m_flickable = composeScrollFlickable(this, m_contentHolder);
     if (!m_flickable)
         return;
-    // Content extent follows the laid-out children.
-    connect(m_contentHolder, &QQuickItem::childrenRectChanged, this, &CssRect::syncScrollContent);
     // scrollTop / scrollHeight / clientHeight follow the Flickable — QUEUED, like the DOM's scroll
     // event: the content height changes inside a layout pass (a list's model just changed), and a
     // handler that grows the model there (load more near the end) re-entered that very binding.
@@ -1349,6 +1347,7 @@ void CssRect::ensureScrollable()
     emit scrollChanged();
     watchForeignChildren(); // now scrollable: tie existing children's growth to the resync
     layoutChildren();
+    requestRelayout(); // the next pass publishes the extent
 }
 
 void CssRect::syncScrollContent()
@@ -1357,9 +1356,19 @@ void CssRect::syncScrollContent()
     // holder starts children at y≈0, so there is no top offset to mirror).
     const qreal pb = m_layout ? m_layout->paddingOf(m_style).value(2) : 0.0;
     // The Flickable viewport is the padding box (layoutChildren), so the extents must match it.
-    syncScrollExtent(m_flickable, m_contentHolder,
+    syncScrollExtent(m_flickable, m_contentHolder, m_extentTop, m_extentBottom,
                      std::max<qreal>(0.0, height() - m_borderInsets[0] - m_borderInsets[2]),
                      std::max<qreal>(0.0, width() - m_borderInsets[3] - m_borderInsets[1]), pb);
+}
+
+void CssRect::setLaidOutExtent(qreal top, qreal bottom)
+{
+    if (qFuzzyCompare(m_extentTop + 1.0, top + 1.0) && qFuzzyCompare(m_extentBottom + 1.0, bottom + 1.0))
+        return;
+    m_extentTop = top;
+    m_extentBottom = bottom;
+    if (m_flickable)
+        syncScrollContent();
 }
 
 void CssRect::componentComplete()

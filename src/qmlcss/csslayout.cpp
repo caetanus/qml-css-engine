@@ -613,6 +613,23 @@ void CssLayoutEngine::layout(QQuickItem *root, QQuickItem *content)
     const double ih = contentH + pad[0] + pad[2] + bor[0] + bor[2];
     if (std::abs(root->implicitWidth() - iw) > 0.5) root->setImplicitWidth(iw);
     if (std::abs(root->implicitHeight() - ih) > 0.5) root->setImplicitHeight(ih);
+
+    // Vertical extent of what this pass placed — the scroll contentHeight source (never
+    // QQuickItem::childrenRect(), see cssscroll.h). O(children), same walk the pass already did.
+    double extentTop = 0.0, extentBottom = 0.0;
+    const auto extend = [&](const QList<QQuickItem *> &items) {
+        for (QQuickItem *k : items) {
+            extentTop = std::min(extentTop, k->y());
+            extentBottom = std::max(extentBottom, k->y() + k->height());
+        }
+    };
+    extend(flow);
+    extend(abs);
+    extend(foreign);
+    if (auto *r = qobject_cast<CssRect *>(root))
+        r->setLaidOutExtent(extentTop, extentBottom);
+    else if (auto *f = qobject_cast<CssFill *>(root))
+        f->setLaidOutExtent(extentTop, extentBottom);
 }
 
 // --- flexbox ----------------------------------------------------------------------------

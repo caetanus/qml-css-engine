@@ -121,6 +121,10 @@ public:
     // replaced-foreign inference) — direct pointer, no list-property indirection in the hot path.
     QQuickItem *layoutContentHolder() const { return m_contentHolder; }
 
+    // Called by CssLayoutEngine after each layout of this box: the vertical extent of the children it
+    // placed. Drives the scroll contentHeight (instead of QQuickItem::childrenRect()).
+    void setLaidOutExtent(qreal top, qreal bottom);
+
     QString cssId() const { return m_cssId; }
     void setCssId(const QString &v);
 
@@ -326,6 +330,8 @@ private:
     QPointer<CssLayoutEngine> m_layout;
     QPointer<QQuickItem> m_render;       // the REAL QtQuick render subtree (Shapes + MultiEffect)
     QPointer<QQuickItem> m_contentHolder; // hosts declared children (the layout participants)
+    qreal m_extentTop = 0.0;    // vertical extent of the last layout pass — drives scroll contentHeight
+    qreal m_extentBottom = 0.0;
     QPointer<QObject> m_translate;        // the QtQuick Translate in our transform list
 };
 

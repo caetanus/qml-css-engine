@@ -17,8 +17,7 @@
 namespace QmlCss {
 
 // Compose the scroll Flickable, parent it under `owner`, and move `contentHolder` into its
-// contentItem. Returns the Flickable (or nullptr on failure). Caller connects
-// contentHolder->childrenRectChanged to its own sync slot and re-runs layout.
+// contentItem. Returns the Flickable (or nullptr on failure).
 inline QQuickItem *composeScrollFlickable(QQuickItem *owner, QQuickItem *contentHolder)
 {
     if (!owner || !contentHolder)
@@ -120,18 +119,19 @@ inline QQuickItem *composeScrollFlickable(QQuickItem *owner, QQuickItem *content
     return flick;
 }
 
-// Push the laid-out content extent into the Flickable's contentHeight. `bottomPad` is the box's
-// resolved padding-bottom so the last child is not jammed against the viewport edge at max scroll —
-// a padded container insets its contentHolder (children start at y≈0), so the old symmetric
-// `max(0, r.y())` yielded ZERO bottom breathing and the final card looked cut off.
-inline void syncScrollExtent(QQuickItem *flick, QQuickItem *contentHolder, qreal ownerHeight,
-                             qreal ownerWidth, qreal bottomPad = 0.0)
+// Push the laid-out content extent into the Flickable's contentHeight. The extent [top, bottom] comes
+// from the layout pass (it just placed every child), NOT from QQuickItem::childrenRect(): Qt's
+// childrenRect tracker recomputes non-incrementally (QQuickContents calls calcHeight() without the
+// changed item), i.e. it rescans ALL children on every child geometry change — clearing a scrolled
+// list became O(N^3). `bottomPad` is the box's padding-bottom so the last child breathes at max scroll.
+inline void syncScrollExtent(QQuickItem *flick, QQuickItem *contentHolder, qreal extentTop,
+                             qreal extentBottom, qreal ownerHeight, qreal ownerWidth,
+                             qreal bottomPad = 0.0)
 {
     if (!flick || !contentHolder)
         return;
-    const QRectF r = contentHolder->childrenRect();
-    const qreal pad = std::max({0.0, r.y(), bottomPad});
-    const qreal contentH = std::max(ownerHeight, r.y() + r.height() + pad);
+    const qreal pad = std::max({0.0, extentTop, bottomPad});
+    const qreal contentH = std::max(ownerHeight, extentBottom + pad);
     contentHolder->setHeight(contentH);
     flick->setProperty("contentWidth", ownerWidth);
     flick->setProperty("contentHeight", contentH);
