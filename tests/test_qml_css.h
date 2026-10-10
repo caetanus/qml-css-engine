@@ -287,6 +287,8 @@ private slots:
     void virtualFixedPitchStaysExact();
 
     // Correctness round after the scrolling-list gate: (A) a row parked while an ANCESTOR's identity
-    // changed comes back styled for the new ancestry.
+    // changed comes back styled for the new ancestry; (B) a container gap change re-prices every
+    // measured row (offscreen ones included) — extent and positions equal eager at once.
     void virtualPoolAncestorChangeWhileParked();
+    void virtualGapChangeRepricesMeasuredRows();
 };

@@ -35,9 +35,10 @@ class CssTheme;
 // delegate. The pool drains on clear, on leaving windowed mode, on a delegate change and with us.
 // VARIABLE EXTENTS (5v-3): rows whose main size comes from their own content (auto height, wrapping
 // text, or fixed heights that disagree) are windowed too. Each logical row (its m_pool slot) keeps its
-// last MEASURED slot size, valid for its data and for the container width / font / theme revision it
-// was measured under; unseen rows count as the mean of the valid measurements. Fenwick trees over the
-// measured sizes give y(i), the total and index-at-offset in O(log N). The viewport is ANCHORED to a row
+// last MEASURED margin-box size (gap-free), valid for its data and for the container width / font /
+// theme revision it was measured under; unseen rows count as the mean of the valid measurements. Fenwick
+// trees over the measured sizes plus the container's CURRENT gap per slot give y(i), the total and
+// index-at-offset in O(log N) — a gap change re-prices every row without re-measuring any. The viewport is ANCHORED to a row
 // (slot) and an offset into it: every pass that moves rows (measurements, estimate, model, width) puts
 // contentY back on the anchor in the same layout pass — no frame shows the jump.
 class CssRepeater : public QQuickItem {
@@ -137,7 +138,7 @@ private:
         int pos = -1;                   // logical index after the last reconciliation (-1: new row)
         quint32 gen = 0;                // reconciliation that claimed it (m_gen)
         quint32 itemGen = 0;            // m_delegateGen of the delegate that built `item`
-        double measured = -1;           // slot size (margin box + gap) when measured (5v-3)
+        double measured = -1;           // margin-box main size when measured, gap-free (5v-3)
         quint32 measuredEpoch = 0;      // valid iff == m_measureEpoch (width/font/theme/delegate)
         bool hasIncoming = false;
     };
@@ -249,7 +250,7 @@ private:
     quint64 m_measureRules = 0;
     double m_measSum = 0;     // sum / count of the valid measurements of rows in m_order
     int m_measCount = 0;
-    double m_estimate = -1;   // their mean (kept across invalidations as a placeholder); <= 0: unknown
+    double m_estimate = -1;   // their mean, gap-free (kept across invalidations as a placeholder); <= 0: unknown
     QVector<double> m_fwSum;
     QVector<int> m_fwCnt;
     int m_fwN = -1;

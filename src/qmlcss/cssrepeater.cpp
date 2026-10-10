@@ -1074,7 +1074,8 @@ bool CssRepeater::syncVirtual(const VirtualContainer &container)
             variable = true;
         }
     }
-    const double oldPitch = m_mode == Mode::Windowed && !m_variable ? m_flow.pitch : 0.0;
+    // The fixed pitch this list had until now, without its gap (measurements are gap-free).
+    const double oldPitch = m_mode == Mode::Windowed && !m_variable ? m_flow.pitch - m_flow.gap : 0.0;
     m_mode = want;
     if (m_variable && !variable) {
         m_anchorSlot = -1;
@@ -1097,7 +1098,7 @@ bool CssRepeater::syncVirtual(const VirtualContainer &container)
                     for (int i = std::max(m_matFirst, 0); i <= m_matLast && i < n; ++i) {
                         const QQuickItem *item = rowAt(i).item;
                         if (item && item->height() > 0) {
-                            sum += item->height() + flow.marginTop + flow.marginBottom + container.gap;
+                            sum += item->height() + flow.marginTop + flow.marginBottom;
                             ++cnt;
                         }
                     }
@@ -1294,20 +1295,24 @@ double CssRepeater::prefix(int k) const
         s += m_fwSum[j];
         c += m_fwCnt[j];
     }
-    return s + (k - c) * std::max(m_estimate, 0.0);
+    // Measurements and the estimate are gap-free margin boxes: the container's CURRENT gap is added
+    // per slot, so a gap change re-prices every row at once (no stale measured pitch).
+    return s + (k - c) * std::max(m_estimate, 0.0) + k * m_flow.gap;
 }
 
 int CssRepeater::indexAt(double off) const
 {
     // Binary descent: the largest prefix of rows that ENDS at or before `off` — the next row holds it.
     const double est = std::max(m_estimate, 0.0);
+    const double gap = m_flow.gap;
     int pos = 0;
     double acc = 0;
     for (int step = m_fwTop; step > 0; step >>= 1) {
         const int nx = pos + step;
         if (nx > m_fwN)
             continue;
-        const double v = m_fwSum[nx] + ((nx & -nx) - m_fwCnt[nx]) * est;
+        const int span = nx & -nx;
+        const double v = m_fwSum[nx] + (span - m_fwCnt[nx]) * est + span * gap;
         if (acc + v <= off) {
             pos = nx;
             acc += v;
@@ -1410,7 +1415,7 @@ double CssRepeater::measureWindow(const double *mains, int count)
     m_winSize.resize(count); // capacity kept: no allocation per pass in the steady state
     double *const sz = m_winSize.data();
     for (int k = 0; k < count; ++k)
-        sz[k] = mains[k] + gap;
+        sz[k] = mains[k] + gap; // the slot as laid out in this pass
     // The flow is exactly the window (syncVirtual made sure), in order. A row whose layout is still
     // queued has a stale size: it is measured on a later pass, when it settled.
     const bool aligned = count > 0 && first == m_matFirst && count == m_matLast - m_matFirst + 1;
@@ -1421,7 +1426,7 @@ double CssRepeater::measureWindow(const double *mains, int count)
                 m_rewindow = true;
                 continue;
             }
-            setMeasured(first + k, r, sz[k]);
+            setMeasured(first + k, r, mains[k]); // gap-free: the container's gap is added analytically
         }
         if (m_measCount > 0)
             m_estimate = m_measSum / m_measCount;

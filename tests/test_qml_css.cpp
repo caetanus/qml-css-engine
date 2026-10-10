@@ -6110,3 +6110,42 @@ void QmlCssTests::virtualPoolAncestorChangeWhileParked()
     for (QQuickItem *row : s.rows())
         QVERIFY2(bgOf(row) == green, qPrintable(QStringLiteral("row %1 background '%2'").arg(VirtualScene::indexOf(row)).arg(bgOf(row))));
 }
+
+void QmlCssTests::virtualGapChangeRepricesMeasuredRows()
+{
+    const int n = 600;
+    const QString css = QString::fromLatin1(kAutoCss) + QStringLiteral(" .list.spaced { gap: 12px; }");
+    const QVariantList model = makeAutoRows(n, [](int) { return false; });
+    VirtualScene s(css);
+    QVERIFY2(s.mount(true, model).isEmpty(), "mount");
+    QVERIFY(traverse(s) > 0); // every row measured (with the 2px gap)
+    s.setContentY(s.contentHeight() / 2);
+    QQuickItem *top = topRow(s);
+    QVERIFY(top);
+    const QString topLabel = VirtualScene::labelOf(top);
+    const qreal topY = screenY(s, top);
+
+    setClasses(s.list, { QStringLiteral("list"), QStringLiteral("spaced") });
+
+    VirtualScene eager(css);
+    QVERIFY2(eager.mount(false, model).isEmpty(), "eager mount");
+    setClasses(eager.list, { QStringLiteral("list"), QStringLiteral("spaced") });
+    QCOMPARE(eager.rows().size(), n);
+    // No further traversal: what is shown right now.
+    QVERIFY2(qAbs(s.contentHeight() - eager.contentHeight()) < 0.01,
+             qPrintable(QStringLiteral("extent %1, eager %2").arg(s.contentHeight()).arg(eager.contentHeight())));
+    QQuickItem *anchor = rowLabelled(s, topLabel);
+    QVERIFY(anchor);
+    QVERIFY2(qAbs(screenY(s, anchor) - topY) <= 0.5,
+             qPrintable(QStringLiteral("the anchored row moved %1 px").arg(screenY(s, anchor) - topY)));
+    QHash<int, qreal> eagerY;
+    for (QQuickItem *row : eager.rows())
+        eagerY.insert(VirtualScene::indexOf(row), row->y());
+    for (QQuickItem *row : s.rows()) {
+        const int i = VirtualScene::indexOf(row);
+        QVERIFY2(qAbs(row->y() - eagerY.value(i)) < 0.01,
+                 qPrintable(QStringLiteral("row %1 at y %2, eager %3").arg(i).arg(row->y()).arg(eagerY.value(i))));
+    }
+    const QString bad = checkAutoRows(s, model);
+    QVERIFY2(bad.isEmpty(), qPrintable(bad));
+}
