@@ -278,7 +278,6 @@ void CssTheme::loadFromString(const QString &cssIn)
 
 void CssTheme::rebuildRules()
 {
-    m_resolveCache.clear();
     // Context nodes of the old rules are stale: new applies intern fresh ones (boxes re-validate by
     // generation); old nodes die with their last box and only erase an entry that still points at them.
     ++m_generation;

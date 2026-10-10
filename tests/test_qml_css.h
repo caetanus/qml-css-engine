@@ -206,4 +206,6 @@ private slots:
     void contextNodesAreSharedByIdenticalSiblings();
     void contextNodeFollowsAncestorIdentityAndReparenting();
     void contextNodesDieWithTheirBoxes();
+    // 4b-2 Task 2: own resolves are memoised on the node: 100 identical rows resolve each own input once.
+    void identicalRowsResolveOnce();
 };

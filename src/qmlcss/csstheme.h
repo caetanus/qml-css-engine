@@ -280,8 +280,8 @@ private:
     QExplicitlySharedDataPointer<CssContextNode> internContext(
         const QExplicitlySharedDataPointer<CssContextNode> &parent, const CssAncestorInfo &self) const;
     // Weak intern table (key -> node): a node erases its own entry in its destructor, only if the entry
-    // still points at it. Cleared (with m_generation bumped) by rebuildRules(); mutable like the resolve
-    // memo, since applyCssTo is const.
+    // still points at it. Cleared (with m_generation bumped) by rebuildRules(); mutable since applyCssTo is
+    // const.
     mutable QHash<QString, CssContextNode *> m_contextNodes;
     quint64 m_generation = 1;
 
@@ -297,8 +297,6 @@ private:
     void fetchRemoteImport(const QString &url);
     void reloadCurrentSource();
 
-    // resolveImpl memo (input signature -> resolved map); cleared on rebuildRules().
-    mutable QHash<QString, QVariantMap> m_resolveCache;
     // resolveFontFamily memo; cleared when a downloaded font registers.
     mutable QHash<QString, QString> m_fontFamilyCache;
     // Bitmask of matching @media groups at the current viewport (resize fast-path).

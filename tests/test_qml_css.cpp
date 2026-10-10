@@ -3920,3 +3920,31 @@ void QmlCssTests::contextNodesDieWithTheirBoxes()
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
     QCOMPARE(Detail::g_liveContextNodes, before);
 }
+
+void QmlCssTests::identicalRowsResolveOnce()
+{
+    // Reset before the fixture creates anything: every own resolve of the mount is counted.
+    Detail::g_ownResolveMisses = 0;
+    IdentityFixture f(QStringLiteral(".list .row { background-color: #111111; } .row:hover { background-color: #222222; } "
+                                     ".row text { color: #333333; }"), R"(
+        CssRect { cssClass: ["list"]; width: 50; height: 50
+            Repeater { model: 100; CssRect { cssClass: ["row"]; CssText { text: "x" } } } }
+    )");
+    QVERIFY2(f.object, qPrintable(f.error));
+    int rows = 0;
+    QList<QQuickItem *> stack = qobject_cast<QQuickItem *>(f.object.data())->childItems();
+    while (!stack.isEmpty()) {
+        QQuickItem *k = stack.takeLast();
+        auto *box = qobject_cast<CssBox *>(k);
+        if (box && box->classList() == QStringList{QStringLiteral("row")}) {
+            ++rows;
+            QCOMPARE(k->property("style").toMap().value(QStringLiteral("background-color")).toString(),
+                     QStringLiteral("#111111"));
+            QVERIFY(k->property("cssHoverStyled").toBool());
+        }
+        stack += k->childItems();
+    }
+    QCOMPARE(rows, 100);
+    // list, row, text, plus the hover on/off probes of the boxes that compute cssHoverStyled.
+    QVERIFY2(Detail::g_ownResolveMisses <= 8, qPrintable(QString::number(Detail::g_ownResolveMisses)));
+}

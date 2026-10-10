@@ -128,6 +128,16 @@ static QList<CssAncestorInfo> collectCssAncestors(QObject *target)
     return chain;
 }
 
+// The ancestor chain (outer→inner) a context node stands for: the node and its parents, each one's `self` —
+// the same identities collectCssAncestors() reads live off the item tree.
+static QList<CssAncestorInfo> ancestorChainOf(const CssContextNode *n)
+{
+    QList<CssAncestorInfo> chain;
+    for (; n; n = n->parent.data())
+        chain.prepend(n->self);
+    return chain;
+}
+
 // Does `p` count as an element of the selector chain? Every CssBox does; a foreign item does when it
 // declares a cssPrimitive or cssClass — the same test collectCssAncestors() applies.
 static bool isCssElement(QQuickItem *p)
@@ -245,12 +255,12 @@ void CssTheme::applyCssTo(QObject *target) const
         cssPart = target->property("cssPart").toString();
         cssPrimitive = target->property("cssPrimitive").toString();
     }
-    // 4b-2 Task 1: keep the box's selector-context node current (re-validated on every apply). Not read
-    // yet — resolution below still walks collectCssAncestors(); Task 2 resolves through the node. Its
-    // cost is counted in the `chain` bucket, where that walk will move.
+    // The box's selector-context node, re-validated on every apply (identity, ancestry, rule generation). It
+    // stands for the whole ancestor chain and memoises the box's own resolves.
+    QExplicitlySharedDataPointer<CssContextNode> node;
     if (box) {
         const qint64 tn = g_applyStats.enabled ? t.nsecsElapsed() : 0;
-        box->contextNode(this);
+        node = box->contextNode(this);
         if (g_applyStats.enabled)
             g_applyStats.chainNs += t.nsecsElapsed() - tn;
     }
@@ -272,40 +282,80 @@ void CssTheme::applyCssTo(QObject *target) const
     // A part target (`#tray.item`, `#cpu.graph`) resolves ONLY that part — excluding the
     // bare `#id` base — so a sub-element doesn't inherit the container's own background.
     // Otherwise merge the waybar alias(es) under the primary id.
-    QVariantMap style;
-    if (!cssPart.isEmpty()) {
-        // A `cssPart` resolves two ways, merged: the class-part `#id.part`/`.part` (waybar
-        // sub-elements), and the pseudo-element `#id::part`/`::part` (a decorative overlay, e.g.
-        // the keyboard tab ring's `::tab-stop`). Pseudo-element wins on conflict — it names the
-        // decoration itself, not a container alias.
-        style = resolvePart(cssId, cssPart, classes);
-        const QVariantMap pseudo = resolveExact(cssId, classes, cssPart);
+    // A `cssPart` resolves two ways, merged: the class-part `#id.part`/`.part` (waybar
+    // sub-elements), and the pseudo-element `#id::part`/`::part` (a decorative overlay, e.g.
+    // the keyboard tab ring's `::tab-stop`). Pseudo-element wins on conflict — it names the
+    // decoration itself, not a container alias.
+    auto resolvePartMerged = [&](const QStringList &cls) {
+        QVariantMap r = resolvePart(cssId, cssPart, cls);
+        const QVariantMap pseudo = resolveExact(cssId, cls, cssPart);
         for (auto it = pseudo.constBegin(); it != pseudo.constEnd(); ++it)
-            style.insert(it.key(), it.value());
+            r.insert(it.key(), it.value());
+        return r;
+    };
+    // An applicable `:hover` rule makes the element hover-track ITSELF (it composes a
+    // HoverHandler behind cssHoverStyled) — the web hovers any element, and only
+    // interactive elements get transpiler-wired tracking. Compare base (hover stripped)
+    // against base+hover, so the answer is stable WHILE hovering.
+    auto probeHover = [&](const QVariantMap &style, auto &&resolveClasses) {
+        if (target->metaObject()->indexOfProperty("cssHoverStyled") < 0)
+            return;
+        QStringList off = classes;
+        off.removeAll(QStringLiteral("hover"));
+        QStringList on = off;
+        on << QStringLiteral("hover");
+        const QVariantMap offStyle = (off.size() == classes.size()) ? style : resolveClasses(off);
+        target->setProperty("cssHoverStyled", resolveClasses(on) != offStyle);
+    };
+    QVariantMap style;
+    if (box) {
+        // Own-only inputs key the node's memo; own id/primitive live in node->self and the ancestor chain is the
+        // node's identity. The part path reads neither ancestors, alternates nor primitive — cssPart in the key
+        // also separates the two modes.
+        const QStringList &alternateIds = box->alternateIdList();
+        auto ownResolve = [&](const QStringList &cls) -> QVariantMap {
+            QString key;
+            key.reserve(64);
+            key += cls.join(QLatin1Char('\x1e'));
+            key += QLatin1Char('\x1f');
+            key += alternateIds.join(QLatin1Char('\x1e'));
+            key += QLatin1Char('\x1f');
+            key += cssPart;
+            if (auto it = node->ownResolves.constFind(key); it != node->ownResolves.constEnd())
+                return *it;
+            ++Detail::g_ownResolveMisses;
+            QVariantMap r;
+            if (!cssPart.isEmpty()) {
+                r = resolvePartMerged(cls);
+            } else {
+                const QList<CssAncestorInfo> ancestors = ancestorChainOf(node->parent.data());
+                r = resolveMerged(ancestors, cssId, alternateIds, cls, cssPrimitive);
+            }
+            node->ownResolves.insert(key, r);
+            return r;
+        };
+        const qint64 t1 = g_applyStats.enabled ? t.nsecsElapsed() : 0;
+        style = ownResolve(classes);
+        if (cssPart.isEmpty()) {
+            const qint64 t2 = g_applyStats.enabled ? t.nsecsElapsed() : 0;
+            probeHover(style, ownResolve);
+            if (g_applyStats.enabled) {
+                g_applyStats.resolveNs += t2 - t1;
+                g_applyStats.hoverNs += t.nsecsElapsed() - t2;
+            }
+        }
+    } else if (!cssPart.isEmpty()) {
+        style = resolvePartMerged(classes);
     } else {
-        const QStringList alternateIds = box ? box->alternateIdList()
-                                              : cssVariantToStringList(target->property("cssAlternateId"));
+        const QStringList alternateIds = cssVariantToStringList(target->property("cssAlternateId"));
         const qint64 t0 = g_applyStats.enabled ? t.nsecsElapsed() : 0;
         const QList<CssAncestorInfo> ancestors = collectCssAncestors(target);
         const qint64 t1 = g_applyStats.enabled ? t.nsecsElapsed() : 0;
         style = resolveMerged(ancestors, cssId, alternateIds, classes, cssPrimitive);
         const qint64 t2 = g_applyStats.enabled ? t.nsecsElapsed() : 0;
-
-        // An applicable `:hover` rule makes the element hover-track ITSELF (it composes a
-        // HoverHandler behind cssHoverStyled) — the web hovers any element, and only
-        // interactive elements get transpiler-wired tracking. Compare base (hover stripped)
-        // against base+hover, so the answer is stable WHILE hovering.
-        if (target->metaObject()->indexOfProperty("cssHoverStyled") >= 0) {
-            QStringList off = classes;
-            off.removeAll(QStringLiteral("hover"));
-            QStringList on = off;
-            on << QStringLiteral("hover");
-            const QVariantMap offStyle = (off.size() == classes.size())
-                ? style : resolveMerged(ancestors, cssId, alternateIds, off, cssPrimitive);
-            const bool hoverStyled =
-                resolveMerged(ancestors, cssId, alternateIds, on, cssPrimitive) != offStyle;
-            target->setProperty("cssHoverStyled", hoverStyled);
-        }
+        probeHover(style, [&](const QStringList &cls) {
+            return resolveMerged(ancestors, cssId, alternateIds, cls, cssPrimitive);
+        });
         if (g_applyStats.enabled) {
             const qint64 t3 = t.nsecsElapsed();
             g_applyStats.chainNs += t1 - t0;
@@ -498,30 +548,7 @@ QVariantMap CssTheme::resolveImpl(const QList<CssAncestorInfo> &ancestors, const
                                   const QStringList &classes, const QString &pseudoElement,
                                   const QString &primitive) const
 {
-    // Memoized: page creation resolves IDENTICAL inputs over and over (every feed row, every
-    // menu item shares classes/primitive/ancestry). Keyed by the full input signature;
-    // cleared whenever the active rules change (rebuildRules).
-    QString key;
-    key.reserve(96);
-    key += id;
-    key += QLatin1Char('\x1f');
-    key += classes.join(QLatin1Char('\x1e'));
-    key += QLatin1Char('\x1f');
-    key += pseudoElement;
-    key += QLatin1Char('\x1f');
-    key += primitive;
-    for (const CssAncestorInfo &a : ancestors) {
-        key += QLatin1Char('\x1d');
-        key += a.id;
-        key += QLatin1Char('\x1e');
-        key += a.classes.join(QLatin1Char('\x1e'));
-        key += QLatin1Char('\x1e');
-        key += a.primitive;
-    }
-    const auto cached = m_resolveCache.constFind(key);
-    if (cached != m_resolveCache.constEnd())
-        return *cached;
-
+    // Uncached: a CssBox apply memoises its own resolves on its selector-context node (CssContextNode).
     struct Match {
         int specificity;
         int sourceOrder;
@@ -572,7 +599,6 @@ QVariantMap CssTheme::resolveImpl(const QList<CssAncestorInfo> &ancestors, const
         for (auto it = m.important.constBegin(); it != m.important.constEnd(); ++it)
             result.insert(it.key(), it.value());
     }
-    m_resolveCache.insert(key, result);
     return result;
 }
 
