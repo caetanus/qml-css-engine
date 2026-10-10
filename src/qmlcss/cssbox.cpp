@@ -71,19 +71,29 @@ CssInheritedText CssBox::inheritedText() const
             r.textAlign = anc->property("inheritedTextAlign").toString();
         }
     }
-    auto own = [this](const char *k, QString &slot) {
-        QString v = m_style.value(QLatin1String(k)).toString();
+    // Static keys: a QLatin1String key would build (allocate) a QString per lookup on every walk (5d reads this
+    // walk on each text re-apply to tell whether anything inherited changed).
+    static const QString kColor = QStringLiteral("color"), kFontFamily = QStringLiteral("font-family"),
+                         kFontSize = QStringLiteral("font-size"), kFontWeight = QStringLiteral("font-weight"),
+                         kLineHeight = QStringLiteral("line-height"),
+                         kLetterSpacing = QStringLiteral("letter-spacing"),
+                         kTextTransform = QStringLiteral("text-transform"), kTextAlign = QStringLiteral("text-align");
+    auto own = [this](const QString &k, QString &slot) {
+        const auto it = m_style.constFind(k);
+        if (it == m_style.constEnd())
+            return;
+        QString v = it->toString();
         if (!v.isEmpty())
             slot = std::move(v);
     };
-    own("color", r.color);
-    own("font-family", r.fontFamily);
-    own("font-size", r.fontSize);
-    own("font-weight", r.fontWeight);
-    own("line-height", r.lineHeight);
-    own("letter-spacing", r.letterSpacing);
-    own("text-transform", r.textTransform);
-    own("text-align", r.textAlign);
+    own(kColor, r.color);
+    own(kFontFamily, r.fontFamily);
+    own(kFontSize, r.fontSize);
+    own(kFontWeight, r.fontWeight);
+    own(kLineHeight, r.lineHeight);
+    own(kLetterSpacing, r.letterSpacing);
+    own(kTextTransform, r.textTransform);
+    own(kTextAlign, r.textAlign);
     return r;
 }
 

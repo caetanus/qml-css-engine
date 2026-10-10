@@ -224,6 +224,9 @@ private slots:
     // 4b-4 Task 2: applyToText diffs a typed payload against the last one applied — a re-apply with
     // nothing changed writes nothing to the composed label; one changed value writes one property.
     void textPayloadWritesOnlyChanges();
+    // Step 5d: a CssText builds its payload once per actual input change — a mount resolves each text once,
+    // an ancestor restyle that changes nothing inherited resolves nothing, a real change resolves once.
+    void textPayloadResolvedOncePerChange();
 
     // 4b-3 Task 2: a box's flex style is parsed ONCE per resolved style — a second full relayout of
     // 100 identical rows parses no length/box/shorthand string at all.

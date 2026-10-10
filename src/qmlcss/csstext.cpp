@@ -142,6 +142,7 @@ void CssText::setStyledText(bool v)
     if (m_styledText == v)
         return;
     m_styledText = v;
+    m_resolvedValid = false;
     // Styled text keeps the composed QQuickText (its tag subset); plain text goes lean.
     if (isComponentComplete())
         syncPath();
@@ -156,6 +157,7 @@ void CssText::setDefaultColor(const QColor &v)
     if (m_defaultColor == v)
         return;
     m_defaultColor = v;
+    m_resolvedValid = false;
     emit defaultColorChanged();
     applyToText();
 }
@@ -165,6 +167,7 @@ void CssText::setDefaultFontFamily(const QString &v)
     if (m_defaultFontFamily == v)
         return;
     m_defaultFontFamily = v;
+    m_resolvedValid = false;
     emit defaultFontFamilyChanged();
     applyToText();
 }
@@ -174,6 +177,7 @@ void CssText::setDefaultFontSize(qreal v)
     if (qFuzzyCompare(m_defaultFontSize, v))
         return;
     m_defaultFontSize = v;
+    m_resolvedValid = false;
     emit defaultFontSizeChanged();
     applyToText();
 }
@@ -214,19 +218,23 @@ QString CssText::inheritedTextAlign() const { return inheritedText().textAlign; 
 
 // --- apply resolved CSS onto the composed Text -----------------------------------------------
 
-CssTextPayload CssText::resolvePayload() const
+bool CssText::payloadCurrent(const CssInheritedText &inh) const
+{
+    return m_resolvedValid && m_style.isSharedWith(m_resolvedStyle) && inh == m_resolvedInherited
+        && m_resolvedFontRevision == (m_theme ? m_theme->fontRevision() : 0);
+}
+
+CssTextPayload CssText::resolvePayload(const CssInheritedText &inh) const
 {
     QElapsedTimer t;
     if (Detail::g_phaseStats.enabled)
         t.start();
     auto styleStr = [&](const char *k) { return m_style.value(QLatin1String(k)).toString(); };
+    ++Detail::g_textPayloadResolves;
     CssTextPayload p;
 
     // text
     p.text = m_text;
-
-    // One typed walk for all eight inherited values (own style value, else the inheriting ancestor's).
-    const CssInheritedText inh = inheritedText();
 
     // color <- inheritedColor, else default.
     const QString &ic = inh.color;
@@ -302,7 +310,19 @@ void CssText::applyToText()
     if (!m_label && !m_lean)
         return;
 
-    const CssTextPayload p = resolvePayload();
+    // One typed walk for all eight inherited values (own style value, else the inheriting ancestor's). Equal
+    // inputs: m_applied already is the payload (5d) — its text kept current by setText.
+    const CssInheritedText inh = inheritedText();
+    const bool current = payloadCurrent(inh);
+    CssTextPayload p = current ? m_applied : resolvePayload(inh);
+    if (current) {
+        p.text = m_text;
+    } else {
+        m_resolvedStyle = m_style;
+        m_resolvedInherited = inh;
+        m_resolvedFontRevision = m_theme ? m_theme->fontRevision() : 0;
+        m_resolvedValid = true;
+    }
     if (m_lean) {
         applyLeanPayload(p);
     } else {
@@ -453,6 +473,7 @@ void CssText::componentComplete()
         m_theme = qobject_cast<CssTheme *>(ctx->contextProperty(QStringLiteral("cssTheme")).value<QObject *>());
         m_layout = qobject_cast<CssLayoutEngine *>(ctx->contextProperty(QStringLiteral("cssLayout")).value<QObject *>());
     }
+    m_resolvedValid = false; // the theme is an input
 
     // SINGLE-SHOT mount: resolve + set the style before the Text exists (the apply helpers
     // no-op on a null label); the composed Text's first configuration is already final.

@@ -4441,6 +4441,125 @@ void QmlCssTests::textPayloadWritesOnlyChanges()
     QCOMPARE(delta(), 0);
 }
 
+// Step 5d: list > 100 x (row > id + label), on both text paths. Count the payloads CssText actually builds
+// (Detail::g_textPayloadResolves): one per text at mount, none for a re-apply whose inputs did not change, one
+// per affected text for each real change — and what reaches the label is still the current value.
+void QmlCssTests::textPayloadResolvedOncePerChange()
+{
+    const QString fontPath = QFINDTESTDATA("data/SqTestSerif-Regular.ttf");
+    QVERIFY2(!fontPath.isEmpty(), "tests/data/SqTestSerif-Regular.ttf not found");
+    const QString css = QStringLiteral(
+        ".list { display: flex; flex-direction: column; color: #111111; } "
+        ".row { display: flex; gap: 8px; } "
+        ".row.hot { color: #222222; } "
+        ".row.wide { gap: 4px; } "
+        ".id { width: 60px; } "
+        ".label { flex-grow: 1; font-family: \"SqTest Serif\", \"Noto Sans\"; }");
+
+    for (const int lean : { 1, 0 }) {
+        const int previousOverride = Detail::g_leanTextOverride;
+        Detail::g_leanTextOverride = lean;
+        const QByteArray mode = lean ? "lean" : "composed";
+
+        CssTheme theme;
+        theme.loadFromString(css);
+        CssLayoutEngine layoutEngine(&theme);
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+        engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+        QQmlComponent component(&engine);
+        component.setData(R"(
+            import QtQuick
+            import qmlcss
+            CssRect { cssClass: ["list"]; width: 400; height: 3000
+                property int count: 0
+                CssRepeater {
+                    model: count
+                    delegate: Component {
+                        CssRect { objectName: "row"; cssClass: ["row"]
+                            CssText { objectName: "id"; cssClass: ["id"]; text: "1" }
+                            CssText { objectName: "label"; cssClass: ["label"]; text: "a" }
+                        }
+                    }
+                }
+            }
+        )", QUrl());
+        QScopedPointer<QObject> root(component.create());
+        QVERIFY2(root, qPrintable(component.errorString()));
+        QQuickWindow window;
+        qobject_cast<QQuickItem *>(root.data())->setParentItem(window.contentItem());
+
+        int mark = Detail::g_textPayloadResolves;
+        auto delta = [&mark]() {
+            const int d = Detail::g_textPayloadResolves - mark;
+            mark = Detail::g_textPayloadResolves;
+            return d;
+        };
+
+        // 1. mount: 200 texts, one payload each. The color is inherited from the list, already styled when the rows
+        // mount; the row's own style arrives after its texts mounted (children complete first) but changes nothing
+        // they inherit. (An inherited value declared ON the row would be a real change then: one more payload.)
+        root->setProperty("count", 100);
+        QCOMPARE(root->findChildren<QQuickItem *>(QStringLiteral("row")).size(), 100);
+        const int mounted = delta();
+        QVERIFY2(mounted == 200, qPrintable(QStringLiteral("%1: mount resolved %2 payloads for 200 texts")
+                                                .arg(QLatin1String(mode)).arg(mounted)));
+
+        QQuickItem *row = root->findChildren<QQuickItem *>(QStringLiteral("row")).first();
+        auto *id = row->findChild<QQuickItem *>(QStringLiteral("id"));
+        auto *label = row->findChild<QQuickItem *>(QStringLiteral("label"));
+        QVERIFY(id && label);
+        auto labelColor = [](QQuickItem *t) { return composedText(t)->property("color").value<QColor>(); };
+        if (!lean)
+            QCOMPARE(labelColor(label), QColor(QStringLiteral("#111111")));
+
+        // 2. an ancestor restyle that changes nothing inherited (the row's own style map does change),
+        // and a forced re-propagation: nothing to rebuild.
+        row->setProperty("cssClass", QStringList{ QStringLiteral("row"), QStringLiteral("wide") });
+        QVERIFY(QMetaObject::invokeMethod(row, "inheritedChanged"));
+        QCOMPARE(delta(), 0);
+
+        // 3. the inherited color changes: one payload per text of that row, and the label shows it.
+        row->setProperty("cssClass", QStringList{ QStringLiteral("row"), QStringLiteral("hot") });
+        QCOMPARE(delta(), 2);
+        QCOMPARE(id->property("inheritedColor").toString(), QStringLiteral("#222222"));
+        if (!lean)
+            QCOMPARE(labelColor(id), QColor(QStringLiteral("#222222")));
+
+        // 4. each default change: one payload.
+        id->setProperty("defaultFontSize", 15.0);
+        QCOMPARE(delta(), 1);
+        id->setProperty("defaultColor", QColor(Qt::red)); // the inherited color still wins
+        QCOMPARE(delta(), 1);
+        id->setProperty("defaultFontFamily", QStringLiteral("Serif"));
+        QCOMPARE(delta(), 1);
+        if (!lean)
+            QCOMPARE(composedText(id)->property("font").value<QFont>().pointSizeF(), 15.0);
+
+        // 5. the text changes: written without a rebuild, and a forced re-apply after it keeps it.
+        id->setProperty("text", QStringLiteral("42"));
+        QVERIFY(QMetaObject::invokeMethod(row, "inheritedChanged"));
+        QCOMPARE(delta(), 0);
+        if (!lean)
+            QCOMPARE(composedText(id)->property("text").toString(), QStringLiteral("42"));
+
+        // 6. a font registers (fontRevision): every text rebuilds once (a family may now resolve differently).
+        // Registering is process-wide and one-shot: the first pass covers it.
+        if (lean) {
+            const int revision0 = theme.fontRevision();
+            theme.loadFromString(css + QStringLiteral(" @font-face { font-family: \"SqTest Serif\"; src: url(\"%1\"); }")
+                                           .arg(fontPath));
+            if (theme.fontRevision() == revision0 + 1)
+                QCOMPARE(delta(), 200);
+            else
+                qWarning("textPayloadResolvedOncePerChange: the test font did not register (already present?)");
+            delta();
+        }
+
+        Detail::g_leanTextOverride = previousOverride;
+    }
+}
+
 // Step 5a Task 1: SQ_PHASE_STATS opt-in phase timers must cost nothing when disabled (no site ever
 // touches the buckets map) and must count exactly what a 100-row mount creates when enabled.
 void QmlCssTests::phaseStatsAreFreeWhenDisabled()

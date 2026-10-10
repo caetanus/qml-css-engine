@@ -60,6 +60,7 @@ inline int g_liveContextNodes = 0; // test probe: live CssContextNode instances 
 inline int g_ownResolveMisses = 0; // test probe: own resolves a CssBox apply actually computed (4b-2)
 inline int g_namedInheritReads = 0; // test probe: by-name inherited* reads (foreign ancestors only, 4b-4)
 inline int g_textLabelWrites = 0; // test probe: properties written to a CssText's composed label (4b-4)
+inline int g_textPayloadResolves = 0; // test probe: CssText payloads actually built (memo misses; 5d)
 inline int g_layoutStringParses = 0; // test probe: layout style strings parsed (lengths, boxes, `flex`; 4b-3)
 // Lean text (4c) probes: text layouts a lean CssText built on the GUI thread (metrics, and the layout the private
 // handoff keeps until sync), on the render thread (public handoff, or a scene graph rebuilt without one), and its

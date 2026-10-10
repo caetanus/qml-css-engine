@@ -17,6 +17,7 @@ class CssTheme;
 // inheriting ancestor's). Strings exactly as the inherited* Q_PROPERTY getters return them.
 struct CssInheritedText {
     QString color, fontFamily, fontSize, fontWeight, lineHeight, letterSpacing, textTransform, textAlign;
+    friend bool operator==(const CssInheritedText &, const CssInheritedText &) = default;
 };
 
 // The typed home of a CSS element's identity and resolved style. Every engine type that can be

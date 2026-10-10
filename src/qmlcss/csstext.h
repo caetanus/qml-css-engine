@@ -140,7 +140,10 @@ private:
     // Resolve every CSS-driven value (the QML `readonly property`/binding set) and push it onto the
     // composed Text — the C++ equivalent of all of CssText.qml's Text bindings — or, lean, lay it out.
     void applyToText();
-    CssTextPayload resolvePayload() const;
+    // Build the payload from the current inputs (`inh` = inheritedText(), walked once by the caller).
+    CssTextPayload resolvePayload(const CssInheritedText &inh) const;
+    // 5d: whether m_applied is still what resolvePayload would build from the current inputs (`inh`).
+    bool payloadCurrent(const CssInheritedText &inh) const;
     // The resolved text-shadow (empty when none); a shadow keeps the label composed.
     QVariantMap shadowSpec() const;
 
@@ -202,6 +205,16 @@ private:
     QPointer<QQuickItem> m_label; // the REAL QtQuick Text, via the type-system
     CssTextPayload m_applied; // what m_label was last given (valid while m_payloadApplied)
     bool m_payloadApplied = false; // false until the first apply onto the current m_label
+    // 5d: the inputs m_applied was last resolved from. A resolve is a pure function of m_style, the inherited
+    // values, the defaults, styledText, text, the theme and its fontRevision (resolveFontFamily's answer can only
+    // change when a font registers); every apply leaves m_applied equal to the payload it resolved, and setText
+    // keeps m_applied.text current. So equal inputs reuse m_applied instead of building it again. m_style is
+    // compared by identity (any setStyle that changes it replaces the map), the inherited values by value; the
+    // defaults/styledText/theme setters invalidate instead of being stored.
+    QVariantMap m_resolvedStyle;
+    CssInheritedText m_resolvedInherited;
+    int m_resolvedFontRevision = 0;
+    bool m_resolvedValid = false;
     QPointer<QQuickItem> m_shadow; // the REAL QtQuick.Effects MultiEffect drop-shadow (text-shadow)
     QPointer<QQuickItem> m_bg; // background underlay Shape, composed on first background-color
 
