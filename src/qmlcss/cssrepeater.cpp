@@ -212,6 +212,18 @@ void CssRepeater::rebuild()
             Row row;
             if (!createRow(i, data.at(i), row))
                 continue;
+            // createRow() parents the new item to parentItem() (or us) via setParentItem(), which
+            // APPENDS it to the end of that parent's children — in a header/footer-wrapped list that
+            // lands it after the footer. Stack it after its model predecessor right away (or after US
+            // for the very first row), so restack()'s fast path finds everything already in place and
+            // never falls back to the O(n^2) loop just because we create/append next to a static
+            // sibling. This stackAfter call is itself cheap here: the new item and the anchor both sit
+            // at/near the end of the sibling list, so its two lastIndexOf() scans (which run from the
+            // BACK) and the siblingOrderChanged bookkeeping only touch the handful of items after the
+            // anchor (e.g. the footer), not the whole list — O(1) amortized per row, not O(n).
+            QQuickItem *anchor = next.isEmpty() ? this : next.constLast().item.data();
+            if (anchor && row.item && anchor->parentItem() == row.item->parentItem())
+                row.item->stackAfter(anchor);
             next.append(row);
             changed = true;
         }
@@ -251,18 +263,24 @@ void CssRepeater::restack()
     if (n == 0)
         return;
 
+    // Fast-path check WITHOUT a hash: a plain sequential scan of childItems() — cheap, and the common
+    // case (rows already contiguous right after us, in model order) needs nothing else. Built from
+    // creation-time anchoring (above) plus removal (closing a gap doesn't reorder survivors), this
+    // covers create/append/remove/update/clear; only an actual reorder (e.g. a swap) needs the LIS
+    // below, which reuses `siblings`.
     const QList<QQuickItem *> siblings = parent->childItems();
+    const qsizetype selfIdx = siblings.indexOf(this);
+    bool inPlace = selfIdx >= 0 && selfIdx + n < siblings.size() + 1;
+    for (int i = 0; i < n && inPlace; ++i)
+        inPlace = siblings.value(selfIdx + 1 + i) == items[i];
+    if (inPlace)
+        return;
+
     QHash<const QQuickItem *, int> pos;
     pos.reserve(siblings.size());
     for (int i = 0; i < siblings.size(); ++i)
         pos.insert(siblings[i], i);
-    const int selfPos = pos.value(this, -1);
-
-    bool inPlace = true;
-    for (int i = 0; i < n && inPlace; ++i)
-        inPlace = pos.value(items[i], -1) == selfPos + 1 + i;
-    if (inPlace)
-        return;
+    const int selfPos = int(selfIdx);
 
     // Longest increasing subsequence (patience sorting, O(n log n)) over positions after us.
     QVarLengthArray<int, 256> p(n), prev(n), tails;
