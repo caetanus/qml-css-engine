@@ -90,8 +90,9 @@ public:
 
 private:
 
-    // geometry assignment
-    void place(QQuickItem *k, double x, double y, double w, double h) const;
+    // geometry assignment. `style` is the child's own resolved style, already held by every
+    // caller (read once per child per pass, never re-read here).
+    void place(QQuickItem *k, const QVariantMap &style, double x, double y, double w, double h) const;
     void placeAbsolute(QQuickItem *k, double ox, double oy, double cw, double ch) const;
 
     // flex + grid; return the content [width, height] occupied

@@ -64,6 +64,7 @@ private:
     void layoutChild();
     // Re-style through the reverse-slot engine path when identity changes (QML onCss*Changed).
     void maybeLoadCss() override;
+    void applyResolvedStyle(const QVariantMap &style) override { setStyle(style); }
 
     QVariantMap m_line;
 

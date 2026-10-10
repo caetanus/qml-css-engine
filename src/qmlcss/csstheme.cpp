@@ -207,9 +207,14 @@ void CssTheme::applyCssTo(QObject *target) const
     }
 
     // Push the resolved map into the target's `style` sink; its renderer keys off it
-    // (gradient/box-shadow/bevel with the alpha-fix a plain Rectangle cannot do).
+    // (gradient/box-shadow/bevel with the alpha-fix a plain Rectangle cannot do). Typed for a
+    // CssBox (one virtual call into its own setStyle, no by-name property dispatch); by name only
+    // for a foreign item.
     const qint64 tp = g_applyStats.enabled ? t.nsecsElapsed() : 0;
-    target->setProperty("style", style);
+    if (box)
+        box->applyResolvedStyle(style);
+    else
+        target->setProperty("style", style);
     if (g_applyStats.enabled) {
         g_applyStats.pushNs += t.nsecsElapsed() - tp;
         ++g_applyStats.count;

@@ -227,6 +227,7 @@ private:
     void applyTransform();
     // Re-style through the reverse-slot engine path when identity changes (QML onCss*Changed).
     void maybeLoadCss() override;
+    void applyResolvedStyle(const QVariantMap &style) override { setStyle(style); }
 
 protected:
     // Protected so C++ widget subclasses (the widgets-to-cpp port) can chain their own

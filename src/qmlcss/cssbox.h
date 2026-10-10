@@ -49,6 +49,10 @@ public:
     const QStringList &alternateIdList() const { return m_alternateIdList; }
     // The resolved style, read without QVariant boxing or a map copy.
     const QVariantMap &styleMap() const { return m_style; }
+    // Push a newly-resolved style into the box. Each class forwards to its own (non-virtual,
+    // differently-bodied) setStyle — this is the one virtual seam the theme calls through so it
+    // never needs a per-class qobject_cast.
+    virtual void applyResolvedStyle(const QVariantMap &style) = 0;
 
 signals:
     void cssIdChanged();

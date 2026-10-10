@@ -51,6 +51,7 @@ private:
     void apply();
     // Re-style via the engine's reverse slot when identity changes (QML onCssId/ClassChanged).
     void maybeLoadCss() override;
+    void applyResolvedStyle(const QVariantMap &style) override { setStyle(style); }
 };
 
 } // namespace QmlCss

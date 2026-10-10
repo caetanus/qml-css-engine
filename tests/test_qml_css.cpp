@@ -3662,3 +3662,49 @@ void QmlCssTests::identityReadsAreTyped()
     theme.loadCss(inner);
     QCOMPARE(Detail::g_namedIdentityReads - before, 0); // the box AND its CssBox ancestor: typed
 }
+
+// 4b-1 Task 3: a flex container's children are laid out by reading each CssBox child's resolved
+// style through the typed accessor, never by QObject::property("style") — proven by forcing a
+// relayout and asserting the by-name probe counter did not move, while the geometry is still
+// correct (gap:4px between three 10px-wide items: x = 0, 14, 28).
+void QmlCssTests::layoutReadsStyleTyped()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(".flexbox { display: flex; gap: 4px; } .item { width: 10px; height: 10px; }"));
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent comp(&engine);
+    comp.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect { cssClass: ["flexbox"]; width: 100; height: 20
+            CssRect { objectName: "a"; cssClass: ["item"] }
+            CssRect { objectName: "b"; cssClass: ["item"] }
+            CssRect { objectName: "c"; cssClass: ["item"] } }
+    )", QUrl());
+    QScopedPointer<QObject> object(comp.create());
+    QVERIFY2(object, qPrintable(comp.errorString()));
+    auto *root = qobject_cast<QQuickItem *>(object.data());
+    QVERIFY(root);
+    QQuickWindow window;
+    root->setParentItem(window.contentItem());
+
+    auto *a = root->findChild<QQuickItem *>(QStringLiteral("a"));
+    auto *b = root->findChild<QQuickItem *>(QStringLiteral("b"));
+    auto *c = root->findChild<QQuickItem *>(QStringLiteral("c"));
+    QVERIFY(a && b && c);
+
+    layoutEngine.layout(root, contentHolderOf(a));
+
+    const int before = Detail::g_namedStyleReads;
+    // Force a second relayout pass (the public API the other layout tests use): the by-name
+    // probe must not move on a CssBox child.
+    layoutEngine.layout(root, contentHolderOf(a));
+    QCOMPARE(Detail::g_namedStyleReads - before, 0);
+
+    QVERIFY2(std::abs(a->x() - 0.0) < 0.5, qPrintable(QString::number(a->x())));
+    QVERIFY2(std::abs(b->x() - 14.0) < 0.5, qPrintable(QString::number(b->x())));
+    QVERIFY2(std::abs(c->x() - 28.0) < 0.5, qPrintable(QString::number(c->x())));
+}

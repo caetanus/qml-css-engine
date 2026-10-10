@@ -186,4 +186,7 @@ private slots:
     // 4b-1 Task 2: resolving a CssBox reads its identity and its ancestors' identities by
     // member, not by name.
     void identityReadsAreTyped();
+
+    // 4b-1 Task 3: the layout reads a CssBox child's resolved style by member, not by name.
+    void layoutReadsStyleTyped();
 };

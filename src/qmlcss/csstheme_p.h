@@ -50,6 +50,7 @@ struct ApplyStats {
 };
 inline ApplyStats g_applyStats;
 inline int g_namedIdentityReads = 0; // test probe: by-name identity reads (foreign items only)
+inline int g_namedStyleReads = 0; // test probe: by-name style reads in the layout (foreign items only)
 
 // Exception-safe layout hibernation: open the batch on construction, single flush on scope
 // exit. Null-safe so callers work before any CssLayoutEngine registered.

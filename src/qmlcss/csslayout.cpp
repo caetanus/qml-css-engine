@@ -1,6 +1,7 @@
 #include "csslayout.h"
 #include "csstheme_p.h" // LayoutBatchGuard
 
+#include "cssbox.h"
 #include "cssfill.h"
 #include "cssrect.h"
 #include "csstheme.h"
@@ -68,7 +69,19 @@ static QQuickItem *replacedForeignContent(QQuickItem *box);
 
 bool isLayoutChild(QQuickItem *k)
 {
-    return k && (k->property("style").isValid() || k->property("cssPrimitive").isValid());
+    return k && (qobject_cast<const CssBox *>(k) || k->property("style").isValid()
+                 || k->property("cssPrimitive").isValid());
+}
+
+// The resolved style of a layout child: typed for every CssBox (no QVariant boxing, no map copy —
+// an implicitly shared return), by name only for foreign items that expose a `style` property
+// (CssIcon stays on this path on purpose: it is a style sink, not a CssBox).
+QVariantMap styleOf(const QQuickItem *k)
+{
+    if (auto *b = qobject_cast<const CssBox *>(k))
+        return b->styleMap();
+    ++Detail::g_namedStyleReads;
+    return k->property("style").toMap();
 }
 
 static QQuickItem *replacedForeignContent(QQuickItem *box)
@@ -467,14 +480,13 @@ double CssLayoutEngine::clampSize(const QVariantMap &style, const QString &axis,
     return v;
 }
 
-void CssLayoutEngine::place(QQuickItem *k, double x, double y, double w, double h) const
+void CssLayoutEngine::place(QQuickItem *k, const QVariantMap &style, double x, double y, double w, double h) const
 {
     // Final clamp so stretched / grown items still honour min-/max-width/height (a flex row that
     // stretches children to the container's cross box must not blow past their max-width — this is
     // what makes a `max-width` paragraph wrap instead of overflowing).
-    const QVariantMap ks = k->property("style").toMap();
-    w = clampSize(ks, QStringLiteral("width"), w, std::nan(""));
-    h = clampSize(ks, QStringLiteral("height"), h, std::nan(""));
+    w = clampSize(style, QStringLiteral("width"), w, std::nan(""));
+    h = clampSize(style, QStringLiteral("height"), h, std::nan(""));
     // A declared `transition: width/height` animates the write instead of snapping; the
     // cast + covers-check only run when the geometry actually changes.
     CssRect *box = nullptr;
@@ -495,7 +507,7 @@ void CssLayoutEngine::place(QQuickItem *k, double x, double y, double w, double 
 
 void CssLayoutEngine::placeAbsolute(QQuickItem *k, double ox, double oy, double cw, double ch) const
 {
-    const QVariantMap ks = k->property("style").toMap();
+    const QVariantMap ks = styleOf(k);
     double t = std::nan(""), r = std::nan(""), b = std::nan(""), l = std::nan("");
     const QString inset = styleStr(ks, "inset");
     if (!inset.isEmpty()) {
@@ -522,7 +534,7 @@ void CssLayoutEngine::placeAbsolute(QQuickItem *k, double ox, double oy, double 
     if (!std::isnan(t) && !std::isnan(b)) { y = oy + t; if (std::isnan(h)) h = ch - t - b; }
     else if (!std::isnan(b)) { if (std::isnan(h)) h = k->implicitHeight(); y = oy + ch - b - h; }
     else { if (std::isnan(h)) h = k->implicitHeight(); y = oy + (std::isnan(t) ? 0 : t); }
-    place(k, x, y, w, h);
+    place(k, ks, x, y, w, h);
 }
 
 // --- main entry -------------------------------------------------------------------------
@@ -531,7 +543,7 @@ void CssLayoutEngine::layout(QQuickItem *root, QQuickItem *content)
 {
     if (!root || !content)
         return;
-    const QVariantMap rootStyle = root->property("style").toMap();
+    const QVariantMap rootStyle = styleOf(root);
     const QVector<double> pad = paddingOf(rootStyle);
     // The content holder is the PADDING BOX (the container insets it by the border), so the child
     // origin is padding-only, but the content area loses padding AND border (web box model).
@@ -564,7 +576,7 @@ void CssLayoutEngine::layout(QQuickItem *root, QQuickItem *content)
         // visible, CssRect's onVisibleChanged notifies the parent, which relayouts and sizes it.
         if (!k->isVisible())
             continue;
-        const QVariantMap ks = k->property("style").toMap();
+        const QVariantMap ks = styleOf(k);
         if (styleStr(ks, "display") == QLatin1String("none"))
             continue;
         if (styleStr(ks, "position") == QLatin1String("absolute"))
@@ -580,7 +592,7 @@ void CssLayoutEngine::layout(QQuickItem *root, QQuickItem *content)
         QVarLengthArray<QPair<int, QQuickItem *>> byOrder(flow.size());
         for (int i = 0; i < flow.size(); ++i) {
             bool ok = false;
-            const int o = styleStr(flow[i]->property("style").toMap(), QStringLiteral("order")).toInt(&ok);
+            const int o = styleStr(styleOf(flow[i]), QStringLiteral("order")).toInt(&ok);
             byOrder[i] = { ok ? o : 0, flow[i] };
         }
         std::stable_sort(byOrder.begin(), byOrder.end(),
@@ -695,7 +707,7 @@ QPair<double, double> CssLayoutEngine::layoutFlex(const QList<QQuickItem *> &flo
     double usedMain = 0, totalGrow = 0;
 
     for (int i = 0; i < n; ++i) {
-        const QVariantMap ks = flow[i]->property("style").toMap();
+        const QVariantMap ks = styleOf(flow[i]);
         const QVector<double> mar = marginOf(ks);
         mMar[i] = horizontal ? qMakePair(mar[3], mar[1]) : qMakePair(mar[0], mar[2]);
         cMar[i] = horizontal ? qMakePair(mar[0], mar[2]) : qMakePair(mar[3], mar[1]);
@@ -909,7 +921,7 @@ QPair<double, double> CssLayoutEngine::layoutFlex(const QList<QQuickItem *> &flo
 
         for (int k = 0; k < ln; ++k) {
             const int i = line[k];
-            const QVariantMap ks = flow[i]->property("style").toMap();
+            const QVariantMap ks = styleOf(flow[i]);
             const double msz = lm[i];
             // NATURAL cross feeds content-sizing; the stretched/centred value only PLACES the item,
             // so the container's implicit cross can't circularly echo its own size.
@@ -930,8 +942,8 @@ QPair<double, double> CssLayoutEngine::layoutFlex(const QList<QQuickItem *> &flo
             crossPos += crossCursor;
 
             const double mainPos = pos + mMar[i].first;
-            if (horizontal) place(flow[i], originX + mainPos, originY + crossPos, msz, csz);
-            else place(flow[i], originX + crossPos, originY + mainPos, csz, msz);
+            if (horizontal) place(flow[i], ks, originX + mainPos, originY + crossPos, msz, csz);
+            else place(flow[i], ks, originX + crossPos, originY + mainPos, csz, msz);
 
             pos = mainPos + msz + mMar[i].second + between;
             Q_UNUSED(naturalCross);
@@ -1131,7 +1143,7 @@ QPair<double, double> CssLayoutEngine::layoutGrid(const QList<QQuickItem *> &flo
             QVector<Rect> itemRect(n);
             int autoIdx = 0;
             for (int k = 0; k < n; ++k) {
-                const QVariantMap ks = flow[k]->property("style").toMap();
+                const QVariantMap ks = styleOf(flow[k]);
                 double w = sizeOf(ks, "width", cw);
                 double h = sizeOf(ks, "height", ch);
                 const double ar = aspectOf(ks);
@@ -1176,7 +1188,7 @@ QPair<double, double> CssLayoutEngine::layoutGrid(const QList<QQuickItem *> &flo
             if (alignItems.isEmpty()) alignItems = QStringLiteral("stretch");
 
             for (int k = 0; k < n; ++k) {
-                const QVariantMap ks = flow[k]->property("style").toMap();
+                const QVariantMap ks = styleOf(flow[k]);
                 Rect rc = itemRect[k];
                 rc.c0 = std::clamp(rc.c0, 0, ncols - 1);
                 rc.c1 = std::clamp(rc.c1, 0, ncols - 1);
@@ -1196,7 +1208,7 @@ QPair<double, double> CssLayoutEngine::layoutGrid(const QList<QQuickItem *> &flo
                 else if (justifyItems == QLatin1String("end") || justifyItems == QLatin1String("flex-end")) px = cellX + areaW - iw2;
                 if (alignItems == QLatin1String("center")) py = cellY + (areaH - ih2) / 2;
                 else if (alignItems == QLatin1String("end") || alignItems == QLatin1String("flex-end")) py = cellY + areaH - ih2;
-                place(flow[k], px, py, iw2, ih2);
+                place(flow[k], ks, px, py, iw2, ih2);
             }
 
             double totalW = 0;
@@ -1217,7 +1229,7 @@ QPair<double, double> CssLayoutEngine::layoutGrid(const QList<QQuickItem *> &flo
 
     QVector<double> dW(n), dH(n);
     for (int k = 0; k < n; ++k) {
-        const QVariantMap ks = flow[k]->property("style").toMap();
+        const QVariantMap ks = styleOf(flow[k]);
         double w = sizeOf(ks, "width", cw);
         double h = sizeOf(ks, "height", ch);
         const double ar = aspectOf(ks);
@@ -1258,7 +1270,7 @@ QPair<double, double> CssLayoutEngine::layoutGrid(const QList<QQuickItem *> &flo
     if (alignItems.isEmpty()) alignItems = QStringLiteral("stretch");
 
     for (int k = 0; k < n; ++k) {
-        const QVariantMap ks = flow[k]->property("style").toMap();
+        const QVariantMap ks = styleOf(flow[k]);
         const int col = k % ncols, row = k / ncols;
         const double cellX = colX[col], cellY = rowY[row];
         const double cellW = colSizes[col], cellH = rowSizes[row];
@@ -1272,7 +1284,7 @@ QPair<double, double> CssLayoutEngine::layoutGrid(const QList<QQuickItem *> &flo
         else if (justifyItems == QLatin1String("end") || justifyItems == QLatin1String("flex-end")) px = cellX + cellW - iw2;
         if (alignItems == QLatin1String("center")) py = cellY + (cellH - ih2) / 2;
         else if (alignItems == QLatin1String("end") || alignItems == QLatin1String("flex-end")) py = cellY + cellH - ih2;
-        place(flow[k], px, py, iw2, ih2);
+        place(flow[k], ks, px, py, iw2, ih2);
     }
 
     double totalW = 0;
