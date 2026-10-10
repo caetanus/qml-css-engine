@@ -184,6 +184,7 @@ private:
     // A foreign (non-Css) child does not self-notify its parent on implicit-size change; watch it so
     // escape-hatch growth re-flows the box (mirrors CssRect).
     void watchForeignChildren();
+    void watchForeignChild(QQuickItem *k);
 
     QString m_cssId;
     QVariant m_cssAlternateId = QVariant::fromValue(QVariantList());

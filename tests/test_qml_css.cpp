@@ -1,6 +1,7 @@
 #include "test_qml_css.h"
 
 #include "qmlcss/QMLCss.h"
+#include "qmlcss/csscontentholder.h"
 
 #include <QtQml/qqml.h>
 
@@ -2756,4 +2757,41 @@ void QmlCssTests::cssRepeaterAppendAndClearAreLinear()
 
     QVERIFY2(appendVisits < quint64(8 * 2 * n), qPrintable(QStringLiteral("append visits %1").arg(appendVisits)));
     QVERIFY2(clearVisits < quint64(8 * 2 * n), qPrintable(QStringLiteral("clear visits %1").arg(clearVisits)));
+}
+
+void QmlCssTests::contentHolderReportsLateForeignChild()
+{
+    CssTheme theme;
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect {
+            cssPrimitive: ""
+            width: 200
+            style: ({ "display": "flex", "flex-direction": "column" })
+        }
+    )", QUrl());
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+    auto *box = qobject_cast<CssRect *>(root.get());
+    QVERIFY(box);
+
+    // The holder reports children one at a time (no rescan of every sibling per change).
+    auto *holder = qobject_cast<CssContentHolder *>(box->layoutContentHolder());
+    QVERIFY2(holder, "content holder is not a CssContentHolder");
+    QSignalSpy added(holder, &CssContentHolder::childAdded);
+
+    // A foreign (non-Css) child added AFTER mount still drives the box's size when it grows.
+    auto *foreign = new QQuickItem;
+    foreign->setParent(holder);
+    foreign->setParentItem(holder);
+    QCOMPARE(added.count(), 1);
+    foreign->setImplicitWidth(40);
+    foreign->setImplicitHeight(50);
+    QTRY_COMPARE_WITH_TIMEOUT(box->implicitHeight(), 50.0, 1000);
 }

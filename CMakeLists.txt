@@ -19,6 +19,7 @@ set(QML_CSS_ENGINE_SOURCES
     src/qmlcss/componentcache.cpp
     src/qmlcss/cssincubator.cpp
     src/qmlcss/cssrepeater.cpp
+    src/qmlcss/csscontentholder.cpp
     src/qmlcss/csslayout.cpp
     src/qmlcss/csshr.cpp
     src/qmlcss/cssimage.cpp

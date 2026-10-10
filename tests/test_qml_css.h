@@ -136,4 +136,5 @@ private slots:
     // visits, so O(N) vs O(N^2) is asserted without timing.
     void layoutCountsChildVisits();
     void cssRepeaterAppendAndClearAreLinear();
+    void contentHolderReportsLateForeignChild();
 };

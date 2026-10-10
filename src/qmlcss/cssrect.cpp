@@ -1,4 +1,5 @@
 #include "qmlcss/componentcache.h"
+#include "qmlcss/csscontentholder.h"
 #include "qmlcss/cssrect.h"
 #include "qmlcss/cssscroll.h"
 
@@ -514,11 +515,15 @@ CssRect::CssRect(QQuickItem *parent)
     // The content holder must exist BEFORE the QML engine appends declared children to `content`
     // (which happens during parsing, before componentComplete). It is a plain Item (no engine
     // needed), sized to us, hosting the layout participants — exactly the QML `contentHolder`.
-    m_contentHolder = new QQuickItem(this);
-    connect(m_contentHolder, &QQuickItem::childrenChanged, this, [this]() {
-        watchForeignChildren();
+    auto *holder = new CssContentHolder(this);
+    m_contentHolder = holder;
+    // Per-child: handle the ONE child that came or went (a rescan of every sibling per change made
+    // building a list quadratic). Relayout requests coalesce inside the layout batch.
+    connect(holder, &CssContentHolder::childAdded, this, [this](QQuickItem *k) {
+        watchForeignChild(k);
         requestRelayout();
     });
+    connect(holder, &CssContentHolder::childRemoved, this, &CssRect::requestRelayout);
 }
 
 void CssRect::watchForeignChildren()
@@ -526,26 +531,25 @@ void CssRect::watchForeignChildren()
     if (!m_contentHolder)
         return;
     const auto kids = m_contentHolder->childItems();
-    for (QQuickItem *k : kids) {
-        if (!k)
-            continue;
-        // A Css child carries `style`/`cssPrimitive` and self-notifies its parent on implicit change;
-        // a foreign child (escape-hatch .qml — plain Item) has neither, so watch it here. Pointer-to-
-        // member + UniqueConnection makes this idempotent across the many childrenChanged bursts.
-        const bool isCss = k->property("style").isValid() || k->property("cssPrimitive").isValid();
-        if (!isCss) {
-            connect(k, &QQuickItem::implicitWidthChanged, this, &CssRect::requestRelayout, Qt::UniqueConnection);
-            connect(k, &QQuickItem::implicitHeightChanged, this, &CssRect::requestRelayout, Qt::UniqueConnection);
-        }
-        // When THIS box scrolls, any child that GROWS must extend the scroll content. childrenRectChanged
-        // is unreliable for late/dynamic growth (offscreen it never grows, so tests pass; on a real GPU
-        // surface content does grow and the last card fell past the reachable extent — owner's report),
-        // so tie every child's height directly to the resync.
-        if (m_flickable) {
-            connect(k, &QQuickItem::heightChanged, this, &CssRect::syncScrollContent, Qt::UniqueConnection);
-            connect(k, &QQuickItem::implicitHeightChanged, this, &CssRect::syncScrollContent, Qt::UniqueConnection);
-        }
-    }
+    for (QQuickItem *k : kids)
+        watchForeignChild(k);
+}
+
+void CssRect::watchForeignChild(QQuickItem *k)
+{
+    if (!k)
+        return;
+    // A Css child carries `style`/`cssPrimitive` and self-notifies its parent on implicit change;
+    // a foreign child (escape-hatch .qml — plain Item) has neither, so watch it here.
+    const bool isCss = k->property("style").isValid() || k->property("cssPrimitive").isValid();
+    if (isCss)
+        return;
+    connect(k, &QQuickItem::implicitWidthChanged, this, &CssRect::requestRelayout, Qt::UniqueConnection);
+    connect(k, &QQuickItem::implicitHeightChanged, this, &CssRect::requestRelayout, Qt::UniqueConnection);
+    // An anchored foreign host can change height without an implicit change: relayout recomputes the
+    // scroll extent (task 4) from the placed geometry.
+    if (m_flickable)
+        connect(k, &QQuickItem::heightChanged, this, &CssRect::requestRelayout, Qt::UniqueConnection);
 }
 
 bool CssRect::hasCssIdentity() const

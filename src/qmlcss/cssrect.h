@@ -204,6 +204,7 @@ public:
     // escape hatch is a plain Item with no such wiring — so its late/dynamic implicit growth would
     // otherwise never re-flow the box (and a scroll's contentHeight would stay short of it).
     void watchForeignChildren();
+    void watchForeignChild(QQuickItem *k);
 
 signals:
     void scrollChanged();
