@@ -10,8 +10,6 @@
 #include "qmlcss/cssbox.h"
 #include "qmlcss/csstextlayout.h" // CssTextPayload, CssTextMetrics
 
-#include <memory>
-
 namespace QmlCss {
 
 class CssTheme;
@@ -20,12 +18,12 @@ class CssLayoutEngine;
 // Native CSS-styled label. Two paths, chosen per label (step 4c):
 //   LEAN (plain text, no text-shadow — almost every label): the CssText draws its own QSGTextNode. Its text is
 //   laid out by CssTextLayout, a literal port of the QQuickText code paths a label exercises (oracle-tested in
-//   tests/test_text.cpp), so the metrics and the glyph positions are QQuickText's. Only scalar metrics are kept:
-//   a QTextLayout lives from the layout that needs it to the paint node built from it, then dies.
+//   tests/test_text.cpp), so the metrics and the glyph positions are QQuickText's. Only scalar metrics are kept
+//   between layouts; the render thread builds a QTextLayout from that value state (CssTextLayout::buildLayout)
+//   in updatePaintNode, adds it to the QSGTextNode, and drops it immediately after.
 //   COMPOSED (styledText, or text-shadow): the description below — a real QQuickText, as before.
 // Switching between the two destroys the other path's resources (label, MultiEffect, paint node).
-// SQ_LEAN_TEXT=0 keeps every label composed; SQ_LEAN_TEXT_HANDOFF picks how a lean layout reaches the render
-// thread (see updatePolish/updatePaintNode).
+// SQ_LEAN_TEXT=0 keeps every label composed.
 //
 // The COMPOSED path, translated 1:1 from qml/qmlcss/CssText.qml — BY COMPOSITION, not
 // reimplementation. Unlike the QML (whose ROOT *is* a Text), this C++ CssText is a QQuickItem that
@@ -132,7 +130,6 @@ signals:
 protected:
     void componentComplete() override;
     void geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry) override;
-    void updatePolish() override;
     QSGNode *updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *data) override;
 
 private slots:
@@ -164,7 +161,7 @@ private:
     // re-laying out or re-placing it as QQuickText::geometryChange would.
     void leanResize();
     void leanPublishImplicit();
-    // The glyph node must be rebuilt: update(), and polish() so the private handoff readies its layout.
+    // The glyph node must be rebuilt: update() flags it for the next sync.
     void markNodeDirty();
     bool leanDrawable() const { return !m_metrics.empty && m_metrics.layedOutTextRect.width() > 0; }
     // The LayoutMirroring a composed label would inherit from us.
@@ -208,8 +205,8 @@ private:
     QPointer<QQuickItem> m_shadow; // the REAL QtQuick.Effects MultiEffect drop-shadow (text-shadow)
     QPointer<QQuickItem> m_bg; // background underlay Shape, composed on first background-color
 
-    // Lean path state (m_applied is the lean payload too). Scalars only, except the private handoff's layout(s),
-    // which live from the layout that produced them until the paint node is built from them.
+    // Lean path state (m_applied is the lean payload too). Scalars only — the render thread builds its own
+    // QTextLayout(s) from this value state in updatePaintNode and drops them once added to the QSGTextNode.
     bool m_lean = false;
     bool m_leanMounted = false; // the virtual label has had its mount layout
     bool m_layoutMount = false; // m_metrics comes from the mount layout (no size yet), not from m_layoutBox
@@ -219,8 +216,6 @@ private:
     CssTextMetrics m_metrics;
     QSizeF m_box; // the virtual label's size
     QSizeF m_layoutBox; // the size m_metrics was laid out at
-    std::unique_ptr<QTextLayout> m_guiLayout; // private handoff: shaped on the GUI thread, consumed at sync
-    std::unique_ptr<QTextLayout> m_guiElideLayout;
 };
 
 } // namespace QmlCss

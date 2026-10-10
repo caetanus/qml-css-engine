@@ -8,9 +8,9 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Qml Quick Network)
-# Private Qt, all in csstext.cpp: the lean CssText's private handoff resets a layout's font-engine cache
-# (QTextEngine) and reads the inherited LayoutMirroring (QQuickItemPrivate). Library-private.
-find_package(Qt6 REQUIRED COMPONENTS GuiPrivate QuickPrivate)
+# Private Qt, all in csstext.cpp: it reads the inherited LayoutMirroring (QQuickItemPrivate). Library-private.
+# QuickPrivate pulls GuiPrivate transitively, so that's covered too.
+find_package(Qt6 REQUIRED COMPONENTS QuickPrivate)
 qt_standard_project_setup()
 
 # Source list mirrored from meson.build (qml_css_engine_sources).
@@ -51,7 +51,7 @@ target_include_directories(qmlcssengine PUBLIC
 target_link_libraries(qmlcssengine PUBLIC
     Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::Network
 )
-target_link_libraries(qmlcssengine PRIVATE Qt6::GuiPrivate Qt6::QuickPrivate)
+target_link_libraries(qmlcssengine PRIVATE Qt6::QuickPrivate)
 
 # ---- install + find_package support -----------------------------------------
 include(GNUInstallDirs)

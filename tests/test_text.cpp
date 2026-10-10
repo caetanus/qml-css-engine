@@ -704,13 +704,11 @@ void TextTests::leanTextLaysOutOnce()
         QVERIFY2(!composedLabel(t), "a plain text composed a QQuickText");
         QVERIFY(t->width() > 0 && t->height() > 0);
     }
-    const bool publicHandoff = Detail::leanTextHandoff() == Detail::LeanTextHandoff::Public;
     const int gui = Detail::g_textGuiLayouts - gui0, render = Detail::g_textRenderLayouts - render0;
     const int nodes = Detail::g_textNodeBuilds - nodes0;
-    qInfo("100 texts (%s handoff): %d GUI layouts, %d render-thread layouts, %d node builds",
-          publicHandoff ? "public" : "private", gui, render, nodes);
+    qInfo("100 texts: %d GUI layouts, %d render-thread layouts, %d node builds", gui, render, nodes);
     QVERIFY2(gui <= 100, qPrintable(QString::number(gui)));
-    QCOMPARE(render, publicHandoff ? 100 : 0);
+    QCOMPARE(render, 100);
     QCOMPARE(nodes, 100);
 
     // A pure move: the container and one text move; nothing is laid out or rebuilt.

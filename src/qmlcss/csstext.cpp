@@ -18,7 +18,6 @@
 #include <QTextOption>
 #include <QUrl>
 
-#include <QtGui/private/qtextengine_p.h>
 #include <QtQuick/private/qquickitem_p.h>
 
 #include <algorithm>
@@ -96,12 +95,6 @@ QSGTextNode::RenderType windowRenderType()
         break;
     }
     return QSGTextNode::QtRendering;
-}
-
-void resetFontEngineCache(QTextLayout *layout)
-{
-    if (layout && layout->engine())
-        layout->engine()->resetFontEngineCache();
 }
 
 } // namespace
@@ -649,8 +642,6 @@ void CssText::enterComposed()
     m_lean = false;
     m_leanMounted = false;
     m_nodeDirty = false;
-    m_guiLayout.reset();
-    m_guiElideLayout.reset();
     if (flags() & ItemHasContents) {
         update();
         setFlag(ItemHasContents, false);
@@ -743,19 +734,9 @@ void CssText::leanRelayout()
     m_layoutMount = !m_leanMounted;
     m_layoutBox = m_box;
     ++Detail::g_textGuiLayouts;
-    if (Detail::leanTextHandoff() == Detail::LeanTextHandoff::Private) {
-        // Shape once, here; the layout waits for the sync that builds the node from it (updatePolish readies it).
-        CssTextBuiltLayout built = m_layoutMount
-            ? CssTextLayout::buildMountLayout(m_applied, m_mirrored)
-            : CssTextLayout::buildLayout(m_applied, m_box.width(), m_box.height(), m_mirrored);
-        m_metrics = built.metrics;
-        m_guiLayout = std::move(built.layout);
-        m_guiElideLayout = std::move(built.elideLayout);
-    } else {
-        // Public handoff: scalars only; the render thread lays out again from value state.
-        m_metrics = m_layoutMount ? CssTextLayout::mountMetrics(m_applied, m_mirrored)
-                                  : CssTextLayout::metrics(m_applied, m_box.width(), m_box.height(), m_mirrored);
-    }
+    // Scalars only; the render thread lays out again from this value state in updatePaintNode.
+    m_metrics = m_layoutMount ? CssTextLayout::mountMetrics(m_applied, m_mirrored)
+                              : CssTextLayout::metrics(m_applied, m_box.width(), m_box.height(), m_mirrored);
     markNodeDirty();
 }
 
@@ -800,8 +781,6 @@ void CssText::markNodeDirty()
 {
     m_nodeDirty = true;
     update();
-    if (Detail::leanTextHandoff() == Detail::LeanTextHandoff::Private)
-        polish();
 }
 
 bool CssText::labelMirrored() const
@@ -811,33 +790,11 @@ bool CssText::labelMirrored() const
     return QQuickItemPrivate::get(this)->inheritedLayoutMirror;
 }
 
-void CssText::updatePolish()
-{
-    QQuickItem::updatePolish();
-    if (!m_lean || Detail::leanTextHandoff() != Detail::LeanTextHandoff::Private)
-        return;
-    if (m_nodeDirty && leanDrawable() && !m_guiLayout) {
-        // A repaint without a relayout (colour, re-placement, new window): lay the same text out again.
-        ++Detail::g_textGuiLayouts;
-        CssTextBuiltLayout built = m_layoutMount
-            ? CssTextLayout::buildMountLayout(m_applied, m_mirrored)
-            : CssTextLayout::buildLayout(m_applied, m_layoutBox.width(), m_layoutBox.height(), m_mirrored);
-        m_guiLayout = std::move(built.layout);
-        m_guiElideLayout = std::move(built.elideLayout);
-    }
-    // QQuickText::updatePolish (qquicktext.cpp 2697): the GUI-thread shaping filled the layout's font-engine
-    // cache; the render thread must not extract glyphs through those engines (qtextengine.cpp 2344-2347).
-    resetFontEngineCache(m_guiLayout.get());
-    resetFontEngineCache(m_guiElideLayout.get());
-}
-
 QSGNode *CssText::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)
 {
     // QQuickText::updatePaintNode (qquicktext.cpp 2601-2677) for a plain-text label.
     if (!m_lean || !leanDrawable() || !window()) {
         delete oldNode;
-        m_guiLayout.reset();
-        m_guiElideLayout.reset();
         m_nodeDirty = false;
         return nullptr;
     }
@@ -851,22 +808,14 @@ QSGNode *CssText::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)
             return nullptr;
     }
 
-    std::unique_ptr<QTextLayout> layout;
-    std::unique_ptr<QTextLayout> elideLayout;
-    if (m_guiLayout) {
-        // Private handoff: the GUI-shaped layout, its font-engine cache reset in updatePolish.
-        layout = std::move(m_guiLayout);
-        elideLayout = std::move(m_guiElideLayout);
-    } else {
-        // Public handoff (or a scene graph rebuilt without a pending layout): lay out here from value state.
-        const CssTextPayload payload = m_applied;
-        CssTextBuiltLayout built = m_layoutMount
-            ? CssTextLayout::buildMountLayout(payload, m_mirrored)
-            : CssTextLayout::buildLayout(payload, m_layoutBox.width(), m_layoutBox.height(), m_mirrored);
-        ++Detail::g_textRenderLayouts;
-        layout = std::move(built.layout);
-        elideLayout = std::move(built.elideLayout);
-    }
+    // Lay out here, from value state (the render thread never keeps a GUI-shaped layout around).
+    const CssTextPayload payload = m_applied;
+    CssTextBuiltLayout built = m_layoutMount
+        ? CssTextLayout::buildMountLayout(payload, m_mirrored)
+        : CssTextLayout::buildLayout(payload, m_layoutBox.width(), m_layoutBox.height(), m_mirrored);
+    ++Detail::g_textRenderLayouts;
+    std::unique_ptr<QTextLayout> layout = std::move(built.layout);
+    std::unique_ptr<QTextLayout> elideLayout = std::move(built.elideLayout);
 
     const QSGTextNode::RenderType renderType = windowRenderType();
     node->setFiltering(smooth() ? QSGTexture::Linear : QSGTexture::Nearest);
@@ -916,14 +865,9 @@ void QmlCss::CssText::itemChange(QQuickItem::ItemChange change, const QQuickItem
         return;
     switch (change) {
     case ItemSceneChange:
-        // A new window has a new scene graph: the node is built again there. Leaving one frees the layout
-        // the private handoff was holding for it.
-        if (data.window) {
+        // A new window has a new scene graph: the node is built again there.
+        if (data.window)
             markNodeDirty();
-        } else {
-            m_guiLayout.reset();
-            m_guiElideLayout.reset();
-        }
         break;
     case ItemDevicePixelRatioHasChanged:
         // QQuickText::itemChange: native glyphs are laid out for one pixel grid — lay out again.

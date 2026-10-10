@@ -64,27 +64,17 @@ inline int g_textGuiLayouts = 0;
 inline std::atomic<int> g_textRenderLayouts{ 0 };
 inline std::atomic<int> g_textNodeBuilds{ 0 };
 
-// Lean text switches, read once from the environment: SQ_LEAN_TEXT=0 keeps every CssText on the composed
-// QQuickText; SQ_LEAN_TEXT_HANDOFF=private (default) | public picks how the layout reaches the render thread.
-// The overrides are test probes (-1: the environment).
-enum class LeanTextHandoff { Private, Public };
+// Lean text switch, read once from the environment: SQ_LEAN_TEXT=0 keeps every CssText on the composed
+// QQuickText. The override is a test probe (-1: the environment). The render-thread handoff is always
+// public (the render thread lays out from value state); there used to be a private, GUI-shaped handoff
+// mode too (SQ_LEAN_TEXT_HANDOFF) — removed (4c).
 inline int g_leanTextOverride = -1; // 0 composed, 1 lean
-inline int g_leanTextHandoffOverride = -1; // 0 private, 1 public
 inline bool leanTextEnabled()
 {
     if (g_leanTextOverride >= 0)
         return g_leanTextOverride != 0;
     static const bool enabled = qEnvironmentVariable("SQ_LEAN_TEXT") != QLatin1String("0");
     return enabled;
-}
-inline LeanTextHandoff leanTextHandoff()
-{
-    if (g_leanTextHandoffOverride >= 0)
-        return g_leanTextHandoffOverride ? LeanTextHandoff::Public : LeanTextHandoff::Private;
-    static const LeanTextHandoff handoff = qEnvironmentVariable("SQ_LEAN_TEXT_HANDOFF") == QLatin1String("public")
-        ? LeanTextHandoff::Public
-        : LeanTextHandoff::Private;
-    return handoff;
 }
 
 // Exception-safe layout hibernation: open the batch on construction, single flush on scope

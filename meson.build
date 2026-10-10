@@ -75,11 +75,9 @@ qml_css_engine_qt_sources = qt6.preprocess(
 
 qml_css_engine_include = include_directories('src')
 
-# Private Qt, all in csstext.cpp: the lean CssText's private handoff (SQ_LEAN_TEXT_HANDOFF=private) resets a
-# layout's font-engine cache before the render thread reads it (QTextEngine), and it reads the LayoutMirroring a
-# composed label would inherit (QQuickItemPrivate). CssTextLayout elides through public API only. Private to the
-# library: no installed header includes them.
-qt6_gui_private_dep = dependency('qt6', modules: ['Core', 'Gui'], private_headers: true)
+# Private Qt, all in csstext.cpp: it reads the LayoutMirroring a composed label would inherit
+# (QQuickItemPrivate). CssTextLayout elides through public API only. Private to the library: no installed
+# header includes it. (QuickPrivate pulls GuiPrivate transitively, so that's covered too.)
 qt6_quick_private_dep = dependency('qt6', modules: ['Core', 'Gui', 'Qml', 'Quick'], private_headers: true)
 
 qml_css_engine_lib = static_library(
@@ -87,7 +85,7 @@ qml_css_engine_lib = static_library(
   qml_css_engine_sources,
   qml_css_engine_qt_sources,
   include_directories: qml_css_engine_include,
-  dependencies: [qt6_dep, qt6_gui_private_dep, qt6_quick_private_dep],
+  dependencies: [qt6_dep, qt6_quick_private_dep],
   install: true,
 )
 
