@@ -4619,6 +4619,22 @@ struct VirtualScene {
                 cssPrimitive: "div"
                 width: 300; height: 400
                 property var rows: []
+                // Identity-preserving edits (5c): a NEW array holding the SAME element objects, as a
+                // Solid store/signal update produces — unlike setRows(), which converts fresh objects.
+                // setRows() stores a C++ list (a sequence, re-converted on every read): own it as a JS array.
+                function adopt() { rows = rows.slice() }
+                function truncate(n) { rows = rows.slice(0, n) }
+                function swapRows(a, b) { const r = rows.slice(); const t = r[a]; r[a] = r[b]; r[b] = t; rows = r }
+                function removeRow(i) { const r = rows.slice(); r.splice(i, 1); rows = r }
+                function updateEvery(k) {
+                    rows = rows.map((e, i) => i % k ? e : ({ id: e.id, label: e.label + " !" }))
+                }
+                function appendRows(n, idBase) {
+                    const r = rows.slice()
+                    for (let i = 0; i < n; ++i)
+                        r.push({ id: idBase + i + 1, label: "row " + (idBase + i) })
+                    rows = r
+                }
                 CssRepeater {
                     model: list.rows
                     virtualize: )") + (virtualize ? "true" : "false") + R"(
@@ -4650,6 +4666,19 @@ struct VirtualScene {
         return QString();
     }
     void setRows(const QVariantList &rows) { root->setProperty("rows", QVariant::fromValue(rows)); }
+    // The model as the QML side holds it now (after a JS-side edit).
+    QVariantList currentRows() const
+    {
+        QVariant v = root->property("rows");
+        if (v.metaType() == QMetaType::fromType<QJSValue>())
+            v = v.value<QJSValue>().toVariant();
+        return v.toList();
+    }
+    bool call(const char *fn, const QVariant &a, const QVariant &b = QVariant())
+    {
+        return b.isValid() ? QMetaObject::invokeMethod(root.data(), fn, Q_ARG(QVariant, a), Q_ARG(QVariant, b))
+                           : QMetaObject::invokeMethod(root.data(), fn, Q_ARG(QVariant, a));
+    }
     void setContentY(qreal y) { flick->setProperty("contentY", y); }
     qreal contentHeight() const { return flick->property("contentHeight").toReal(); }
     qreal maxContentY() const { return contentHeight() - flick->height(); }
@@ -4905,4 +4934,348 @@ void QmlCssTests::virtualListFallsBackEager()
     Detail::g_virtualA11yOverride = previous;
     const QString bad = checkVirtualRows(s, model);
     QVERIFY2(bad.isEmpty(), qPrintable(bad));
+}
+
+// ---- Step 5c: identity-first incremental reconciliation ------------------------------------------
+
+namespace {
+
+// A keyed list driven from JS the way a Solid update drives it: every edit is a NEW array, and elements
+// that did not change are the SAME objects. Each row logs its modelData evaluations ("m<id>") and its
+// index evaluations ("i<id>") into evalLog (a push into a var array does not notify, so the probes do
+// not depend on each other — see cssRepeaterWritesIndexOnlyWhenChanged).
+struct IdentityScene {
+    CssTheme theme;
+    CssLayoutEngine layout{ &theme };
+    QQmlEngine engine;
+    QScopedPointer<QObject> root;
+
+    QString mount(const QString &json)
+    {
+        engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+        engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layout);
+        QQmlComponent c(&engine);
+        c.setData(R"(
+            import QtQuick
+            import qmlcss
+            CssRect {
+                id: box
+                cssPrimitive: ""
+                width: 200; height: 400
+                style: ({ "display": "flex", "flex-direction": "column" })
+                property var rows: []
+                property var evalLog: []
+                function setTo(json) { rows = JSON.parse(json) }
+                function same() { rows = rows.slice() }
+                function swap(a, b) { const r = rows.slice(); const t = r[a]; r[a] = r[b]; r[b] = t; rows = r }
+                function removeAt(i) { const r = rows.slice(); r.splice(i, 1); rows = r }
+                function replaceAt(i, json) { const r = rows.slice(); r[i] = JSON.parse(json); rows = r }
+                function append(json) { rows = rows.concat(JSON.parse(json)) }
+                function mutate(i, t) { rows[i].t = t; rows = rows.slice() }
+                function dupFirst() { rows = [rows[0], rows[0]] }
+                CssRepeater {
+                    id: rep
+                    model: box.rows
+                    delegate: Component {
+                        CssRect {
+                            cssPrimitive: "div"
+                            height: 10
+                            objectName: "row-" + modelData.id
+                            property string label: { box.evalLog.push("m" + modelData.id); return modelData.t }
+                            // Re-entrancy probe: a row reacting to its new modelData by assigning the model
+                            // (imperatively: through the `model:` binding QML reports a binding loop instead).
+                            onLabelChanged: if (label === "go") rep.model = box.rows.concat([{ id: 99, t: "late" }])
+                            property int idx: { box.evalLog.push("i" + modelData.id); return index }
+                        }
+                    }
+                }
+            }
+        )", QUrl());
+        root.reset(c.create());
+        if (!root)
+            return c.errorString();
+        return run("setTo", json) ? QString() : QStringLiteral("setTo failed");
+    }
+    bool run(const char *fn, const QVariant &a = QVariant(), const QVariant &b = QVariant())
+    {
+        Detail::g_repeaterConversions = 0;
+        const bool ok = !a.isValid() ? QMetaObject::invokeMethod(root.data(), fn)
+            : !b.isValid()           ? QMetaObject::invokeMethod(root.data(), fn, Q_ARG(QVariant, a))
+                                     : QMetaObject::invokeMethod(root.data(), fn, Q_ARG(QVariant, a), Q_ARG(QVariant, b));
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        return ok;
+    }
+    // Live rows, in document order.
+    QList<QQuickItem *> rows() const
+    {
+        QList<QQuickItem *> out;
+        auto *rep = root->findChild<CssRepeater *>();
+        if (!rep || !rep->parentItem())
+            return out;
+        for (QQuickItem *k : rep->parentItem()->childItems())
+            if (k->objectName().startsWith(QLatin1String("row-")))
+                out.append(k);
+        return out;
+    }
+    QStringList labels() const
+    {
+        QStringList out;
+        for (QQuickItem *r : rows())
+            out.append(r->property("label").toString());
+        return out;
+    }
+    QQuickItem *row(int i) const { return rows().value(i); }
+    int logSize() const { return int(root->property("evalLog").toList().size()); }
+    QStringList logSince(int from) const
+    {
+        QStringList out;
+        const QVariantList l = root->property("evalLog").toList();
+        for (int i = from; i < l.size(); ++i)
+            out.append(l.at(i).toString());
+        return out;
+    }
+};
+
+const char *const kFourRows = R"([{"id":1,"t":"a"},{"id":2,"t":"b"},{"id":3,"t":"c"},{"id":4,"t":"d"}])";
+
+} // namespace
+
+void QmlCssTests::repeaterIdentityFastPath()
+{
+    IdentityScene s;
+    QVERIFY2(s.mount(QString::fromLatin1(kFourRows)).isEmpty(), "mount");
+    const QList<QQuickItem *> before = s.rows();
+    QCOMPARE(before.size(), 4);
+
+    // A new array of the SAME objects: nothing converted, no context written, every instance kept.
+    int base = s.logSize();
+    QVERIFY(s.run("same"));
+    QCOMPARE(Detail::g_repeaterConversions, 0);
+    QCOMPARE(s.logSince(base), QStringList());
+    QCOMPARE(s.rows(), before);
+
+    // Swap the ends: the two rows move (index only), nothing converted.
+    base = s.logSize();
+    QVERIFY(s.run("swap", 0, 3));
+    QCOMPARE(Detail::g_repeaterConversions, 0);
+    QStringList log = s.logSince(base);
+    log.sort();
+    QCOMPARE(log, (QStringList{ QStringLiteral("i1"), QStringLiteral("i4") }));
+    QCOMPARE(s.rows(), (QList<QQuickItem *>{ before[3], before[1], before[2], before[0] }));
+    QCOMPARE(before[0]->property("idx").toInt(), 3);
+    QCOMPARE(before[3]->property("idx").toInt(), 0);
+
+    // Remove the second: it is destroyed, the rows after it shift (index only), nothing converted.
+    QPointer<QQuickItem> gone = before[1];
+    base = s.logSize();
+    QVERIFY(s.run("removeAt", 1));
+    QCOMPARE(Detail::g_repeaterConversions, 0);
+    QVERIFY(!gone || !gone->parentItem());
+    log = s.logSince(base);
+    log.sort();
+    QCOMPARE(log, (QStringList{ QStringLiteral("i1"), QStringLiteral("i3") }));
+    QCOMPARE(s.rows(), (QList<QQuickItem *>{ before[3], before[2], before[0] }));
+    QCOMPARE(s.labels(), (QStringList{ QStringLiteral("d"), QStringLiteral("c"), QStringLiteral("a") }));
+
+    // Append one: exactly the new element is converted; no survivor is touched.
+    base = s.logSize();
+    QVERIFY(s.run("append", QStringLiteral(R"([{"id":9,"t":"z"}])")));
+    QCOMPARE(Detail::g_repeaterConversions, 1);
+    for (const QString &e : s.logSince(base))
+        QVERIFY2(e.endsWith(QLatin1Char('9')), qPrintable(e));
+    QCOMPARE(s.labels(), (QStringList{ QStringLiteral("d"), QStringLiteral("c"), QStringLiteral("a"), QStringLiteral("z") }));
+    QCOMPARE(s.row(3)->property("idx").toInt(), 3);
+}
+
+void QmlCssTests::repeaterNewObjectSameIdUpdates()
+{
+    IdentityScene s;
+    QVERIFY2(s.mount(QString::fromLatin1(kFourRows)).isEmpty(), "mount");
+    const QList<QQuickItem *> before = s.rows();
+
+    // C23 unchanged: a NEW object with the same id reuses the row and updates modelData in place —
+    // and it is the only element converted.
+    int base = s.logSize();
+    QVERIFY(s.run("replaceAt", 1, QStringLiteral(R"({"id":2,"t":"B"})")));
+    QCOMPARE(Detail::g_repeaterConversions, 1);
+    QCOMPARE(s.rows(), before);
+    QCOMPARE(s.labels(), (QStringList{ QStringLiteral("a"), QStringLiteral("B"), QStringLiteral("c"), QStringLiteral("d") }));
+    QStringList log = s.logSince(base);
+    log.removeAll(QStringLiteral("i2")); // the idx probe also reads modelData.id
+    QCOMPARE(log, QStringList{ QStringLiteral("m2") });
+
+    // A new object EQUAL to the old one: converted, but modelData is not re-set (today's rule).
+    base = s.logSize();
+    QVERIFY(s.run("replaceAt", 2, QStringLiteral(R"({"id":3,"t":"c"})")));
+    QCOMPARE(Detail::g_repeaterConversions, 1);
+    QCOMPARE(s.logSince(base), QStringList());
+    QCOMPARE(s.rows(), before);
+}
+
+void QmlCssTests::repeaterMutatedSameObjectIsNotReread()
+{
+    // Owner decision 2026-10-10 (5c), Solid web <For> semantics: an element is compared by IDENTITY. An
+    // object mutated in place and re-sent in a new array is the same element — its row is not re-read.
+    IdentityScene s;
+    QVERIFY2(s.mount(QString::fromLatin1(kFourRows)).isEmpty(), "mount");
+    const QList<QQuickItem *> before = s.rows();
+    QVERIFY(s.run("mutate", 1, QStringLiteral("X")));
+    QCOMPARE(Detail::g_repeaterConversions, 0);
+    QCOMPARE(s.rows(), before);
+    QCOMPARE(s.labels(), (QStringList{ QStringLiteral("a"), QStringLiteral("b"), QStringLiteral("c"), QStringLiteral("d") }));
+    // A fresh object (the immutable-update idiom) is re-read.
+    QVERIFY(s.run("replaceAt", 1, QStringLiteral(R"({"id":2,"t":"X"})")));
+    QCOMPARE(s.labels(), (QStringList{ QStringLiteral("a"), QStringLiteral("X"), QStringLiteral("c"), QStringLiteral("d") }));
+    QCOMPARE(s.rows(), before);
+}
+
+void QmlCssTests::repeaterDuplicateIdsFallBackToUnkeyed()
+{
+    IdentityScene s;
+    QVERIFY2(s.mount(QStringLiteral(R"([{"id":1,"t":"a"},{"id":2,"t":"b"},{"id":3,"t":"c"}])")).isEmpty(), "mount");
+    const QList<QQuickItem *> before = s.rows();
+    QPointer<QQuickItem> one = before[0], two = before[1], three = before[2];
+
+    // A duplicate id AFTER a prefix that would match by key with an edit (1 -> "A"): the whole model is
+    // unkeyed, matched by VALUE exactly as before 5c — row 1 is NOT updated in place but recreated, {2,b}
+    // keeps its delegate, the second id 2 is new.
+    QVERIFY(s.run("setTo", QStringLiteral(R"([{"id":1,"t":"A"},{"id":2,"t":"b"},{"id":2,"t":"c"}])")));
+    QCOMPARE(s.labels(), (QStringList{ QStringLiteral("A"), QStringLiteral("b"), QStringLiteral("c") }));
+    QVERIFY(!one || !one->parentItem());
+    QVERIFY(!three || !three->parentItem());
+    QCOMPARE(s.row(1), two.data());
+    QCOMPARE(two->property("idx").toInt(), 1);
+
+    // Back to keyed from the unkeyed state (fresh objects): first row per id wins, as before.
+    QPointer<QQuickItem> rowA = s.row(0), dupC = s.row(2);
+    QVERIFY(s.run("setTo", QStringLiteral(R"([{"id":2,"t":"b2"},{"id":1,"t":"A"},{"id":3,"t":"c"}])")));
+    QCOMPARE(s.labels(), (QStringList{ QStringLiteral("b2"), QStringLiteral("A"), QStringLiteral("c") }));
+    QCOMPARE(s.row(0), two.data());
+    QCOMPARE(s.row(1), rowA.data());
+    QVERIFY(!dupC || !dupC->parentItem());
+
+    // ...and identity works again from there.
+    const QList<QQuickItem *> keyed = s.rows();
+    QVERIFY(s.run("same"));
+    QCOMPARE(Detail::g_repeaterConversions, 0);
+    QCOMPARE(s.rows(), keyed);
+
+    // The SAME object twice is a duplicate id too: unkeyed, value matching.
+    QPointer<QQuickItem> first = keyed[0];
+    QVERIFY(s.run("dupFirst"));
+    QCOMPARE(s.labels(), (QStringList{ QStringLiteral("b2"), QStringLiteral("b2") }));
+    QCOMPARE(s.row(0), first.data());
+    QVERIFY(s.row(1) != first.data());
+}
+
+void QmlCssTests::repeaterReentrantModelChangeIsDeferred()
+{
+    IdentityScene s;
+    QVERIFY2(s.mount(QString::fromLatin1(kFourRows)).isEmpty(), "mount");
+    const QList<QQuickItem *> before = s.rows();
+    // Row 2's modelData write (pass 2 of the reconciliation) makes it set a new model from inside the
+    // reconciliation: that one runs right after, never on top of the half-done one.
+    QVERIFY(s.run("replaceAt", 1, QStringLiteral(R"({"id":2,"t":"go"})")));
+    QCOMPARE(s.labels(), (QStringList{ QStringLiteral("a"), QStringLiteral("go"), QStringLiteral("c"), QStringLiteral("d"),
+                                       QStringLiteral("late") }));
+    QCOMPARE(s.rows().mid(0, 4), before);
+    QCOMPARE(s.row(4)->property("idx").toInt(), 4);
+}
+
+void QmlCssTests::virtualListIdentityOps()
+{
+    VirtualScene s(QString::fromLatin1(kVirtualCss));
+    QVERIFY2(s.mount(true, makeVirtualRows(1000)).isEmpty(), "mount");
+    const bool wasOn = Detail::g_phaseStats.enabled;
+    Detail::g_phaseStats.enabled = true;
+    Detail::g_phaseStats.buckets.clear();
+    const auto verify = [&](const char *what) {
+        const QVariantList model = s.currentRows();
+        const QString bad = checkVirtualRows(s, model);
+        QVERIFY2(bad.isEmpty(), qPrintable(QStringLiteral("%1: %2").arg(QLatin1String(what), bad)));
+        QCOMPARE(s.contentHeight(), kPad + model.size() * kRowH + (model.size() - 1) * kGap + kPad);
+    };
+
+    QVERIFY(QMetaObject::invokeMethod(s.root.data(), "adopt"));
+    takeCounts();
+    Detail::g_repeaterConversions = 0;
+    QVERIFY(s.call("swapRows", 1, 998));
+    QCOMPARE(Detail::g_repeaterConversions, 0);
+    CreateDestroyCounts c = takeCounts();
+    QCOMPARE(c.created, qint64(1));
+    QCOMPARE(c.destroyed, qint64(1));
+    verify("swap");
+    s.setContentY(s.maxContentY());
+    verify("swap, at the end");
+    s.setContentY(0);
+    takeCounts();
+
+    Detail::g_repeaterConversions = 0;
+    QVERIFY(s.call("removeRow", 500));
+    QCOMPARE(Detail::g_repeaterConversions, 0);
+    c = takeCounts();
+    QCOMPARE(c.created, qint64(0));
+    QCOMPARE(c.destroyed, qint64(0));
+    verify("remove");
+
+    Detail::g_repeaterConversions = 0;
+    QVERIFY(s.call("updateEvery", 10));
+    QCOMPARE(Detail::g_repeaterConversions, 100); // 999 rows: indices 0, 10, ..., 990
+    c = takeCounts();
+    QCOMPARE(c.created, qint64(0));
+    QCOMPARE(c.destroyed, qint64(0));
+    verify("update");
+
+    Detail::g_repeaterConversions = 0;
+    QVERIFY(s.call("appendRows", 25, 5000));
+    QCOMPARE(Detail::g_repeaterConversions, 25);
+    c = takeCounts();
+    QCOMPARE(c.created, qint64(0));
+    verify("append");
+    s.setContentY(s.maxContentY());
+    verify("append, at the end");
+
+    Detail::g_phaseStats.enabled = wasOn;
+    Detail::g_phaseStats.buckets.clear();
+}
+
+// Measurement, not a gate: SQ_REPEATER_BENCH=1 prints repeater.toList / repeater.match per keyed op on a
+// 10000-row virtual list driven from JS (identity-preserving edits).
+void QmlCssTests::repeaterKeyedOpsBench()
+{
+    if (!qEnvironmentVariableIntValue("SQ_REPEATER_BENCH"))
+        QSKIP("set SQ_REPEATER_BENCH=1 to run");
+    VirtualScene s(QString::fromLatin1(kVirtualCss));
+    QVERIFY2(s.mount(true, makeVirtualRows(10000)).isEmpty(), "mount");
+    QVERIFY(QMetaObject::invokeMethod(s.root.data(), "adopt"));
+    const bool wasOn = Detail::g_phaseStats.enabled;
+    Detail::g_phaseStats.enabled = true;
+    const auto op = [&](const char *name, const char *fn, const QVariant &a, const QVariant &b) {
+        Detail::g_phaseStats.buckets.clear();
+        Detail::g_repeaterConversions = 0;
+        QElapsedTimer t;
+        t.start();
+        QVERIFY(s.call(fn, a, b));
+        const double wall = t.nsecsElapsed() / 1e6;
+        const auto ms = [](const char *k) { return Detail::g_phaseStats.buckets.value(k).ns / 1e6; };
+        if (Detail::g_phaseStats.enabled)
+            fprintf(stderr, "[5c-bench] %-8s toList %7.3f ms  match %7.3f ms  sum %7.3f ms  conversions %6d  wall %7.3f ms\n",
+                    name, ms("repeater.toList"), ms("repeater.match"), ms("repeater.toList") + ms("repeater.match"),
+                    Detail::g_repeaterConversions, wall);
+        else
+            fprintf(stderr, "[5c-bench] %-8s (phase stats off) wall %7.3f ms\n", name, wall);
+    };
+    // Rounds with the phase timers (where the time goes), then without (wall clock not inflated by the
+    // per-sample timer cost).
+    for (int round = 0; round < 6; ++round) {
+        Detail::g_phaseStats.enabled = round < 3;
+        op("update", "updateEvery", 10, QVariant());
+        op("swap", "swapRows", 1, 998);
+        op("swap", "swapRows", 1, 998);
+        op("remove", "removeRow", 500, QVariant());
+        op("append", "appendRows", 1000, 100000 + round * 1000);
+        QVERIFY(s.call("truncate", 10000)); // every round starts from N = 10000
+    }
+    Detail::g_phaseStats.enabled = wasOn;
+    Detail::g_phaseStats.buckets.clear();
 }

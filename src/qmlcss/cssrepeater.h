@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QHash>
+#include <QJSValue>
 #include <QPointer>
 #include <QQmlComponent>
 #include <QQuickItem>
@@ -48,7 +50,7 @@ public:
     // the logical entry count (equal unless windowed).
     int rowCount() const { return m_matCount; }
     int materializedCount() const { return m_matCount; }
-    int logicalCount() const { return int(m_rows.size()); }
+    int logicalCount() const { return int(m_order.size()); }
 
     // --- layout-engine interface (5v-1) -----------------------------------------------------------
     // What the container's own style allows: a vertical scroll box laying its holder out as ONE
@@ -88,15 +90,33 @@ protected:
 
 private:
     struct Row {
-        QVariant data;
+        QVariant data;                  // modelData (the element converted once, when it arrived)
         QPointer<QQuickItem> item;
         QPointer<QQmlContext> context;
+        QJSValue js;                    // the element object as received (identity); keyed JS models only
+        QString key;                    // its id; set while the key index (m_byKey) is valid
+        QVariant incoming;              // staged new modelData of a matched row (the JS pass, 5c)
+        int pos = -1;                   // logical index after the last reconciliation (-1: new row)
+        quint32 gen = 0;                // reconciliation that claimed it (m_gen)
+        bool hasIncoming = false;
     };
     // Eager: every row exists. Pending: virtual, waiting for the holder's first layout to decide
     // (nothing materialized). Windowed: only the window exists.
     enum class Mode : quint8 { Eager, Pending, Windowed };
 
-    void rebuild();          // diff m_rows against the new model
+    void rebuild();          // diff the rows against the new model (re-entrant calls are deferred)
+    void reconcile();        // one reconciliation pass
+    // Identity-first keyed reconciliation of a JS array model (5c). False = the array is not keyed
+    // (an element without an id, or a duplicate id): nothing was changed, the caller takes the
+    // value-matching path.
+    bool rebuildKeyedJs(const QJSValue &array, bool *changed);
+    void rebuildFromList(const QVariantList &data, bool *changed);
+    void buildKeyIndex();
+    int allocSlot();
+    void releaseSlot(int slot);
+    void finishOrder(bool *changed); // destroy unclaimed rows, adopt m_next as the new order
+    Row &rowAt(int i) { return m_pool[m_order[i]]; }
+    const Row &rowAt(int i) const { return m_pool[m_order[i]]; }
     bool createRow(int i, const QVariant &data, Row &row);
     void destroyRow(Row &row);
     void restack();          // enforce model order among the holder's children
@@ -120,7 +140,18 @@ private:
 
     QVariant m_model;
     QQmlComponent *m_delegate = nullptr;
-    QVector<Row> m_rows;     // ALL logical entries, in model order; `item` null when not materialized
+    // ALL logical entries: m_order[i] is the m_pool slot of logical row i (in model order); `item` null
+    // when not materialized. Slots are STABLE across reconciliations (a shift moves ints in m_order, not
+    // rows), which is what lets m_byKey persist: key -> slot, updated only for inserted/removed rows.
+    QVector<Row> m_pool;
+    QVector<int> m_order;
+    QVector<int> m_next;     // the order being built (swapped with m_order; capacity kept)
+    QVector<int> m_free;     // released m_pool slots
+    QHash<QString, int> m_byKey;
+    bool m_keyIndexValid = false; // m_byKey maps every row's key (first row per key) to its slot
+    quint32 m_gen = 0;
+    bool m_rebuilding = false;
+    bool m_rebuildPending = false;
     QPointer<CssLayoutEngine> m_layout; // resolved at completion; brackets each reconciliation
 
     // virtual mode

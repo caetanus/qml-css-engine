@@ -248,4 +248,17 @@ private slots:
     void virtualListMatchesEagerPixels();
     void virtualListKeyedUpdate();
     void virtualListFallsBackEager();
+
+    // Step 5c: identity-first incremental reconciliation. Unchanged elements (the SAME JS object) cost
+    // no conversion and no context write; a new object with the same id still updates in place (C23);
+    // an object mutated in place is not re-read (owner decision, Solid web semantics); duplicate ids
+    // fall back to unkeyed value matching exactly as before.
+    void repeaterIdentityFastPath();
+    void repeaterNewObjectSameIdUpdates();
+    void repeaterMutatedSameObjectIsNotReread();
+    void repeaterDuplicateIdsFallBackToUnkeyed();
+    // A model set from inside a reconciliation (a row reacting to its new modelData) runs after it.
+    void repeaterReentrantModelChangeIsDeferred();
+    void virtualListIdentityOps();
+    void repeaterKeyedOpsBench();
 };

@@ -26,8 +26,11 @@ namespace {
 // The model arrives from QML bindings as a QJSValue array; normalize to a QVariantList.
 QVariantList toList(const QVariant &v)
 {
-    if (v.metaType().id() == qMetaTypeId<QJSValue>())
-        return toList(v.value<QJSValue>().toVariant());
+    if (v.metaType().id() == qMetaTypeId<QJSValue>()) {
+        QVariantList out = toList(v.value<QJSValue>().toVariant());
+        Detail::g_repeaterConversions += int(out.size());
+        return out;
+    }
     if (v.metaType().id() == QMetaType::QVariantList)
         return v.toList();
     if (v.metaType().id() == QMetaType::QStringList) {
@@ -68,9 +71,10 @@ CssRepeater::~CssRepeater()
     const Detail::LayoutBatchGuard batch(m_layout);
     if (m_layout && m_registeredHolder)
         m_layout->unregisterVirtualRepeater(m_registeredHolder, this);
-    for (Row &row : m_rows)
-        destroyRow(row);
-    m_rows.clear();
+    for (const int s : std::as_const(m_order))
+        destroyRow(m_pool[s]);
+    m_order.clear();
+    m_pool.clear();
 }
 
 void CssRepeater::setModel(const QVariant &v)
@@ -105,7 +109,7 @@ void CssRepeater::setVirtualize(bool v)
         watchFlickable(nullptr);
         m_mode = Mode::Eager;
         const Detail::LayoutBatchGuard batch(m_layout);
-        if (materialize(0, int(m_rows.size()) - 1, false)) {
+        if (materialize(0, int(m_order.size()) - 1, false)) {
             restack();
             notifyLayout();
         }
@@ -185,7 +189,7 @@ QString keyOf(const QVariant &v)
 {
     if (v.metaType().id() != QMetaType::QVariantMap)
         return {};
-    const QVariantMap m = v.toMap();
+    const QVariantMap &m = *static_cast<const QVariantMap *>(v.constData()); // no copy
     const auto it = m.constFind(QStringLiteral("id"));
     return it == m.cend() ? QString() : it->toString();
 }
@@ -250,19 +254,315 @@ void CssRepeater::rebuild()
     // when this is the OUTERMOST batch. Nested inside another one (a <For> in a delegate being created,
     // a theme reapply, the loader's mount), settling happens where that outer batch closes.
     const Detail::LayoutBatchGuard batch(m_layout);
+    // A model set from INSIDE a reconciliation (a row's binding/handler reacting to its new modelData or
+    // index, a JS getter run by a conversion) must not reconcile on top of the half-done one: it runs
+    // right after, against the latest model.
+    if (m_rebuilding) {
+        m_rebuildPending = true;
+        return;
+    }
+    m_rebuilding = true;
+    struct Reset {
+        bool &flag;
+        ~Reset() { flag = false; }
+    } reset{ m_rebuilding };
+    do {
+        m_rebuildPending = false;
+        reconcile();
+    } while (m_rebuildPending);
+}
+
+void CssRepeater::reconcile()
+{
+    bool changed = false;
+    bool done = false;
+    // A JS array (the model of every <For>): identity-first, converting only new/changed elements.
+    if (m_model.metaType() == QMetaType::fromType<QJSValue>()) {
+        const QJSValue array = *static_cast<const QJSValue *>(m_model.constData()); // m_model may change under us
+        if (array.isArray())
+            done = rebuildKeyedJs(array, &changed);
+    }
+    if (!done) {
+        QElapsedTimer t;
+        if (Detail::g_phaseStats.enabled)
+            t.start();
+        const QVariantList data = toList(m_model);
+        if (Detail::g_phaseStats.enabled)
+            Detail::g_phaseStats.time("repeater.toList", t.nsecsElapsed());
+        rebuildFromList(data, &changed);
+    }
+    // Survivors may now sit anywhere (a swap moves a materialized row out of the window): sweep every
+    // logical row once — the matching above was O(n) already.
+    int a, b;
+    targetRange(&a, &b);
+    if (materialize(a, b, true))
+        changed = true;
+    if (changed) {
+        QElapsedTimer t;
+        if (Detail::g_phaseStats.enabled)
+            t.start();
+        restack();
+        if (Detail::g_phaseStats.enabled)
+            Detail::g_phaseStats.time("repeater.restack", t.nsecsElapsed());
+        notifyLayout();
+    }
+}
+
+int CssRepeater::allocSlot()
+{
+    if (!m_free.isEmpty())
+        return m_free.takeLast();
+    m_pool.append(Row());
+    return int(m_pool.size()) - 1;
+}
+
+void CssRepeater::releaseSlot(int slot)
+{
+    m_pool[slot] = Row();
+    m_free.append(slot);
+}
+
+void CssRepeater::buildKeyIndex()
+{
+    // Rows left by the value-matching path carry no key: derive them from their (converted) data, first
+    // row per key wins — exactly the lookup the pre-5c keyed path rebuilt on every reconciliation. Runs
+    // once per switch from that path, never per keyed update.
+    m_byKey.clear();
+    m_byKey.reserve(m_order.size());
+    for (const int s : std::as_const(m_order)) {
+        Row &r = m_pool[s];
+        r.key = keyOf(r.data);
+        if (!r.key.isEmpty() && !m_byKey.contains(r.key))
+            m_byKey.insert(r.key, s);
+    }
+    m_keyIndexValid = true;
+}
+
+void CssRepeater::finishOrder(bool *changed)
+{
+    // Rows no element claimed this round leave: their item/context die, their key and slot are freed.
+    // Raw pointers in the O(n) loops: QList's operator[] re-checks detach per access. releaseSlot()
+    // never reallocates m_pool (it only appends to m_free).
+    Row *const pool = m_pool.data();
+    const int *const order = m_order.constData();
+    const int oldN = int(m_order.size());
+    for (int i = 0; i < oldN; ++i) {
+        const int s = order[i];
+        Row &r = pool[s];
+        if (r.gen == m_gen)
+            continue;
+        destroyRow(r);
+        if (m_keyIndexValid && !r.key.isEmpty()) {
+            const auto it = m_byKey.constFind(r.key);
+            if (it != m_byKey.cend() && *it == s)
+                m_byKey.erase(it);
+        }
+        releaseSlot(s);
+        *changed = true;
+    }
+    m_order.swap(m_next);
+    m_next.clear(); // keeps its capacity for the next reconciliation
+    if (m_order.isEmpty()) {
+        // A cleared list gives its row storage back (slots are otherwise reused, never compacted).
+        m_pool = QVector<Row>();
+        m_free = QVector<int>();
+        m_next = QVector<int>();
+        m_byKey.clear();
+    }
+}
+
+bool CssRepeater::rebuildKeyedJs(const QJSValue &array, bool *changed)
+{
+    // KEYED when every element is an object with a distinct "id" (keyOf's rule on its conversion), same
+    // predicate as the value path. Rows are matched by IDENTITY first (Solid web <For>): an element that
+    // is the very object its row last received is that row, untouched — no conversion, no context write
+    // (an object mutated in place and re-sent is NOT re-read: owner decision 2026-10-10). Only a new
+    // object is converted (one toVariant) and matched by its id; a matched row gets it as modelData in
+    // place (C23), an unmatched id is a new row.
+    //
+    // Two passes so a model that turns out unkeyed half-way changes nothing: (1) claim a row slot per
+    // element (m_gen stamps; a slot claimed twice = a duplicate id), staging new modelData in the row;
+    // (2) commit modelData/index writes and destroy unclaimed rows.
+    const bool stats = Detail::g_phaseStats.enabled;
+    QElapsedTimer t, ct;
+    qint64 convNs = 0;
+    if (stats)
+        t.start();
+    const int n = array.property(QStringLiteral("length")).toInt();
+    if (n <= 0)
+        return false; // empty: the value path (nothing to match) clears every row
+    if (++m_gen == 0) { // wrapped: no row may look claimed by the new round
+        for (Row &r : m_pool)
+            r.gen = 0;
+        m_gen = 1;
+    }
+    const quint32 gen = m_gen;
+    const int oldN = int(m_order.size());
+    // Raw pointers in the O(n) loops (QList's operator[] re-checks detach per access). `pool` is
+    // re-fetched after allocSlot(), the only call that can grow m_pool.
+    const int *const oldOrder = m_order.constData();
+    Row *pool = m_pool.data();
+    m_next.resize(n); // capacity kept across reconciliations: no allocation in the steady state
+    int *const next = m_next.data();
+    int filled = 0;
+    bool keyed = true;
+    // `j`: the old position expected next. Starts aligned and re-syncs after every row found elsewhere
+    // (to just past its old position), so a removal or an insertion costs ONE lookup and the rows after
+    // it are aligned again; a swap costs four.
+    int j = 0;
+    for (int i = 0; i < n; ++i) {
+        QJSValue e = array.property(quint32(i));
+        int slot = -1;
+        int byFastKey = -1; // the row the element's id names, when that lookup ran
+        QString fastKey;
+        // Aligned: the same object as the next old row (an update/append/remove leaves almost all so).
+        if (j < oldN) {
+            const Row &r = pool[oldOrder[j]];
+            if (r.js.isObject() && e.strictlyEquals(r.js))
+                slot = oldOrder[j];
+        }
+        // Moved: the same object elsewhere — its row found through its id, confirmed by identity.
+        if (slot < 0 && e.isObject()) {
+            const QJSValue id = e.property(QStringLiteral("id"));
+            if (id.isString())
+                fastKey = id.toString();
+            else if (id.isNumber() || id.isBool())
+                fastKey = id.toVariant().toString(); // keyOf's formatting of the converted value
+            if (!fastKey.isEmpty()) {
+                if (!m_keyIndexValid)
+                    buildKeyIndex();
+                const auto it = m_byKey.constFind(fastKey);
+                if (it != m_byKey.cend()) {
+                    byFastKey = *it;
+                    if (pool[*it].js.isObject() && e.strictlyEquals(pool[*it].js))
+                        slot = *it;
+                }
+            }
+        }
+        if (slot >= 0) {
+            if (pool[slot].gen == gen) { // the same object twice: a duplicate id
+                keyed = false;
+                break;
+            }
+        } else {
+            // A new object: convert it once; its key is keyOf's, on the conversion.
+            if (stats)
+                ct.start();
+            QVariant v = e.toVariant();
+            ++Detail::g_repeaterConversions;
+            if (stats)
+                convNs += ct.nsecsElapsed();
+            const QString k = keyOf(v);
+            if (k.isEmpty()) {
+                keyed = false;
+                break;
+            }
+            if (!m_keyIndexValid)
+                buildKeyIndex();
+            int found = -1;
+            if (k == fastKey) { // the lookup above already ran with this very key
+                found = byFastKey;
+            } else {
+                const auto it = m_byKey.constFind(k);
+                found = it != m_byKey.cend() ? *it : -1;
+            }
+            if (found >= 0) {
+                slot = found;
+                Row &r = pool[slot];
+                if (r.gen == gen) {
+                    keyed = false;
+                    break;
+                }
+                r.incoming = std::move(v);
+                r.hasIncoming = true;
+                r.js = std::move(e);
+            } else {
+                slot = allocSlot();
+                pool = m_pool.data();
+                Row &r = pool[slot];
+                r.data = std::move(v);
+                r.key = k;
+                r.js = std::move(e);
+                r.pos = -1;
+                m_byKey.insert(k, slot);
+            }
+        }
+        Row &claimed = pool[slot];
+        claimed.gen = gen;
+        if (claimed.pos >= 0)
+            j = claimed.pos + 1;
+        next[filled++] = slot;
+    }
+
+    if (!keyed) {
+        // Undo pass 1: new rows go, staged values are dropped; the value path then runs as before 5c.
+        for (int i = 0; i < filled; ++i) {
+            const int s = next[i];
+            Row &r = pool[s];
+            if (r.pos < 0) {
+                m_byKey.remove(r.key);
+                releaseSlot(s);
+            } else if (r.hasIncoming) {
+                r.incoming = QVariant();
+                r.hasIncoming = false;
+            }
+        }
+        m_next.clear();
+        if (stats) {
+            Detail::g_phaseStats.time("repeater.toList", convNs);
+            Detail::g_phaseStats.time("repeater.match", t.nsecsElapsed() - convNs);
+        }
+        return false;
+    }
+
+    // Pass 2, in model order: modelData for a row that received a new object (only when the value
+    // differs — today's rule), `index` only for a row that MOVED (re-setting an unchanged value still
+    // notifies every binding that reads it). New rows get both at creation (materialize).
+    qint64 indexNs = 0;
+    for (int i = 0; i < n; ++i) {
+        Row &r = pool[next[i]];
+        if (r.hasIncoming) {
+            r.hasIncoming = false;
+            if (r.data != r.incoming) {
+                r.data = std::move(r.incoming);
+                if (r.context)
+                    r.context->setContextProperty(QStringLiteral("modelData"), r.data);
+            }
+            r.incoming = QVariant();
+        }
+        if (r.pos != i) {
+            if (r.context) {
+                if (stats)
+                    ct.start();
+                r.context->setContextProperty(QStringLiteral("index"), i);
+                if (stats)
+                    indexNs += ct.nsecsElapsed();
+            }
+            r.pos = i;
+            *changed = true;
+        }
+    }
+    finishOrder(changed);
+    if (stats) {
+        Detail::g_phaseStats.time("repeater.toList", convNs);
+        Detail::g_phaseStats.time("repeater.match", t.nsecsElapsed() - convNs - indexNs);
+        if (indexNs)
+            Detail::g_phaseStats.time("repeater.index", indexNs);
+    }
+    return true;
+}
+
+void CssRepeater::rebuildFromList(const QVariantList &data, bool *changed)
+{
+    // The value path (pre-5c behaviour, unchanged): C++ lists, integer models, QStringList, and JS arrays
+    // that are not keyed. KEYED when every entry is an object with a distinct "id": rows match by id in
+    // O(n), and a surviving row whose content changed gets the new value as its modelData IN PLACE. A model
+    // rebuilt from fresh JSON (every object new, most of them equal, some edited) keeps every delegate
+    // instead of re-creating the edited ones — and skips the O(n²) value matching. Otherwise rows match by
+    // VALUE, stable first match.
     QElapsedTimer t;
     if (Detail::g_phaseStats.enabled)
         t.start();
-    const QVariantList data = toList(m_model);
-    if (Detail::g_phaseStats.enabled) {
-        Detail::g_phaseStats.time("repeater.toList", t.nsecsElapsed());
-        t.start();
-    }
-
-    // KEYED when every entry is an object with a distinct "id": rows match by id in O(n), and a
-    // surviving row whose content changed gets the new value as its modelData IN PLACE. A model
-    // rebuilt from fresh JSON (every object new, most of them equal, some edited) keeps every
-    // delegate instead of re-creating the edited ones — and skips the O(n²) value matching.
     QStringList keys;
     keys.reserve(data.size());
     bool keyed = !data.isEmpty();
@@ -275,22 +575,25 @@ void CssRepeater::rebuild()
             keys.append(k);
         }
     }
-
-    // m_rows holds EVERY logical entry (an item only when materialized): matching runs over all of
-    // them, so keys/order survive for rows outside a virtual window, and only materialize() below
-    // creates or destroys items.
-    QVector<Row> next;
-    next.reserve(data.size());
-    QVector<bool> used(m_rows.size(), false);
-    bool changed = false;
+    // This path keeps no identities and no persistent key index: the JS path rebuilds it on demand.
+    m_byKey.clear();
+    m_keyIndexValid = false;
+    if (++m_gen == 0) {
+        for (Row &r : m_pool)
+            r.gen = 0;
+        m_gen = 1;
+    }
+    const quint32 gen = m_gen;
     QHash<QString, int> byKey;
     if (keyed) {
-        for (int j = 0; j < m_rows.size(); ++j) {
-            const QString k = keyOf(m_rows[j].data);
+        for (const int s : std::as_const(m_order)) {
+            const QString k = keyOf(m_pool[s].data);
             if (!k.isEmpty() && !byKey.contains(k))
-                byKey.insert(k, j);
+                byKey.insert(k, s);
         }
     }
+    m_next.clear();
+    m_next.reserve(data.size());
     if (Detail::g_phaseStats.enabled) {
         // Key building + byKey: one sample for the whole up-front pass (the survivor scan below
         // adds its own, per data entry).
@@ -302,13 +605,13 @@ void CssRepeater::rebuild()
         int found = -1;
         if (keyed) {
             const auto it = byKey.constFind(keys.at(i));
-            if (it != byKey.cend() && !used[*it])
+            if (it != byKey.cend() && m_pool[*it].gen != gen)
                 found = *it;
         } else {
             // Reconcile by VALUE, stable first-match: surviving entries keep their delegate.
-            for (int j = 0; j < m_rows.size(); ++j) {
-                if (!used[j] && m_rows[j].data == data.at(i)) {
-                    found = j;
+            for (const int s : std::as_const(m_order)) {
+                if (m_pool[s].gen != gen && m_pool[s].data == data.at(i)) {
+                    found = s;
                     break;
                 }
             }
@@ -316,58 +619,45 @@ void CssRepeater::rebuild()
         if (Detail::g_phaseStats.enabled)
             Detail::g_phaseStats.time("repeater.match", t.nsecsElapsed());
         if (found >= 0) {
-            used[found] = true;
-            Row row = m_rows[found];
+            Row &row = m_pool[found];
+            row.gen = gen;
+            row.js = QJSValue();
+            row.key.clear();
             if (keyed && row.data != data.at(i)) {
                 row.data = data.at(i);
                 if (row.context)
                     row.context->setContextProperty(QStringLiteral("modelData"), row.data);
             }
-            // Only a row that MOVED gets a new index (its old index is its old position `found`):
+            // Only a row that MOVED gets a new index (its old index is its old position):
             // re-setting an unchanged value still notifies every binding that reads `index`.
-            if (row.context && found != i) {
-                if (Detail::g_phaseStats.enabled)
-                    t.start();
-                row.context->setContextProperty(QStringLiteral("index"), i);
-                if (Detail::g_phaseStats.enabled)
-                    Detail::g_phaseStats.time("repeater.index", t.nsecsElapsed());
+            if (row.pos != i) {
+                if (row.context) {
+                    if (Detail::g_phaseStats.enabled)
+                        t.start();
+                    row.context->setContextProperty(QStringLiteral("index"), i);
+                    if (Detail::g_phaseStats.enabled)
+                        Detail::g_phaseStats.time("repeater.index", t.nsecsElapsed());
+                }
+                row.pos = i;
+                *changed = true;
             }
-            if (found != i)
-                changed = true;
-            next.append(row);
+            m_next.append(found);
         } else {
-            Row row;
+            const int s = allocSlot();
+            Row &row = m_pool[s];
             row.data = data.at(i);
-            next.append(row);
-            changed = true;
+            row.pos = i;
+            row.gen = gen;
+            m_next.append(s);
+            *changed = true;
         }
     }
-    for (int j = 0; j < m_rows.size(); ++j) {
-        if (!used[j]) {
-            destroyRow(m_rows[j]);
-            changed = true;
-        }
-    }
-    m_rows = next;
-    // Survivors may now sit anywhere (a swap moves a materialized row out of the window): sweep every
-    // logical row once — the matching above was O(n) already.
-    int a, b;
-    targetRange(&a, &b);
-    if (materialize(a, b, true))
-        changed = true;
-    if (changed) {
-        if (Detail::g_phaseStats.enabled)
-            t.start();
-        restack();
-        if (Detail::g_phaseStats.enabled)
-            Detail::g_phaseStats.time("repeater.restack", t.nsecsElapsed());
-        notifyLayout();
-    }
+    finishOrder(changed);
 }
 
 bool CssRepeater::materialize(int a, int b, bool sweepAll)
 {
-    const int n = int(m_rows.size());
+    const int n = int(m_order.size());
     a = std::max(a, 0);
     b = std::min(b, n - 1);
     bool changed = false;
@@ -375,10 +665,17 @@ bool CssRepeater::materialize(int a, int b, bool sweepAll)
     // reconciliation just moved them).
     const int lo = sweepAll ? 0 : std::max(m_matFirst, 0);
     const int hi = sweepAll ? n - 1 : std::min(m_matLast, n - 1);
-    for (int i = lo; i <= hi; ++i) {
-        if ((i < a || i > b) && (m_rows[i].item || m_rows[i].context)) {
-            destroyRow(m_rows[i]);
-            changed = true;
+    {
+        Row *const pool = m_pool.data(); // raw: the sweep is O(n) after every reconciliation
+        const int *const order = m_order.constData();
+        for (int i = lo; i <= hi; ++i) {
+            if (i >= a && i <= b)
+                continue;
+            Row &row = pool[order[i]];
+            if (!row.item.isNull() || !row.context.isNull()) {
+                destroyRow(row);
+                changed = true;
+            }
         }
     }
     // Rows entering, in model order. setParentItem() APPENDS a new item to the holder's children (in
@@ -390,7 +687,7 @@ bool CssRepeater::materialize(int a, int b, bool sweepAll)
     // from the back) only touch the few items after the anchor; restack() fixes any reorder.
     QQuickItem *anchor = this;
     for (int i = a; i <= b; ++i) {
-        Row &row = m_rows[i];
+        Row &row = rowAt(i);
         if (!row.item) {
             if (row.context) // its item died under us: drop the orphaned context before recreating
                 destroyRow(row);
@@ -417,7 +714,7 @@ void CssRepeater::targetRange(int *a, int *b) const
     switch (m_mode) {
     case Mode::Eager:
         *a = 0;
-        *b = int(m_rows.size()) - 1;
+        *b = int(m_order.size()) - 1;
         return;
     case Mode::Pending:
         *a = 0;
@@ -431,7 +728,7 @@ void CssRepeater::targetRange(int *a, int *b) const
 
 void CssRepeater::windowRange(int *a, int *b) const
 {
-    const int n = int(m_rows.size());
+    const int n = int(m_order.size());
     if (n == 0 || !(m_flow.pitch > 0)) {
         *a = 0;
         *b = -1;
@@ -465,8 +762,8 @@ bool CssRepeater::measureRows(VirtualFlow *flow) const
     if (!m_layout || m_matCount == 0)
         return false;
     bool have = false;
-    for (int i = std::max(m_matFirst, 0); i <= m_matLast && i < m_rows.size(); ++i) {
-        QQuickItem *item = m_rows[i].item;
+    for (int i = std::max(m_matFirst, 0); i <= m_matLast && i < m_order.size(); ++i) {
+        QQuickItem *item = rowAt(i).item;
         const auto *box = qobject_cast<const CssBox *>(item);
         if (!box || !item->isVisible())
             return false;
@@ -529,7 +826,7 @@ bool CssRepeater::syncVirtual(const VirtualContainer &container)
         return m_mode == Mode::Windowed;
     m_container = container;
     watchFlickable(container.flick);
-    const int n = int(m_rows.size());
+    const int n = int(m_order.size());
     if (n == 0) {
         m_mode = Mode::Pending; // nothing to window; the eager path lays out zero rows identically
         return false;
@@ -605,9 +902,9 @@ void CssRepeater::restack()
     if (!parent)
         return;
     QVarLengthArray<QQuickItem *, 256> items;
-    for (int i = std::max(m_matFirst, 0); i <= m_matLast && i < m_rows.size(); ++i)
-        if (m_rows[i].item)
-            items.append(m_rows[i].item);
+    for (int i = std::max(m_matFirst, 0); i <= m_matLast && i < m_order.size(); ++i)
+        if (rowAt(i).item)
+            items.append(rowAt(i).item);
     const int n = int(items.size());
     if (n == 0)
         return;

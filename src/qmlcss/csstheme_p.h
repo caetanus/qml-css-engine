@@ -75,6 +75,9 @@ inline std::atomic<int> g_textNodeBuilds{ 0 };
 inline int g_leanTextOverride = -1; // 0 composed, 1 lean
 // Test hook (5v-1): -1 = ask QAccessible::isActive(), 0 = inactive, 1 = active (virtual lists go eager).
 inline int g_virtualA11yOverride = -1;
+// Test probe (5c): model elements a CssRepeater converted from JS to QVariant (one per element
+// QJSValue::toVariant()'d — a whole-model conversion counts every element).
+inline int g_repeaterConversions = 0;
 inline bool leanTextEnabled()
 {
     if (g_leanTextOverride >= 0)
