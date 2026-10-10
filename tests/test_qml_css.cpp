@@ -3373,6 +3373,56 @@ void QmlCssTests::cssRepeaterMovedRowGetsNewIndex()
     QCOMPARE(a->property("idx").toInt(), 3);
 }
 
+void QmlCssTests::cssRepeaterRowsResolveOnceInsideTheScene()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(".list .row { background-color: #123456; }"));
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect {
+            id: box
+            cssPrimitive: "div"; cssClass: ["list"]
+            width: 200; height: 200
+            property var rows: []
+            CssRepeater {
+                model: box.rows
+                delegate: Component {
+                    CssRect {
+                        objectName: "row"
+                        cssPrimitive: "div"; cssClass: ["row"]
+                        CssText { cssPrimitive: "span"; text: "" + modelData }
+                    }
+                }
+            }
+        }
+    )", QUrl());
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+    QQuickWindow window;
+    qobject_cast<QQuickItem *>(root.data())->setParentItem(window.contentItem());
+
+    const bool statsWereOn = Detail::g_applyStats.enabled;
+    Detail::g_applyStats.enabled = true;
+    const int before = Detail::g_applyStats.fromLoad;
+    root->setProperty("rows", QVariantList{1, 2, 3});
+    const int applies = Detail::g_applyStats.fromLoad - before;
+    Detail::g_applyStats.enabled = statsWereOn;
+
+    // 3 rows x (row CssRect + CssText) = 6 styled elements -> 6 resolves (12 = every one healed again).
+    QCOMPARE(applies, 6);
+    const QList<QQuickItem *> rows = root->findChildren<QQuickItem *>(QStringLiteral("row"));
+    QCOMPARE(rows.size(), 3);
+    for (QQuickItem *row : rows) // the single resolve already saw the .list ancestor
+        QCOMPARE(row->property("style").toMap().value(QStringLiteral("background-color")).toString(),
+                 QStringLiteral("#123456"));
+}
+
 // --- Step 3 Task 1 (C21): composed parts must die with their owner --------------------------
 //
 // `~QQuickItem` only calls setParentItem(nullptr) on its visual children (qquickitem.cpp

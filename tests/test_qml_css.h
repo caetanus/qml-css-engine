@@ -166,6 +166,10 @@ private slots:
     // covers the negative/skip branch).
     void cssRepeaterMovedRowGetsNewIndex();
 
+    // Rows complete INSIDE the scene (staged creation, C22): one CSS resolve per styled element, with
+    // ancestor-scoped rules already applied by it — no truncated resolve healed on scene join.
+    void cssRepeaterRowsResolveOnceInsideTheScene();
+
     // Step 3 Task 1 (C21): every item an engine type composes via QQmlComponent::create/
     // beginCreate must be a QObject CHILD of its composing owner too, not just a visual
     // (setParentItem) child — ~QQuickItem only detaches visual children on destruction, it

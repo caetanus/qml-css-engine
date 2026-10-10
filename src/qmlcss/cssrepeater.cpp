@@ -122,8 +122,16 @@ bool CssRepeater::createRow(int i, const QVariant &data, Row &row)
     ctx->setBaseUrl(creation->baseUrl());
     ctx->setContextProperty(QStringLiteral("modelData"), data);
     ctx->setContextProperty(QStringLiteral("index"), i);
-    QObject *o = m_delegate->create(ctx);
+    // STAGED creation (C22): parent the row BEFORE it completes. create() would run componentComplete()
+    // on a parentless row — every styled element resolves its CSS against a truncated ancestor chain,
+    // then resolves all over again when the row joins the window (the scene-join heal): 2x per element.
+    QObject *o = m_delegate->beginCreate(ctx);
     auto *item = qobject_cast<QQuickItem *>(o);
+    if (item) {
+        item->setParent(this);
+        item->setParentItem(parentItem() ? parentItem() : this);
+    }
+    m_delegate->completeCreate(); // also required after a null beginCreate() (Qt's own create() does it)
     if (!item) {
         if (o)
             o->deleteLater();
@@ -131,8 +139,6 @@ bool CssRepeater::createRow(int i, const QVariant &data, Row &row)
         qWarning("CssRepeater: failed to create delegate: %s", qPrintable(m_delegate->errorString()));
         return false;
     }
-    item->setParent(this);
-    item->setParentItem(parentItem() ? parentItem() : this);
     row.item = item;
     row.context = ctx;
     return true;
