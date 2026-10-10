@@ -2712,3 +2712,48 @@ void QmlCssTests::layoutCountsChildVisits()
     QVERIFY(QMetaObject::invokeMethod(root.get(), "requestRelayout"));
     QCOMPARE(layoutEngine.childVisits() - before, quint64(2));
 }
+
+void QmlCssTests::cssRepeaterAppendAndClearAreLinear()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(".row { height: 10px; }"));
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect {
+            id: box
+            cssPrimitive: ""
+            width: 200; height: 200
+            property int count: 0
+            style: ({ "display": "flex", "flex-direction": "column" })
+            CssRepeater {
+                model: box.count
+                delegate: Component {
+                    CssRect { cssClass: ["row"]; cssPrimitive: "div" }
+                }
+            }
+        }
+    )", QUrl());
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+
+    // Post-mount mutations: the path real apps hit when data arrives after load (mount itself is
+    // batched by the loader). Unbatched, each inserted/removed row re-laid the whole container:
+    // appending n to n cost ~n*1.5n visits (~135000 for n = 300).
+    constexpr int n = 300;
+    root->setProperty("count", n);
+    quint64 before = layoutEngine.childVisits();
+    root->setProperty("count", 2 * n);
+    const quint64 appendVisits = layoutEngine.childVisits() - before;
+    before = layoutEngine.childVisits();
+    root->setProperty("count", 0);
+    const quint64 clearVisits = layoutEngine.childVisits() - before;
+
+    QVERIFY2(appendVisits < quint64(8 * 2 * n), qPrintable(QStringLiteral("append visits %1").arg(appendVisits)));
+    QVERIFY2(clearVisits < quint64(8 * 2 * n), qPrintable(QStringLiteral("clear visits %1").arg(clearVisits)));
+}

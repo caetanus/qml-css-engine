@@ -1,5 +1,8 @@
 #include "qmlcss/cssrepeater.h"
 
+#include "qmlcss/csslayout.h"
+#include "csstheme_p.h" // LayoutBatchGuard
+
 #include <QDebug>
 #include <QHash>
 #include <QSet>
@@ -75,6 +78,8 @@ void CssRepeater::setDelegate(QQmlComponent *c)
 void CssRepeater::componentComplete()
 {
     QQuickItem::componentComplete();
+    if (QQmlContext *ctx = qmlContext(this))
+        m_layout = qobject_cast<CssLayoutEngine *>(ctx->contextProperty(QStringLiteral("cssLayout")).value<QObject *>());
     rebuild();
 }
 
@@ -135,6 +140,10 @@ void CssRepeater::rebuild()
 {
     if (!m_delegate)
         return;
+    // One reconciliation = ONE layout flush. Without the batch every created/destroyed row fired the
+    // holder's childrenChanged -> a synchronous full relayout of the container: O(N^2) per append/clear.
+    // The guard flushes on scope exit, so geometry is settled when rebuild() returns (same contract).
+    const Detail::LayoutBatchGuard batch(m_layout);
     const QVariantList data = toList(m_model);
 
     // KEYED when every entry is an object with a distinct "id": rows match by id in O(n), and a

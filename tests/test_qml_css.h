@@ -135,4 +135,5 @@ private slots:
     // Complexity probes (step 1 of the native-beats-web roadmap): layout work is counted in child
     // visits, so O(N) vs O(N^2) is asserted without timing.
     void layoutCountsChildVisits();
+    void cssRepeaterAppendAndClearAreLinear();
 };
