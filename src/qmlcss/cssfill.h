@@ -162,7 +162,6 @@ private:
     void watchForeignChildren();
     void watchForeignChild(QQuickItem *k);
 
-    bool m_scenelessResolve = false; // last resolve ran without a window (truncated ancestors)
     // Resolved border widths [t,r,b,l] — cached at style-set time so layoutChildren (per-resize
     // hot path) never parses style strings. The content holder is inset by these (padding box).
     QVector<double> m_borderInsets{0.0, 0.0, 0.0, 0.0};

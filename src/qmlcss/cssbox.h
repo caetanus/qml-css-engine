@@ -64,15 +64,15 @@ signals:
     void hasCssIdentityChanged();
 
 protected:
-    // Which identity writes re-resolve CSS TODAY, per class (Task 1 preserves this exactly; Task 4
-    // removes the mask once every write restyles through the theme). Measured 2026-10-10:
-    // CssRect/CssText/CssFill = all four; CssHr = no primitive; CssImage = id+class only; CssItem = id+class.
-    enum ReloadOn : quint8 { ReloadId = 1, ReloadClass = 2, ReloadState = 4, ReloadPrimitive = 8,
-                             ReloadAll = ReloadId | ReloadClass | ReloadState | ReloadPrimitive };
-    CssBox(const QString &defaultPrimitive, quint8 reloadOn, QQuickItem *parent);
-    // Each type's existing "resolve if a theme is attached" hook (called by the setters exactly where
-    // the per-class setters called it before).
+    CssBox(const QString &defaultPrimitive, QQuickItem *parent);
+    // Each type's "resolve if a theme is attached" hook — the creation-time path (componentComplete,
+    // scene-join heal) and the fallback of identityChanged() before the box is live.
     virtual void maybeLoadCss() = 0;
+    // The ONE place an identity change re-resolves: every identity setter calls it, and so do the
+    // live states the cascade reads off the box (CssRect's engine hover, `:focus`). A completed box
+    // with a theme tells the theme once (self + registered descendants, one layout batch); before
+    // that — creation-time writes, no theme yet — it is the old single-shot maybeLoadCss().
+    void identityChanged();
 
     QString m_cssId;
     QVariant m_cssAlternateId = QVariant::fromValue(QVariantList());
@@ -82,9 +82,11 @@ protected:
     QString m_cssPart;
     QVariantMap m_style;
     QPointer<CssTheme> m_theme; // every class used QPointer (CHECK (a), 2026-10-10)
+    // The last resolve ran without a window (truncated ancestors). Set by maybeLoadCss() and by
+    // identityChanged(); CssRect/CssText/CssFill heal it with one re-resolve on scene join.
+    bool m_scenelessResolve = false;
 
 private:
-    quint8 m_reloadOn;
     QStringList m_classList;
     QStringList m_stateList;
     QStringList m_alternateIdList;

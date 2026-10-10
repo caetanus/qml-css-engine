@@ -15,7 +15,7 @@
 namespace QmlCss {
 
 CssHr::CssHr(QQuickItem *parent)
-    : CssBox(QStringLiteral("hr"), ReloadId | ReloadClass | ReloadState, parent)
+    : CssBox(QStringLiteral("hr"), parent)
 {
     // Faithful to the QML: implicitWidth 0, implicitHeight max(1, line.width) — line defaults
     // to width 1 (borderSide of an empty style), so implicitHeight starts at 1.

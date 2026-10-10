@@ -45,8 +45,8 @@ class CssRect : public CssBox {
     Q_PROPERTY(QVariantMap style READ style WRITE setStyle NOTIFY styleChanged)
 
     // Engine-driven hover: the theme flips cssHoverStyled when an applicable `:hover` rule
-    // exists (we then compose a HoverHandler); the handler writes cssEngineHover, whose
-    // notify re-applies the style with the extra "hover" state class.
+    // exists (we then compose a HoverHandler); the handler writes cssEngineHover, which
+    // re-applies the style with the extra "hover" state class (CssBox::identityChanged).
     Q_PROPERTY(bool cssHoverStyled READ cssHoverStyled WRITE setCssHoverStyled NOTIFY cssHoverStyledChanged)
     Q_PROPERTY(bool cssEngineHover READ cssEngineHover WRITE setCssEngineHover NOTIFY cssStateChanged)
 
@@ -238,7 +238,6 @@ private:
     // The CSS-inheriting ancestor (containing CssRect at parent.parent), or null.
     CssRect *cssParent() const;
 
-    bool m_scenelessResolve = false; // last resolve ran without a window (truncated ancestors)
     // Resolved border widths [t,r,b,l] — cached at style-set time so layoutChildren (per-resize
     // hot path) never parses style strings. The content holder is inset by these (padding box).
     QVector<double> m_borderInsets{0.0, 0.0, 0.0, 0.0};

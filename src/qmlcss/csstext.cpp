@@ -35,7 +35,7 @@ QFont::Capitalization capitalizationFor(const QString &v)
 } // namespace
 
 CssText::CssText(QQuickItem *parent)
-    : CssBox(QStringLiteral("text"), ReloadAll, parent)
+    : CssBox(QStringLiteral("text"), parent)
 {
 }
 

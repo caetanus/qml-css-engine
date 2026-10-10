@@ -255,18 +255,21 @@ void CssTheme::loadCss(QObject *target)
                 m_deadBindings = 0;
             }
         });
-        // Observe the registered cssClass AND cssState: a state change (focused/urgent/
+        // Observe a FOREIGN target's cssClass AND cssState: a state change (focused/urgent/
         // hover/active) must re-style automatically, so the applet registers once and never
-        // re-calls loadCss.
-        const QMetaMethod reapplySlot = staticMetaObject.method(
-            staticMetaObject.indexOfSlot("reapplyForSender()"));
-        for (const char *stateProp : { "cssClass", "cssState" }) {
-            const int idx = mo->indexOfProperty(stateProp);
-            if (idx < 0)
-                continue;
-            const QMetaProperty prop = mo->property(idx);
-            if (prop.hasNotifySignal())
-                connect(target, prop.notifySignal(), this, reapplySlot);
+        // re-calls loadCss. A CssBox is not observed: its identity setters call restyle()
+        // themselves — observing it too resolved every class/state write twice.
+        if (!qobject_cast<CssBox *>(target)) {
+            const QMetaMethod reapplySlot = staticMetaObject.method(
+                staticMetaObject.indexOfSlot("reapplyForSender()"));
+            for (const char *stateProp : { "cssClass", "cssState" }) {
+                const int idx = mo->indexOfProperty(stateProp);
+                if (idx < 0)
+                    continue;
+                const QMetaProperty prop = mo->property(idx);
+                if (prop.hasNotifySignal())
+                    connect(target, prop.notifySignal(), this, reapplySlot);
+            }
         }
     }
 
@@ -275,7 +278,25 @@ void CssTheme::loadCss(QObject *target)
 
 void CssTheme::reapplyForSender()
 {
-    QObject *target = sender();
+    restyleTarget(sender());
+}
+
+void CssTheme::restyle(CssBox *box)
+{
+    if (!box)
+        return;
+    if (!m_registered.contains(box)) {
+        // Never styled yet (it completed without an identity): register + apply on its first
+        // identity, exactly as the setter's loadCss did; still nothing to do without one.
+        if (box->hasCssIdentity())
+            loadCss(box);
+        return;
+    }
+    restyleTarget(box);
+}
+
+void CssTheme::restyleTarget(QObject *target)
+{
     if (!target)
         return;
     if (g_applyStats.enabled) ++g_applyStats.fromSender;

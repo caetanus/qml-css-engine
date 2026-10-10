@@ -10,7 +10,7 @@
 namespace QmlCss {
 
 CssItem::CssItem(QQuickItem *parent)
-    : CssBox(QString(), ReloadId | ReloadClass, parent)
+    : CssBox(QString(), parent)
 {
     // QML: visible: false; width: 0; height: 0
     setVisible(false);

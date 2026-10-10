@@ -3708,3 +3708,119 @@ void QmlCssTests::layoutReadsStyleTyped()
     QVERIFY2(std::abs(b->x() - 14.0) < 0.5, qPrintable(QString::number(b->x())));
     QVERIFY2(std::abs(c->x() - 28.0) < 0.5, qPrintable(QString::number(c->x())));
 }
+
+// 4b-1 Task 4 shared fixture: one window-hosted element built from `qml`, under `css`.
+namespace {
+struct IdentityFixture {
+    CssTheme theme;
+    CssLayoutEngine layoutEngine{&theme};
+    QQmlEngine engine;
+    QQuickWindow window;
+    QScopedPointer<QObject> object;
+    QString error;
+    IdentityFixture(const QString &css, const QByteArray &qml)
+    {
+        theme.loadFromString(css);
+        engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+        engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+        QQmlComponent comp(&engine);
+        comp.setData("import QtQuick\nimport qmlcss\n" + qml, QUrl());
+        object.reset(comp.create());
+        error = comp.errorString();
+        if (auto *item = qobject_cast<QQuickItem *>(object.data()))
+            item->setParentItem(window.contentItem());
+    }
+    QString style(const char *key) const
+    {
+        return object->property("style").toMap().value(QLatin1String(key)).toString();
+    }
+};
+const QString kIdentityCss = QStringLiteral(
+    ".a { background-color: #111111; } .b { background-color: #222222; } "
+    "#alt { background-color: #333333; } #base.p { background-color: #444444; }");
+// Applies (load + sender) caused by `change`, with the stats probe restored afterwards.
+template <typename F> int appliesDuring(F change)
+{
+    const bool wasOn = Detail::g_applyStats.enabled;
+    Detail::g_applyStats.enabled = true;
+    const int before = Detail::g_applyStats.fromLoad + Detail::g_applyStats.fromSender;
+    change();
+    const int after = Detail::g_applyStats.fromLoad + Detail::g_applyStats.fromSender;
+    Detail::g_applyStats.enabled = wasOn;
+    return after - before;
+}
+} // namespace
+
+void QmlCssTests::identityChangeRestylesOnce()
+{
+    IdentityFixture f(kIdentityCss, "CssRect { width: 10; height: 10; cssClass: [\"a\"] }");
+    QVERIFY2(f.object, qPrintable(f.error));
+    QCOMPARE(f.style("background-color"), QStringLiteral("#111111"));
+    const int applies = appliesDuring([&] { f.object->setProperty("cssClass", QStringList{QStringLiteral("b")}); });
+    QCOMPARE(applies, 1);
+    QCOMPARE(f.style("background-color"), QStringLiteral("#222222"));
+}
+
+void QmlCssTests::engineHoverRestylesOnce()
+{
+    IdentityFixture f(QStringLiteral("#h { background-color: #111111; } #h:hover { background-color: #555555; }"),
+                      "CssRect { width: 10; height: 10; cssId: \"h\" }");
+    QVERIFY2(f.object, qPrintable(f.error));
+    QCOMPARE(f.style("background-color"), QStringLiteral("#111111"));
+    QVERIFY(f.object->property("cssHoverStyled").toBool());
+    const int applies = appliesDuring([&] { f.object->setProperty("cssEngineHover", true); });
+    QCOMPARE(applies, 1);
+    QCOMPARE(f.style("background-color"), QStringLiteral("#555555"));
+}
+
+void QmlCssTests::alternateIdChangeRestyles()
+{
+    IdentityFixture f(kIdentityCss, "CssRect { width: 10; height: 10; cssId: \"none\" }");
+    QVERIFY2(f.object, qPrintable(f.error));
+    QVERIFY(f.style("background-color").isEmpty());
+    const int applies =
+        appliesDuring([&] { f.object->setProperty("cssAlternateId", QStringList{QStringLiteral("alt")}); });
+    QCOMPARE(f.style("background-color"), QStringLiteral("#333333"));
+    QCOMPARE(applies, 1);
+}
+
+void QmlCssTests::cssPartChangeRestyles()
+{
+    IdentityFixture f(kIdentityCss, "CssRect { width: 10; height: 10; cssId: \"base\" }");
+    QVERIFY2(f.object, qPrintable(f.error));
+    QVERIFY(f.style("background-color").isEmpty());
+    const int applies = appliesDuring([&] { f.object->setProperty("cssPart", QStringLiteral("p")); });
+    QCOMPARE(f.style("background-color"), QStringLiteral("#444444"));
+    QCOMPARE(applies, 1);
+}
+
+void QmlCssTests::imageStateAndPrimitiveRestyle()
+{
+    // CssImage::setStyle writes the item's opacity from the resolved `opacity` key.
+    IdentityFixture f(QStringLiteral(".on { opacity: 0.5; } picture { opacity: 0.25; }"),
+                      "CssImage { width: 10; height: 10 }");
+    QVERIFY2(f.object, qPrintable(f.error));
+    auto *img = qobject_cast<QQuickItem *>(f.object.data());
+    QCOMPARE(img->opacity(), 1.0);
+    const int stateApplies = appliesDuring([&] { f.object->setProperty("cssState", QStringList{QStringLiteral("on")}); });
+    QCOMPARE(img->opacity(), 0.5);
+    QCOMPARE(stateApplies, 1);
+    f.object->setProperty("cssState", QStringList{});
+    QCOMPARE(img->opacity(), 1.0);
+    const int primitiveApplies = appliesDuring([&] { f.object->setProperty("cssPrimitive", QStringLiteral("picture")); });
+    QCOMPARE(img->opacity(), 0.25);
+    QCOMPARE(primitiveApplies, 1);
+}
+
+void QmlCssTests::hrPrimitiveRestyles()
+{
+    IdentityFixture f(QStringLiteral("div { border-top: 3px solid #ff8800; }"), "CssHr { width: 120 }");
+    QVERIFY2(f.object, qPrintable(f.error));
+    QVERIFY(f.object->property("line").toMap().value(QStringLiteral("color")).value<QColor>()
+            != QColor(QStringLiteral("#ff8800")));
+    const int applies = appliesDuring([&] { f.object->setProperty("cssPrimitive", QStringLiteral("div")); });
+    const QVariantMap line = f.object->property("line").toMap();
+    QCOMPARE(line.value(QStringLiteral("width")).toReal(), 3.0);
+    QCOMPARE(line.value(QStringLiteral("color")).value<QColor>(), QColor(QStringLiteral("#ff8800")));
+    QCOMPARE(applies, 1);
+}

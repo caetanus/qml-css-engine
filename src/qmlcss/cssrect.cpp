@@ -487,7 +487,7 @@ Item {
 } // namespace
 
 CssRect::CssRect(QQuickItem *parent)
-    : CssBox(QStringLiteral("rect"), ReloadAll, parent)
+    : CssBox(QStringLiteral("rect"), parent)
 {
     // The content holder must exist BEFORE the QML engine appends declared children to `content`
     // (which happens during parsing, before componentComplete). It is a plain Item (no engine
@@ -1337,13 +1337,15 @@ void CssRect::componentComplete()
             m_layout->notifyParentLayout(this);
     });
     // `:focus` is a live item state (see CssTheme: the class list reads activeFocus directly), so a
-    // focus change must re-run the cascade on this box. Emit the state notify ONLY — the theme's
-    // reverse-slot is registered on it and re-applies us plus our descendants, exactly as the
-    // engine-hover path does. Calling maybeLoadCss() here as well added a second, SYNCHRONOUS
-    // re-style inside the focus handler, which can re-enter (a style apply that shifts geometry or
-    // visibility moves focus again) — that path could hang a focus-heavy operation such as
-    // reordering split panes, whose cells are CssRects.
-    connect(this, &QQuickItem::activeFocusChanged, this, [this]() { emit cssStateChanged(); });
+    // focus change must re-run the cascade on this box. ONE restyle through identityChanged() —
+    // the theme re-applies us plus our descendants, exactly as the engine-hover path does. A second
+    // SYNCHRONOUS re-style inside the focus handler (the old notify slot + maybeLoadCss()) can
+    // re-enter (a style apply that shifts geometry or visibility moves focus again) — that path
+    // could hang a focus-heavy operation such as reordering split panes, whose cells are CssRects.
+    connect(this, &QQuickItem::activeFocusChanged, this, [this]() {
+        emit cssStateChanged(); // QML observers of the live state; the theme no longer listens
+        identityChanged();
+    });
     // An ancestor's inherited text props re-propagate to us (CSS inheritance).
     if (QObject *anc = cssInheritingAncestor(this))
         connect(anc, SIGNAL(inheritedChanged()), this, SIGNAL(inheritedChanged()));
@@ -1420,7 +1422,7 @@ void CssRect::setCssHoverStyled(bool v)
     emit cssHoverStyledChanged();
     if (v && !m_hoverHandler && isComponentComplete()) {
         // Compose a REAL QtQuick HoverHandler via the type-system (approved pattern; no
-        // private headers). It writes cssEngineHover, whose notify re-applies the style.
+        // private headers). It writes cssEngineHover, which re-applies the style (identityChanged).
         if (QQmlEngine *eng = qmlEngine(this)) {
             QQmlComponent *comp = QmlCss::cachedComponent(eng, QStringLiteral("cssrect-3e8916a3"),
                 "import QtQuick\nHoverHandler {}");
@@ -1442,7 +1444,8 @@ void CssRect::setCssEngineHover(bool v)
     if (m_engineHover == v)
         return;
     m_engineHover = v;
-    emit cssStateChanged(); // rides the state notify: the theme re-applies us + descendants
+    emit cssStateChanged(); // the NOTIFY of cssEngineHover (QML observers)
+    identityChanged();      // the theme re-applies us + descendants, once
 }
 
 void CssRect::onEngineHoverChanged()

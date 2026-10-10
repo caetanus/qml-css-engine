@@ -47,7 +47,7 @@ int fillModeFor(const QString &objectFit)
 } // namespace
 
 CssImage::CssImage(QQuickItem *parent)
-    : CssBox(QStringLiteral("img"), ReloadId | ReloadClass, parent)
+    : CssBox(QStringLiteral("img"), parent)
 {
 }
 

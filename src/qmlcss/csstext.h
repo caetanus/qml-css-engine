@@ -151,7 +151,6 @@ private:
     // Own style value, else the ancestor's same inherited getter (the QML inherited* chain).
     QString inheritedValue(const char *styleKey, const char *getterName) const;
 
-    bool m_scenelessResolve = false; // last resolve ran without a window (truncated ancestors)
     QString m_text;
     bool m_styledText = false;
 

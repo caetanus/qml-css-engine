@@ -189,4 +189,14 @@ private slots:
 
     // 4b-1 Task 3: the layout reads a CssBox child's resolved style by member, not by name.
     void layoutReadsStyleTyped();
+
+    // 4b-1 Task 4: an identity write on a registered box restyles it exactly ONCE (the setter used
+    // to resolve AND the theme's notify connection re-resolved), and every identity field restyles —
+    // alternateId and cssPart included; CssImage state/primitive and CssHr primitive too.
+    void identityChangeRestylesOnce();
+    void engineHoverRestylesOnce();
+    void alternateIdChangeRestyles();
+    void cssPartChangeRestyles();
+    void imageStateAndPrimitiveRestyle();
+    void hrPrimitiveRestyles();
 };

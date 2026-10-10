@@ -1,14 +1,26 @@
 #include "qmlcss/cssbox.h"
 
+#include "csstheme.h"
 #include "csstheme_p.h" // cssVariantToStringList (internal declaration; cssbox.cpp lives beside it)
 
 namespace QmlCss {
 
-CssBox::CssBox(const QString &defaultPrimitive, quint8 reloadOn, QQuickItem *parent)
+CssBox::CssBox(const QString &defaultPrimitive, QQuickItem *parent)
     : QQuickItem(parent)
     , m_cssPrimitive(defaultPrimitive)
-    , m_reloadOn(reloadOn)
 {
+}
+
+void CssBox::identityChanged()
+{
+    // No hasCssIdentity() gate here: a registered box that LOSES its identity (a text node's class
+    // emptied) must still drop the stale style — the theme decides (see CssTheme::restyle).
+    if (m_theme && isComponentComplete()) {
+        m_theme->restyle(this);
+        m_scenelessResolve = window() == nullptr; // as maybeLoadCss: healed on scene join
+    } else {
+        maybeLoadCss();
+    }
 }
 
 bool CssBox::hasCssIdentity() const
@@ -25,8 +37,7 @@ void CssBox::setCssId(const QString &v)
     m_cssId = v;
     emit cssIdChanged();
     emit hasCssIdentityChanged();
-    if (m_reloadOn & ReloadId)
-        maybeLoadCss();
+    identityChanged();
 }
 
 void CssBox::setCssAlternateId(const QVariant &v)
@@ -36,6 +47,7 @@ void CssBox::setCssAlternateId(const QVariant &v)
     m_cssAlternateId = v;
     m_alternateIdList = cssVariantToStringList(v);
     emit cssAlternateIdChanged();
+    identityChanged();
 }
 
 void CssBox::setCssClass(const QVariant &v)
@@ -49,8 +61,7 @@ void CssBox::setCssClass(const QVariant &v)
     m_classList = list;
     emit cssClassChanged();
     emit hasCssIdentityChanged();
-    if (m_reloadOn & ReloadClass)
-        maybeLoadCss();
+    identityChanged();
 }
 
 void CssBox::setCssState(const QVariant &v)
@@ -62,8 +73,7 @@ void CssBox::setCssState(const QVariant &v)
     m_cssState = v;
     m_stateList = list;
     emit cssStateChanged();
-    if (m_reloadOn & ReloadState)
-        maybeLoadCss();
+    identityChanged();
 }
 
 void CssBox::setCssPrimitive(const QString &v)
@@ -73,8 +83,7 @@ void CssBox::setCssPrimitive(const QString &v)
     m_cssPrimitive = v;
     emit cssPrimitiveChanged();
     emit hasCssIdentityChanged();
-    if (m_reloadOn & ReloadPrimitive)
-        maybeLoadCss();
+    identityChanged();
 }
 
 void CssBox::setCssPart(const QString &v)
@@ -84,6 +93,7 @@ void CssBox::setCssPart(const QString &v)
     m_cssPart = v;
     emit cssPartChanged();
     emit hasCssIdentityChanged();
+    identityChanged();
 }
 
 } // namespace QmlCss

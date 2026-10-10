@@ -14,6 +14,7 @@
 class QNetworkAccessManager;
 
 namespace QmlCss {
+class CssBox;
 class CssLayoutEngine;
 
 struct CssSimpleSelector {
@@ -221,9 +222,17 @@ public:
     // APPLIES them to `target`, and REGISTERS `target` so the engine re-applies on every
     // theme (re)load — the binding-free, reload-safe path: the engine PUSHES to each live
     // object (an inverted/"reverse" slot, engine→object), so no QML binding is needed and
-    // an imperative apply can't go stale. A component re-calls loadCss(this) when its own
-    // cssClass changes. Dead targets are pruned automatically.
+    // an imperative apply can't go stale. A foreign component re-calls loadCss(this) (or rides
+    // the cssClass/cssState notify, see restyle) when its identity changes. Dead targets are
+    // pruned automatically.
     Q_INVOKABLE void loadCss(QObject *target);
+
+    // An identity write on a CssBox (class/state/id/alternateId/primitive/part, engine hover,
+    // focus): ONE re-apply of the box plus its registered visual descendants (ancestor-scoped
+    // rules), under one layout batch. The box calls this itself — the theme does not connect to a
+    // box's notify signals, so a write resolves once, not once per path. A box not yet registered
+    // (it had no identity when it completed) is registered and applied once it has one, like loadCss.
+    void restyle(CssBox *box);
 
     // A CSS "prelude" prepended (lowest priority) to the layered stylesheet on every load.
     // It carries config-derived defaults translated to CSS — e.g. a group's drawer
@@ -246,8 +255,9 @@ signals:
 
 private slots:
     void onCssFileChanged(const QString &path);
-    // Connected to a registered target's `cssClass` NOTIFY: re-applies that target's
-    // style when its state classes change (focused/urgent/hover/…). Uses sender().
+    // Connected to a registered FOREIGN target's `cssClass`/`cssState` NOTIFY: re-applies that
+    // target (and its registered descendants) when its state classes change. Uses sender().
+    // A CssBox calls restyle() itself instead.
     void reapplyForSender();
 
 private:
@@ -287,6 +297,8 @@ private:
     // Read the target's identity properties, resolve, and push the style onto it (the
     // actual "apply the rules" step). Re-reads the object's current cssClass each time.
     void applyCssTo(QObject *target) const;
+    // reapplyForSender/restyle body: re-apply `target` and its registered visual descendants.
+    void restyleTarget(QObject *target);
     // Reverse slot: re-push to every live registered target on (re)load; prune the dead.
     void reapplyAll();
 

@@ -111,7 +111,7 @@ Image {
 } // namespace
 
 CssFill::CssFill(QQuickItem *parent)
-    : CssBox(QStringLiteral("rect"), ReloadAll, parent)
+    : CssBox(QStringLiteral("rect"), parent)
 {
     // The content holder must exist BEFORE the QML engine appends declared children to `content`
     // (which happens during parsing, before componentComplete). A plain Item, sized to us, hosting
