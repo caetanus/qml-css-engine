@@ -49,7 +49,8 @@ public:
     Q_INVOKABLE qreal length(const QString &value, qreal avail) const;
 
     // Test/bench probe: children visited across every layout() call. One integer add per call —
-    // lets tests assert O(N) vs O(N^2) layout work without timing.
+    // lets tests assert O(N) vs O(N^2) layout work without timing. A running total for the engine's
+    // lifetime (never reset): callers diff a before/after pair.
     quint64 childVisits() const { return m_childVisits; }
 
     // Transform-keyframe animation. buildAnimStops normalizes `@keyframes` frames into

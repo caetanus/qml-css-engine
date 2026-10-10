@@ -2704,7 +2704,10 @@ void QmlCssTests::layoutCountsChildVisits()
     QScopedPointer<QObject> root(component.create());
     QVERIFY2(root, qPrintable(component.errorString()));
 
-    // One relayout of a settled two-child box visits exactly its two children.
+    // One relayout of a settled two-child box visits exactly its two children. Exactly one pass: the
+    // rows' heights are fixed and their stretched width is resolved in that same pass, so place()
+    // moves nothing past its 0.5px threshold and nothing is re-queued. If a future engine change makes
+    // this fixture need a second pass, the delta becomes 4 — that is the change to investigate.
     const quint64 before = layoutEngine.childVisits();
     QVERIFY(QMetaObject::invokeMethod(root.get(), "requestRelayout"));
     QCOMPARE(layoutEngine.childVisits() - before, quint64(2));
