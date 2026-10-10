@@ -8,6 +8,7 @@
 #include <QVariantMap>
 
 #include "qmlcss/cssbox.h"
+#include "qmlcss/csstextlayout.h" // CssTextPayload
 
 namespace QmlCss {
 
@@ -53,22 +54,6 @@ class CssLayoutEngine;
 //       }
 //       MultiEffect { source: text; shadow* ... }   // <- m_shadow, only when text-shadow present
 //   }
-// Everything applyToText() writes to the composed QQuickText. Compared field by field with the last payload
-// APPLIED, so a re-apply with nothing changed writes nothing (no property writes, no QQuickText relayout).
-// verticalAlignment is not here: it is constant, written once when the label is composed.
-struct CssTextPayload {
-    QString text;
-    QColor color;
-    QFont font;
-    int lineHeightMode = 0;
-    qreal lineHeight = 0;
-    int textFormat = 0;
-    qreal leftPadding = 0, rightPadding = 0, topPadding = 0, bottomPadding = 0;
-    int wrapMode = 0;
-    int elide = 0;
-    int horizontalAlignment = 0;
-};
-
 class CssText : public CssBox {
     Q_OBJECT
     Q_PROPERTY(QVariantMap style READ style WRITE setStyle NOTIFY styleChanged)

@@ -2,5 +2,7 @@
 
 include(CMakeFindDependencyMacro)
 find_dependency(Qt6 COMPONENTS Core Gui Qml Quick Network)
+# The static library links Qt6::GuiPrivate privately (CssTextLayout); consumers link it too.
+find_dependency(Qt6 COMPONENTS GuiPrivate)
 
 include("${CMAKE_CURRENT_LIST_DIR}/qml-css-engineTargets.cmake")

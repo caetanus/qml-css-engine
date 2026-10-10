@@ -8,6 +8,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Qml Quick Network)
+# CssTextLayout elides through the private QTextEngine, as QQuickTextPrivate does (library-private).
+find_package(Qt6 REQUIRED COMPONENTS GuiPrivate)
 qt_standard_project_setup()
 
 # Source list mirrored from meson.build (qml_css_engine_sources).
@@ -28,6 +30,7 @@ set(QML_CSS_ENGINE_SOURCES
     src/qmlcss/cssfill.cpp
     src/qmlcss/cssrect.cpp
     src/qmlcss/csstext.cpp
+    src/qmlcss/csstextlayout.cpp
     src/qmlcss/cssdropshadow.cpp
     src/qmlcss/csskeyframes.cpp
     src/qmlcss/cssicon.cpp
@@ -47,6 +50,7 @@ target_include_directories(qmlcssengine PUBLIC
 target_link_libraries(qmlcssengine PUBLIC
     Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::Network
 )
+target_link_libraries(qmlcssengine PRIVATE Qt6::GuiPrivate)
 
 # ---- install + find_package support -----------------------------------------
 include(GNUInstallDirs)
@@ -84,4 +88,10 @@ if(BUILD_TESTING)
         add_test(NAME ${tname} COMMAND ${tname})
         set_tests_properties(${tname} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     endforeach()
+    # The text oracle reads QQuickTextPrivate: private headers, test only.
+    find_package(Qt6 REQUIRED COMPONENTS QuickPrivate)
+    qt_add_executable(test-text tests/test_text.cpp tests/test_text.h)
+    target_link_libraries(test-text PRIVATE qmlcssengine Qt6::Test Qt6::QuickPrivate)
+    add_test(NAME test-text COMMAND test-text)
+    set_tests_properties(test-text PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
