@@ -8,6 +8,8 @@
 #include <QVariantList>
 #include <QVariantMap>
 
+#include "qmlcss/cssbox.h"
+
 namespace QmlCss {
 
 class CssTheme;
@@ -36,16 +38,9 @@ class CssLayoutEngine;
 // Carries the standard CSS signature (cssId/cssAlternateId/cssClass/cssState/cssPrimitive/
 // cssPart/style) plus the renderer defaults (radius/defaultColor/…) it forwards to the CssRect,
 // and the inherited text properties (CSS inheritance) that CssText children read.
-class CssFill : public QQuickItem {
+class CssFill : public CssBox {
     Q_OBJECT
-    Q_PROPERTY(QString cssId READ cssId WRITE setCssId NOTIFY cssIdChanged)
-    Q_PROPERTY(QVariant cssAlternateId READ cssAlternateId WRITE setCssAlternateId NOTIFY cssAlternateIdChanged)
-    Q_PROPERTY(QVariant cssClass READ cssClass WRITE setCssClass NOTIFY cssClassChanged)
-    Q_PROPERTY(QVariant cssState READ cssState WRITE setCssState NOTIFY cssStateChanged)
-    Q_PROPERTY(QString cssPrimitive READ cssPrimitive WRITE setCssPrimitive NOTIFY cssPrimitiveChanged)
-    Q_PROPERTY(QString cssPart READ cssPart WRITE setCssPart NOTIFY cssPartChanged)
     Q_PROPERTY(QVariantMap style READ style WRITE setStyle NOTIFY styleChanged)
-    Q_PROPERTY(bool hasCssIdentity READ hasCssIdentity NOTIFY hasCssIdentityChanged)
 
     // Renderer defaults forwarded to the composed CssRect (the QML `default*` props).
     Q_PROPERTY(qreal radius READ radius WRITE setRadius NOTIFY radiusChanged)
@@ -87,28 +82,8 @@ public:
     // the scroll extent — only scroll boxes need that work (Task 4 review finding #3).
     bool hasScroll() const { return m_flickable; }
 
-    QString cssId() const { return m_cssId; }
-    void setCssId(const QString &v);
-
-    QVariant cssAlternateId() const { return m_cssAlternateId; }
-    void setCssAlternateId(const QVariant &v);
-
-    QVariant cssClass() const { return m_cssClass; }
-    void setCssClass(const QVariant &v);
-
-    QVariant cssState() const { return m_cssState; }
-    void setCssState(const QVariant &v);
-
-    QString cssPrimitive() const { return m_cssPrimitive; }
-    void setCssPrimitive(const QString &v);
-
-    QString cssPart() const { return m_cssPart; }
-    void setCssPart(const QString &v);
-
     QVariantMap style() const { return m_style; }
     void setStyle(const QVariantMap &v);
-
-    bool hasCssIdentity() const;
 
     qreal radius() const { return m_radius; }
     void setRadius(qreal v);
@@ -140,14 +115,7 @@ public:
     Q_INVOKABLE void requestRelayout();
 
 signals:
-    void cssIdChanged();
-    void cssAlternateIdChanged();
-    void cssClassChanged();
-    void cssStateChanged();
-    void cssPrimitiveChanged();
-    void cssPartChanged();
     void styleChanged();
-    void hasCssIdentityChanged();
     void radiusChanged();
     void defaultColorChanged();
     void defaultBorderColorChanged();
@@ -175,7 +143,7 @@ private:
     // Refresh m_borderInsets from the resolved style (style-set time, never per-resize).
     void updateBorderInsets();
     // Re-style through the reverse-slot engine path when identity changes (QML onCss*Changed).
-    void maybeLoadCss();
+    void maybeLoadCss() override;
 
 protected:
     // Protected so C++ widget subclasses (the widgets-to-cpp port) can chain their own
@@ -193,13 +161,6 @@ private:
     void watchForeignChildren();
     void watchForeignChild(QQuickItem *k);
 
-    QString m_cssId;
-    QVariant m_cssAlternateId = QVariant::fromValue(QVariantList());
-    QVariant m_cssClass = QVariant::fromValue(QVariantList());
-    QVariant m_cssState = QVariant::fromValue(QVariantList());
-    QString m_cssPrimitive = QStringLiteral("rect");
-    QString m_cssPart;
-    QVariantMap m_style;
     bool m_scenelessResolve = false; // last resolve ran without a window (truncated ancestors)
     // Resolved border widths [t,r,b,l] — cached at style-set time so layoutChildren (per-resize
     // hot path) never parses style strings. The content holder is inset by these (padding box).
@@ -212,7 +173,6 @@ private:
     int m_transitionMs = 0;
     int m_transitionEasingType = 0;
 
-    QPointer<CssTheme> m_theme;
     QPointer<CssLayoutEngine> m_layout;
     QPointer<QQuickItem> m_bgSolid;       // REAL QtQuick Shape solid background (behind the image)
     QPointer<QQuickItem> m_image;         // REAL QtQuick Image (the url() background)

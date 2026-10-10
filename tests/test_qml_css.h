@@ -178,4 +178,8 @@ private slots:
     // (setParentItem) child — ~QQuickItem only detaches visual children on destruction, it
     // never deletes them, so a composed part with no QObject parent leaks.
     void composedItemsDieWithTheirOwner();
+
+    // 4b-1: every element type that carries a CSS identity is a CssBox, and the typed accessors
+    // return what QML set. CssIcon (style sink, no identity) is NOT a CssBox.
+    void everyIdentityTypeIsACssBox();
 };

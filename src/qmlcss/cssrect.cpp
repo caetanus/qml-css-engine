@@ -44,29 +44,6 @@ struct MountStats {
 };
 MountStats g_mountStats;
 
-
-// Mirror of csstheme.cpp's identity coercion, used only for the hasCssIdentity check.
-QStringList toStringList(const QVariant &v)
-{
-    if (!v.isValid())
-        return {};
-    if (v.metaType().id() == qMetaTypeId<QJSValue>())
-        return toStringList(v.value<QJSValue>().toVariant());
-    if (v.metaType().id() == QMetaType::QStringList)
-        return v.toStringList();
-    if (v.metaType().id() == QMetaType::QVariantList) {
-        QStringList out;
-        const QVariantList list = v.toList();
-        for (const QVariant &e : list) {
-            const QString s = e.toString().trimmed();
-            if (!s.isEmpty())
-                out << s;
-        }
-        return out;
-    }
-    return v.toString().split(QLatin1Char(' '), Qt::SkipEmptyParts);
-}
-
 bool isCssUrl(const QString &value)
 {
     return value.trimmed().toLower().startsWith(QLatin1String("url("));
@@ -510,7 +487,7 @@ Item {
 } // namespace
 
 CssRect::CssRect(QQuickItem *parent)
-    : QQuickItem(parent)
+    : CssBox(QStringLiteral("rect"), ReloadAll, parent)
 {
     // The content holder must exist BEFORE the QML engine appends declared children to `content`
     // (which happens during parsing, before componentComplete). It is a plain Item (no engine
@@ -550,73 +527,6 @@ void CssRect::watchForeignChild(QQuickItem *k)
     // scroll extent (task 4) from the placed geometry.
     if (m_flickable)
         connect(k, &QQuickItem::heightChanged, this, &CssRect::requestRelayout, Qt::UniqueConnection);
-}
-
-bool CssRect::hasCssIdentity() const
-{
-    if (!m_cssId.isEmpty() || !m_cssPart.isEmpty() || !m_cssPrimitive.isEmpty())
-        return true;
-    return !toStringList(m_cssClass).isEmpty();
-}
-
-void CssRect::setCssId(const QString &v)
-{
-    if (m_cssId == v)
-        return;
-    m_cssId = v;
-    emit cssIdChanged();
-    emit hasCssIdentityChanged();
-    maybeLoadCss();
-}
-
-void CssRect::setCssAlternateId(const QVariant &v)
-{
-    if (m_cssAlternateId == v)
-        return;
-    m_cssAlternateId = v;
-    emit cssAlternateIdChanged();
-}
-
-void CssRect::setCssClass(const QVariant &v)
-{
-    // Value-compare: QML re-binds hand a FRESH array each evaluation; an equal
-    // list must not trigger a restyle (it double-applied every element on mount).
-    if (m_cssClass == v || toStringList(m_cssClass) == toStringList(v))
-        return;
-    m_cssClass = v;
-    emit cssClassChanged();
-    emit hasCssIdentityChanged();
-    maybeLoadCss();
-}
-
-void CssRect::setCssState(const QVariant &v)
-{
-    // Value-compare: QML re-binds hand a FRESH array each evaluation; an equal
-    // list must not trigger a restyle (it double-applied every element on mount).
-    if (m_cssState == v || toStringList(m_cssState) == toStringList(v))
-        return;
-    m_cssState = v;
-    emit cssStateChanged();
-    maybeLoadCss();
-}
-
-void CssRect::setCssPrimitive(const QString &v)
-{
-    if (m_cssPrimitive == v)
-        return;
-    m_cssPrimitive = v;
-    emit cssPrimitiveChanged();
-    emit hasCssIdentityChanged();
-    maybeLoadCss();
-}
-
-void CssRect::setCssPart(const QString &v)
-{
-    if (m_cssPart == v)
-        return;
-    m_cssPart = v;
-    emit cssPartChanged();
-    emit hasCssIdentityChanged();
 }
 
 void CssRect::setStyle(const QVariantMap &v)

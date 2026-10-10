@@ -6,6 +6,8 @@
 #include <QVariantList>
 #include <QVariantMap>
 
+#include "qmlcss/cssbox.h"
+
 namespace QmlCss {
 
 class CssTheme;
@@ -25,47 +27,18 @@ class CssTheme;
 //
 // Example:
 //   Text { text: "hi"; CssItem { cssId: "foo" } }
-class CssItem : public QQuickItem {
+class CssItem : public CssBox {
     Q_OBJECT
-    Q_PROPERTY(QString cssId READ cssId WRITE setCssId NOTIFY cssIdChanged)
-    Q_PROPERTY(QVariant cssAlternateId READ cssAlternateId WRITE setCssAlternateId NOTIFY cssAlternateIdChanged)
-    Q_PROPERTY(QVariant cssClass READ cssClass WRITE setCssClass NOTIFY cssClassChanged)
-    // What the parent is, so the right CSS→QML mapping is used. Inferred from the parent when empty.
-    Q_PROPERTY(QString cssPrimitive READ cssPrimitive WRITE setCssPrimitive NOTIFY cssPrimitiveChanged)
-    Q_PROPERTY(QString cssPart READ cssPart WRITE setCssPart NOTIFY cssPartChanged)
     // Engine writes the resolved rules here; apply() pushes them onto the parent.
     Q_PROPERTY(QVariantMap style READ style WRITE setStyle NOTIFY styleChanged)
 
 public:
     explicit CssItem(QQuickItem *parent = nullptr);
 
-    QString cssId() const { return m_cssId; }
-    void setCssId(const QString &v);
-
-    QVariant cssAlternateId() const { return m_cssAlternateId; }
-    void setCssAlternateId(const QVariant &v);
-
-    QVariant cssClass() const { return m_cssClass; }
-    void setCssClass(const QVariant &v);
-
-    QString cssPrimitive() const { return m_cssPrimitive; }
-    void setCssPrimitive(const QString &v);
-
-    QString cssPart() const { return m_cssPart; }
-    void setCssPart(const QString &v);
-
     QVariantMap style() const { return m_style; }
     void setStyle(const QVariantMap &v);
 
-    // QML hasCssIdentity(): cssId/cssPart non-empty, or cssClass non-empty list.
-    bool hasCssIdentity() const;
-
 signals:
-    void cssIdChanged();
-    void cssAlternateIdChanged();
-    void cssClassChanged();
-    void cssPrimitiveChanged();
-    void cssPartChanged();
     void styleChanged();
 
 protected:
@@ -77,16 +50,7 @@ private:
     // Push resolved style rules onto parentItem() (QML _apply()).
     void apply();
     // Re-style via the engine's reverse slot when identity changes (QML onCssId/ClassChanged).
-    void maybeLoadCss();
-
-    QString  m_cssId;
-    QVariant m_cssAlternateId = QVariant::fromValue(QVariantList());
-    QVariant m_cssClass       = QVariant::fromValue(QVariantList());
-    QString  m_cssPrimitive;
-    QString  m_cssPart;
-    QVariantMap m_style;
-
-    QPointer<CssTheme> m_theme;
+    void maybeLoadCss() override;
 };
 
 } // namespace QmlCss

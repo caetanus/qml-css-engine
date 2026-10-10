@@ -9,90 +9,13 @@
 
 namespace QmlCss {
 
-namespace {
-
-// Mirror of csstheme.cpp's identity coercion, used only for hasCssIdentity().
-QStringList toStringList(const QVariant &v)
-{
-    if (!v.isValid())
-        return {};
-    if (v.metaType().id() == qMetaTypeId<QJSValue>())
-        return toStringList(v.value<QJSValue>().toVariant());
-    if (v.metaType().id() == QMetaType::QStringList)
-        return v.toStringList();
-    if (v.metaType().id() == QMetaType::QVariantList) {
-        QStringList out;
-        const QVariantList list = v.toList();
-        for (const QVariant &e : list) {
-            const QString s = e.toString().trimmed();
-            if (!s.isEmpty())
-                out << s;
-        }
-        return out;
-    }
-    return v.toString().split(QLatin1Char(' '), Qt::SkipEmptyParts);
-}
-
-} // namespace
-
 CssItem::CssItem(QQuickItem *parent)
-    : QQuickItem(parent)
+    : CssBox(QString(), ReloadId | ReloadClass, parent)
 {
     // QML: visible: false; width: 0; height: 0
     setVisible(false);
     setWidth(0);
     setHeight(0);
-}
-
-bool CssItem::hasCssIdentity() const
-{
-    // QML: cssId.length > 0 || cssPart.length > 0
-    //   || (Array.isArray(cssClass) ? cssClass.length > 0 : String(cssClass).length > 0)
-    return !m_cssId.isEmpty() || !m_cssPart.isEmpty() || !toStringList(m_cssClass).isEmpty();
-}
-
-void CssItem::setCssId(const QString &v)
-{
-    if (m_cssId == v)
-        return;
-    m_cssId = v;
-    emit cssIdChanged();
-    maybeLoadCss(); // QML: onCssIdChanged -> if (cssTheme && hasCssIdentity()) cssTheme.loadCss(root)
-}
-
-void CssItem::setCssAlternateId(const QVariant &v)
-{
-    if (m_cssAlternateId == v)
-        return;
-    m_cssAlternateId = v;
-    emit cssAlternateIdChanged();
-}
-
-void CssItem::setCssClass(const QVariant &v)
-{
-    // Value-compare: QML re-binds hand a FRESH array each evaluation; an equal
-    // list must not trigger a restyle (it double-applied every element on mount).
-    if (m_cssClass == v || toStringList(m_cssClass) == toStringList(v))
-        return;
-    m_cssClass = v;
-    emit cssClassChanged();
-    maybeLoadCss(); // QML: onCssClassChanged -> if (cssTheme && hasCssIdentity()) cssTheme.loadCss(root)
-}
-
-void CssItem::setCssPrimitive(const QString &v)
-{
-    if (m_cssPrimitive == v)
-        return;
-    m_cssPrimitive = v;
-    emit cssPrimitiveChanged();
-}
-
-void CssItem::setCssPart(const QString &v)
-{
-    if (m_cssPart == v)
-        return;
-    m_cssPart = v;
-    emit cssPartChanged();
 }
 
 void CssItem::setStyle(const QVariantMap &v)

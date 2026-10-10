@@ -9,6 +9,8 @@
 #include <QVariantList>
 #include <QVariantMap>
 
+#include "qmlcss/cssbox.h"
+
 class QVariantAnimation;
 
 namespace QmlCss {
@@ -38,16 +40,9 @@ class CssLayoutEngine;
 //
 // Carries the standard CSS signature (cssId/cssAlternateId/cssClass/cssState/cssPrimitive/
 // cssPart/style); resolved rules are pushed back into `style` by cssTheme.loadCss(this).
-class CssRect : public QQuickItem {
+class CssRect : public CssBox {
     Q_OBJECT
-    Q_PROPERTY(QString cssId READ cssId WRITE setCssId NOTIFY cssIdChanged)
-    Q_PROPERTY(QVariant cssAlternateId READ cssAlternateId WRITE setCssAlternateId NOTIFY cssAlternateIdChanged)
-    Q_PROPERTY(QVariant cssClass READ cssClass WRITE setCssClass NOTIFY cssClassChanged)
-    Q_PROPERTY(QVariant cssState READ cssState WRITE setCssState NOTIFY cssStateChanged)
-    Q_PROPERTY(QString cssPrimitive READ cssPrimitive WRITE setCssPrimitive NOTIFY cssPrimitiveChanged)
-    Q_PROPERTY(QString cssPart READ cssPart WRITE setCssPart NOTIFY cssPartChanged)
     Q_PROPERTY(QVariantMap style READ style WRITE setStyle NOTIFY styleChanged)
-    Q_PROPERTY(bool hasCssIdentity READ hasCssIdentity NOTIFY hasCssIdentityChanged)
 
     // Engine-driven hover: the theme flips cssHoverStyled when an applicable `:hover` rule
     // exists (we then compose a HoverHandler); the handler writes cssEngineHover, whose
@@ -134,24 +129,6 @@ public:
     // placed. Drives the scroll contentHeight (instead of QQuickItem::childrenRect()).
     void setLaidOutExtent(qreal top, qreal bottom);
 
-    QString cssId() const { return m_cssId; }
-    void setCssId(const QString &v);
-
-    QVariant cssAlternateId() const { return m_cssAlternateId; }
-    void setCssAlternateId(const QVariant &v);
-
-    QVariant cssClass() const { return m_cssClass; }
-    void setCssClass(const QVariant &v);
-
-    QVariant cssState() const { return m_cssState; }
-    void setCssState(const QVariant &v);
-
-    QString cssPrimitive() const { return m_cssPrimitive; }
-    void setCssPrimitive(const QString &v);
-
-    QString cssPart() const { return m_cssPart; }
-    void setCssPart(const QString &v);
-
     QVariantMap style() const { return m_style; }
     void setStyle(const QVariantMap &v);
 
@@ -173,8 +150,6 @@ public:
     // Item-level effects that apply with or without the shell (static transform + @keyframes).
     void applyStaticTransformAndAnim();
     Q_SLOT void syncScrollContent();
-
-    bool hasCssIdentity() const;
 
     qreal radius() const { return m_radius; }
     void setRadius(qreal v);
@@ -221,14 +196,7 @@ public:
 
 signals:
     void scrollChanged();
-    void cssIdChanged();
-    void cssAlternateIdChanged();
-    void cssClassChanged();
-    void cssStateChanged();
-    void cssPrimitiveChanged();
-    void cssPartChanged();
     void styleChanged();
-    void hasCssIdentityChanged();
     void cssHoverStyledChanged();
     void radiusChanged();
     void defaultColorChanged();
@@ -258,7 +226,7 @@ private:
     // QML: transformOrigin: Item.Center). Faithful to the QML rotation/scale/transform bindings.
     void applyTransform();
     // Re-style through the reverse-slot engine path when identity changes (QML onCss*Changed).
-    void maybeLoadCss();
+    void maybeLoadCss() override;
 
 protected:
     // Protected so C++ widget subclasses (the widgets-to-cpp port) can chain their own
@@ -269,13 +237,6 @@ private:
     // The CSS-inheriting ancestor (containing CssRect at parent.parent), or null.
     CssRect *cssParent() const;
 
-    QString m_cssId;
-    QVariant m_cssAlternateId = QVariant::fromValue(QVariantList());
-    QVariant m_cssClass = QVariant::fromValue(QVariantList());
-    QVariant m_cssState = QVariant::fromValue(QVariantList());
-    QString m_cssPrimitive = QStringLiteral("rect");
-    QString m_cssPart;
-    QVariantMap m_style;
     bool m_scenelessResolve = false; // last resolve ran without a window (truncated ancestors)
     // Resolved border widths [t,r,b,l] — cached at style-set time so layoutChildren (per-resize
     // hot path) never parses style strings. The content holder is inset by these (padding box).
@@ -335,7 +296,6 @@ private:
     QVarLengthArray<AnimStop, 8> m_animStopsFast;
     QPointer<QObject> m_anim;            // REAL QtQuick NumberAnimation on animTick (0→1)
 
-    QPointer<CssTheme> m_theme;
     QPointer<CssLayoutEngine> m_layout;
     QPointer<QQuickItem> m_render;       // the REAL QtQuick render subtree (Shapes + MultiEffect)
     QPointer<QQuickItem> m_contentHolder; // hosts declared children (the layout participants)

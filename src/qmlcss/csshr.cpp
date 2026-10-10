@@ -14,34 +14,8 @@
 
 namespace QmlCss {
 
-namespace {
-
-// Mirror of csstheme.cpp's identity coercion, used only for the hasCssIdentity check.
-QStringList toStringList(const QVariant &v)
-{
-    if (!v.isValid())
-        return {};
-    if (v.metaType().id() == qMetaTypeId<QJSValue>())
-        return toStringList(v.value<QJSValue>().toVariant());
-    if (v.metaType().id() == QMetaType::QStringList)
-        return v.toStringList();
-    if (v.metaType().id() == QMetaType::QVariantList) {
-        QStringList out;
-        const QVariantList list = v.toList();
-        for (const QVariant &e : list) {
-            const QString s = e.toString().trimmed();
-            if (!s.isEmpty())
-                out << s;
-        }
-        return out;
-    }
-    return v.toString().split(QLatin1Char(' '), Qt::SkipEmptyParts);
-}
-
-} // namespace
-
 CssHr::CssHr(QQuickItem *parent)
-    : QQuickItem(parent)
+    : CssBox(QStringLiteral("hr"), ReloadId | ReloadClass | ReloadState, parent)
 {
     // Faithful to the QML: implicitWidth 0, implicitHeight max(1, line.width) — line defaults
     // to width 1 (borderSide of an empty style), so implicitHeight starts at 1.
@@ -49,72 +23,6 @@ CssHr::CssHr(QQuickItem *parent)
     setImplicitHeight(1);
 }
 
-bool CssHr::hasCssIdentity() const
-{
-    if (!m_cssId.isEmpty() || !m_cssPart.isEmpty() || !m_cssPrimitive.isEmpty())
-        return true;
-    // Array.isArray(cssClass) ? length>0 : String(cssClass).length>0
-    return !toStringList(m_cssClass).isEmpty();
-}
-
-void CssHr::setCssId(const QString &v)
-{
-    if (m_cssId == v)
-        return;
-    m_cssId = v;
-    emit cssIdChanged();
-    emit hasCssIdentityChanged();
-    maybeLoadCss(); // QML: onCssIdChanged -> cssTheme.loadCss(root)
-}
-
-void CssHr::setCssAlternateId(const QVariant &v)
-{
-    if (m_cssAlternateId == v)
-        return;
-    m_cssAlternateId = v;
-    emit cssAlternateIdChanged();
-}
-
-void CssHr::setCssClass(const QVariant &v)
-{
-    // Value-compare: QML re-binds hand a FRESH array each evaluation; an equal
-    // list must not trigger a restyle (it double-applied every element on mount).
-    if (m_cssClass == v || toStringList(m_cssClass) == toStringList(v))
-        return;
-    m_cssClass = v;
-    emit cssClassChanged();
-    emit hasCssIdentityChanged();
-    maybeLoadCss(); // QML: onCssClassChanged -> cssTheme.loadCss(root)
-}
-
-void CssHr::setCssState(const QVariant &v)
-{
-    // Value-compare: QML re-binds hand a FRESH array each evaluation; an equal
-    // list must not trigger a restyle (it double-applied every element on mount).
-    if (m_cssState == v || toStringList(m_cssState) == toStringList(v))
-        return;
-    m_cssState = v;
-    emit cssStateChanged();
-    maybeLoadCss(); // QML: onCssStateChanged -> cssTheme.loadCss(root)
-}
-
-void CssHr::setCssPrimitive(const QString &v)
-{
-    if (m_cssPrimitive == v)
-        return;
-    m_cssPrimitive = v;
-    emit cssPrimitiveChanged();
-    emit hasCssIdentityChanged();
-}
-
-void CssHr::setCssPart(const QString &v)
-{
-    if (m_cssPart == v)
-        return;
-    m_cssPart = v;
-    emit cssPartChanged();
-    emit hasCssIdentityChanged();
-}
 
 void CssHr::setStyle(const QVariantMap &v)
 {

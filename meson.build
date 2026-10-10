@@ -26,6 +26,7 @@ qml_css_engine_sources = files(
   'src/qmlcss/cssrepeater.cpp',
   'src/qmlcss/csscontentholder.cpp',
   'src/qmlcss/csslayout.cpp',
+  'src/qmlcss/cssbox.cpp',
   'src/qmlcss/csshr.cpp',
   'src/qmlcss/cssimage.cpp',
   'src/qmlcss/cssfill.cpp',
@@ -48,6 +49,7 @@ qml_css_engine_headers = files(
   'src/qmlcss/csscontentholder.h',
   'src/qmlcss/csstheme.h',
   'src/qmlcss/csslayout.h',
+  'src/qmlcss/cssbox.h',
   'src/qmlcss/csshr.h',
   'src/qmlcss/cssimage.h',
   'src/qmlcss/cssfill.h',
@@ -63,7 +65,7 @@ qml_css_engine_headers = files(
 )
 
 qml_css_engine_qt_sources = qt6.preprocess(
-  moc_headers: files('src/qmlcss/csstheme.h', 'src/qmlcss/csslayout.h', 'src/qmlcss/cssincubator.h', 'src/qmlcss/cssrepeater.h', 'src/qmlcss/csscontentholder.h', 'src/qmlcss/csshr.h', 'src/qmlcss/cssimage.h', 'src/qmlcss/cssfill.h', 'src/qmlcss/cssrect.h', 'src/qmlcss/csstext.h', 'src/qmlcss/cssdropshadow.h', 'src/qmlcss/csskeyframes.h', 'src/qmlcss/cssicon.h', 'src/qmlcss/cssfilllayer.h', 'src/qmlcss/cssitem.h', 'src/qmlcss/contrast.h'),
+  moc_headers: files('src/qmlcss/csstheme.h', 'src/qmlcss/csslayout.h', 'src/qmlcss/cssincubator.h', 'src/qmlcss/cssrepeater.h', 'src/qmlcss/csscontentholder.h', 'src/qmlcss/cssbox.h', 'src/qmlcss/csshr.h', 'src/qmlcss/cssimage.h', 'src/qmlcss/cssfill.h', 'src/qmlcss/cssrect.h', 'src/qmlcss/csstext.h', 'src/qmlcss/cssdropshadow.h', 'src/qmlcss/csskeyframes.h', 'src/qmlcss/cssicon.h', 'src/qmlcss/cssfilllayer.h', 'src/qmlcss/cssitem.h', 'src/qmlcss/contrast.h'),
 )
 
 qml_css_engine_include = include_directories('src')

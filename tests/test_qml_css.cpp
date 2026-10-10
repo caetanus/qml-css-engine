@@ -2,6 +2,7 @@
 
 #include "qmlcss/QMLCss.h"
 #include "qmlcss/csscontentholder.h"
+#include "qmlcss/cssbox.h"
 #include "qmlcss/csstheme_p.h"
 
 #include <QtQml/qqml.h>
@@ -3587,4 +3588,46 @@ void QmlCssTests::composedItemsDieWithTheirOwner()
         }
     }
     QVERIFY2(survivors.isEmpty(), qPrintable(survivors.join(QLatin1Char('\n'))));
+}
+
+void QmlCssTests::everyIdentityTypeIsACssBox()
+{
+    CssTheme theme;
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    const QStringList types{QStringLiteral("CssRect"), QStringLiteral("CssText"), QStringLiteral("CssFill"),
+                            QStringLiteral("CssHr"), QStringLiteral("CssImage")};
+    for (const QString &type : types) {
+        QQmlComponent c(&engine);
+        c.setData(QStringLiteral("import QtQuick\nimport qmlcss\n%1 { cssId: \"i\"; cssClass: [\"a\", \"b\"]; "
+                                 "cssState: [\"s\"]; cssPrimitive: \"p\"; cssPart: \"q\"; cssAlternateId: [\"x\"] }")
+                      .arg(type).toUtf8(), QUrl());
+        QScopedPointer<QObject> o(c.create());
+        QVERIFY2(o, qPrintable(type + QLatin1String(": ") + c.errorString()));
+        auto *box = qobject_cast<CssBox *>(o.data());
+        QVERIFY2(box, qPrintable(type));
+        QCOMPARE(box->cssId(), QStringLiteral("i"));
+        QCOMPARE(box->classList(), (QStringList{QStringLiteral("a"), QStringLiteral("b")}));
+        QCOMPARE(box->stateList(), QStringList{QStringLiteral("s")});
+        QCOMPARE(box->cssPrimitive(), QStringLiteral("p"));
+        QCOMPARE(box->cssPart(), QStringLiteral("q"));
+        QCOMPARE(box->alternateIdList(), QStringList{QStringLiteral("x")});
+        QVERIFY(box->hasCssIdentity());
+    }
+    // CssItem: identity without cssState in QML today — it still is a box.
+    QQmlComponent item(&engine);
+    item.setData("import QtQuick\nimport qmlcss\nItem { CssItem { objectName: \"ci\"; cssClass: [\"c\"] } }", QUrl());
+    QScopedPointer<QObject> io(item.create());
+    QVERIFY2(io, qPrintable(item.errorString()));
+    auto *ci = qobject_cast<CssBox *>(io->findChild<QObject *>(QStringLiteral("ci")));
+    QVERIFY(ci);
+    QCOMPARE(ci->classList(), QStringList{QStringLiteral("c")});
+    // CssIcon: a style sink without identity — deliberately NOT a box.
+    QQmlComponent icon(&engine);
+    icon.setData("import QtQuick\nimport qmlcss\nCssIcon {}", QUrl());
+    QScopedPointer<QObject> ico(icon.create());
+    QVERIFY2(ico, qPrintable(icon.errorString()));
+    QVERIFY(!qobject_cast<CssBox *>(ico.data()));
 }

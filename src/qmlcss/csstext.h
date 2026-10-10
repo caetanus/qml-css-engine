@@ -6,6 +6,8 @@
 #include <QVariant>
 #include <QVariantMap>
 
+#include "qmlcss/cssbox.h"
+
 namespace QmlCss {
 
 class CssTheme;
@@ -50,16 +52,9 @@ class CssLayoutEngine;
 //       }
 //       MultiEffect { source: text; shadow* ... }   // <- m_shadow, only when text-shadow present
 //   }
-class CssText : public QQuickItem {
+class CssText : public CssBox {
     Q_OBJECT
-    Q_PROPERTY(QString cssId READ cssId WRITE setCssId NOTIFY cssIdChanged)
-    Q_PROPERTY(QVariant cssAlternateId READ cssAlternateId WRITE setCssAlternateId NOTIFY cssAlternateIdChanged)
-    Q_PROPERTY(QVariant cssClass READ cssClass WRITE setCssClass NOTIFY cssClassChanged)
-    Q_PROPERTY(QVariant cssState READ cssState WRITE setCssState NOTIFY cssStateChanged)
-    Q_PROPERTY(QString cssPrimitive READ cssPrimitive WRITE setCssPrimitive NOTIFY cssPrimitiveChanged)
-    Q_PROPERTY(QString cssPart READ cssPart WRITE setCssPart NOTIFY cssPartChanged)
     Q_PROPERTY(QVariantMap style READ style WRITE setStyle NOTIFY styleChanged)
-    Q_PROPERTY(bool hasCssIdentity READ hasCssIdentity NOTIFY hasCssIdentityChanged)
 
     // The label content (QML: property alias text: root.text — the Text's own text).
     Q_PROPERTY(QString text READ text WRITE setText NOTIFY textChanged)
@@ -85,28 +80,8 @@ class CssText : public QQuickItem {
 public:
     explicit CssText(QQuickItem *parent = nullptr);
 
-    QString cssId() const { return m_cssId; }
-    void setCssId(const QString &v);
-
-    QVariant cssAlternateId() const { return m_cssAlternateId; }
-    void setCssAlternateId(const QVariant &v);
-
-    QVariant cssClass() const { return m_cssClass; }
-    void setCssClass(const QVariant &v);
-
-    QVariant cssState() const { return m_cssState; }
-    void setCssState(const QVariant &v);
-
-    QString cssPrimitive() const { return m_cssPrimitive; }
-    void setCssPrimitive(const QString &v);
-
-    QString cssPart() const { return m_cssPart; }
-    void setCssPart(const QString &v);
-
     QVariantMap style() const { return m_style; }
     void setStyle(const QVariantMap &v);
-
-    bool hasCssIdentity() const;
 
     QString text() const { return m_text; }
     void setText(const QString &v);
@@ -131,14 +106,7 @@ public:
     QString inheritedTextAlign() const;
 
 signals:
-    void cssIdChanged();
-    void cssAlternateIdChanged();
-    void cssClassChanged();
-    void cssStateChanged();
-    void cssPrimitiveChanged();
-    void cssPartChanged();
     void styleChanged();
-    void hasCssIdentityChanged();
     void textChanged();
     void styledTextChanged();
     void defaultColorChanged();
@@ -169,7 +137,7 @@ private:
     // Mirror the composed Text's implicit size onto us (we are the layout participant).
     void mirrorImplicit();
     // Re-style through the reverse-slot engine path when identity changes (QML onCss*Changed).
-    void maybeLoadCss();
+    void maybeLoadCss() override;
 
 protected:
     // Protected so C++ widget subclasses (the widgets-to-cpp port) can chain their own
@@ -182,13 +150,6 @@ private:
     // Own style value, else the ancestor's same inherited getter (the QML inherited* chain).
     QString inheritedValue(const char *styleKey, const char *getterName) const;
 
-    QString m_cssId;
-    QVariant m_cssAlternateId = QVariant::fromValue(QVariantList());
-    QVariant m_cssClass = QVariant::fromValue(QVariantList());
-    QVariant m_cssState = QVariant::fromValue(QVariantList());
-    QString m_cssPrimitive = QStringLiteral("text");
-    QString m_cssPart;
-    QVariantMap m_style;
     bool m_scenelessResolve = false; // last resolve ran without a window (truncated ancestors)
     QString m_text;
     bool m_styledText = false;
@@ -197,7 +158,6 @@ private:
     QString m_defaultFontFamily = QStringLiteral("Sans Serif");
     qreal m_defaultFontSize = 11;
 
-    QPointer<CssTheme> m_theme;
     QPointer<CssLayoutEngine> m_layout;
     QPointer<QQuickItem> m_label; // the REAL QtQuick Text, via the type-system
     QPointer<QQuickItem> m_shadow; // the REAL QtQuick.Effects MultiEffect drop-shadow (text-shadow)

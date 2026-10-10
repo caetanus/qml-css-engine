@@ -6,6 +6,8 @@
 #include <QVariant>
 #include <QVariantMap>
 
+#include "qmlcss/cssbox.h"
+
 namespace QmlCss {
 
 class CssTheme;
@@ -51,57 +53,23 @@ class CssLayoutEngine;
 //           }
 //       }
 //   }
-class CssImage : public QQuickItem {
+class CssImage : public CssBox {
     Q_OBJECT
-    Q_PROPERTY(QString cssId READ cssId WRITE setCssId NOTIFY cssIdChanged)
-    Q_PROPERTY(QVariant cssAlternateId READ cssAlternateId WRITE setCssAlternateId NOTIFY cssAlternateIdChanged)
-    Q_PROPERTY(QVariant cssClass READ cssClass WRITE setCssClass NOTIFY cssClassChanged)
-    Q_PROPERTY(QVariant cssState READ cssState WRITE setCssState NOTIFY cssStateChanged)
-    Q_PROPERTY(QString cssPrimitive READ cssPrimitive WRITE setCssPrimitive NOTIFY cssPrimitiveChanged)
-    Q_PROPERTY(QString cssPart READ cssPart WRITE setCssPart NOTIFY cssPartChanged)
     Q_PROPERTY(QVariantMap style READ style WRITE setStyle NOTIFY styleChanged)
-    Q_PROPERTY(bool hasCssIdentity READ hasCssIdentity NOTIFY hasCssIdentityChanged)
     // The image URL (QML: property alias source: img.source).
     Q_PROPERTY(QUrl source READ source WRITE setSource NOTIFY sourceChanged)
 
 public:
     explicit CssImage(QQuickItem *parent = nullptr);
 
-    QString cssId() const { return m_cssId; }
-    void setCssId(const QString &v);
-
-    QVariant cssAlternateId() const { return m_cssAlternateId; }
-    void setCssAlternateId(const QVariant &v);
-
-    QVariant cssClass() const { return m_cssClass; }
-    void setCssClass(const QVariant &v);
-
-    QVariant cssState() const { return m_cssState; }
-    void setCssState(const QVariant &v);
-
-    QString cssPrimitive() const { return m_cssPrimitive; }
-    void setCssPrimitive(const QString &v);
-
-    QString cssPart() const { return m_cssPart; }
-    void setCssPart(const QString &v);
-
     QVariantMap style() const { return m_style; }
     void setStyle(const QVariantMap &v);
-
-    bool hasCssIdentity() const;
 
     QUrl source() const { return m_source; }
     void setSource(const QUrl &v);
 
 signals:
-    void cssIdChanged();
-    void cssAlternateIdChanged();
-    void cssClassChanged();
-    void cssStateChanged();
-    void cssPrimitiveChanged();
-    void cssPartChanged();
     void styleChanged();
-    void hasCssIdentityChanged();
     void sourceChanged();
 
 protected:
@@ -115,18 +83,10 @@ private:
     // anchors.fill equivalent: keep every composed child sized to us.
     void layoutChildren();
     // Re-style through the reverse-slot engine path when identity changes (QML onCss*Changed).
-    void maybeLoadCss();
+    void maybeLoadCss() override;
 
-    QString m_cssId;
-    QVariant m_cssAlternateId = QVariant::fromValue(QVariantList());
-    QVariant m_cssClass = QVariant::fromValue(QVariantList());
-    QVariant m_cssState = QVariant::fromValue(QVariantList());
-    QString m_cssPrimitive = QStringLiteral("img");
-    QString m_cssPart;
-    QVariantMap m_style;
     QUrl m_source;
 
-    QPointer<CssTheme> m_theme;
     QPointer<QQuickItem> m_image;  // REAL QtQuick Image
     QPointer<QQuickItem> m_effect; // REAL QtQuick.Effects MultiEffect (rounded-corner mask)
     QPointer<QQuickItem> m_mask;   // REAL QtQuick Shape (rounded-rect) used as the MultiEffect maskSource

@@ -35,28 +35,6 @@ namespace QmlCss {
 
 namespace {
 
-// Mirror of csstheme.cpp's identity coercion, used only for the hasCssIdentity check.
-QStringList toStringList(const QVariant &v)
-{
-    if (!v.isValid())
-        return {};
-    if (v.metaType().id() == qMetaTypeId<QJSValue>())
-        return toStringList(v.value<QJSValue>().toVariant());
-    if (v.metaType().id() == QMetaType::QStringList)
-        return v.toStringList();
-    if (v.metaType().id() == QMetaType::QVariantList) {
-        QStringList out;
-        const QVariantList list = v.toList();
-        for (const QVariant &e : list) {
-            const QString s = e.toString().trimmed();
-            if (!s.isEmpty())
-                out << s;
-        }
-        return out;
-    }
-    return v.toString().split(QLatin1Char(' '), Qt::SkipEmptyParts);
-}
-
 // QML: value && value.trim().toLowerCase().indexOf("url(") === 0
 bool isCssUrl(const QString &value)
 {
@@ -133,7 +111,7 @@ Image {
 } // namespace
 
 CssFill::CssFill(QQuickItem *parent)
-    : QQuickItem(parent)
+    : CssBox(QStringLiteral("rect"), ReloadAll, parent)
 {
     // The content holder must exist BEFORE the QML engine appends declared children to `content`
     // (which happens during parsing, before componentComplete). A plain Item, sized to us, hosting
@@ -204,73 +182,6 @@ void CssFill::setLaidOutExtent(qreal top, qreal bottom)
     m_extentBottom = bottom;
     if (m_flickable)
         syncScrollContent();
-}
-
-bool CssFill::hasCssIdentity() const
-{
-    if (!m_cssId.isEmpty() || !m_cssPart.isEmpty() || !m_cssPrimitive.isEmpty())
-        return true;
-    return !toStringList(m_cssClass).isEmpty();
-}
-
-void CssFill::setCssId(const QString &v)
-{
-    if (m_cssId == v)
-        return;
-    m_cssId = v;
-    emit cssIdChanged();
-    emit hasCssIdentityChanged();
-    maybeLoadCss();
-}
-
-void CssFill::setCssAlternateId(const QVariant &v)
-{
-    if (m_cssAlternateId == v)
-        return;
-    m_cssAlternateId = v;
-    emit cssAlternateIdChanged();
-}
-
-void CssFill::setCssClass(const QVariant &v)
-{
-    // Value-compare: QML re-binds hand a FRESH array each evaluation; an equal
-    // list must not trigger a restyle (it double-applied every element on mount).
-    if (m_cssClass == v || toStringList(m_cssClass) == toStringList(v))
-        return;
-    m_cssClass = v;
-    emit cssClassChanged();
-    emit hasCssIdentityChanged();
-    maybeLoadCss();
-}
-
-void CssFill::setCssState(const QVariant &v)
-{
-    // Value-compare: QML re-binds hand a FRESH array each evaluation; an equal
-    // list must not trigger a restyle (it double-applied every element on mount).
-    if (m_cssState == v || toStringList(m_cssState) == toStringList(v))
-        return;
-    m_cssState = v;
-    emit cssStateChanged();
-    maybeLoadCss();
-}
-
-void CssFill::setCssPrimitive(const QString &v)
-{
-    if (m_cssPrimitive == v)
-        return;
-    m_cssPrimitive = v;
-    emit cssPrimitiveChanged();
-    emit hasCssIdentityChanged();
-    maybeLoadCss();
-}
-
-void CssFill::setCssPart(const QString &v)
-{
-    if (m_cssPart == v)
-        return;
-    m_cssPart = v;
-    emit cssPartChanged();
-    emit hasCssIdentityChanged();
 }
 
 void CssFill::setStyle(const QVariantMap &v)
