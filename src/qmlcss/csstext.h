@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QColor>
+#include <QFont>
 #include <QPointer>
 #include <QQuickItem>
 #include <QVariant>
@@ -52,6 +53,22 @@ class CssLayoutEngine;
 //       }
 //       MultiEffect { source: text; shadow* ... }   // <- m_shadow, only when text-shadow present
 //   }
+// Everything applyToText() writes to the composed QQuickText. Compared field by field with the last payload
+// APPLIED, so a re-apply with nothing changed writes nothing (no property writes, no QQuickText relayout).
+// verticalAlignment is not here: it is constant, written once when the label is composed.
+struct CssTextPayload {
+    QString text;
+    QColor color;
+    QFont font;
+    int lineHeightMode = 0;
+    qreal lineHeight = 0;
+    int textFormat = 0;
+    qreal leftPadding = 0, rightPadding = 0, topPadding = 0, bottomPadding = 0;
+    int wrapMode = 0;
+    int elide = 0;
+    int horizontalAlignment = 0;
+};
+
 class CssText : public CssBox {
     Q_OBJECT
     Q_PROPERTY(QVariantMap style READ style WRITE setStyle NOTIFY styleChanged)
@@ -160,6 +177,8 @@ private:
 
     QPointer<CssLayoutEngine> m_layout;
     QPointer<QQuickItem> m_label; // the REAL QtQuick Text, via the type-system
+    CssTextPayload m_applied; // what m_label was last given (valid while m_payloadApplied)
+    bool m_payloadApplied = false; // false until the first apply onto the current m_label
     QPointer<QQuickItem> m_shadow; // the REAL QtQuick.Effects MultiEffect drop-shadow (text-shadow)
     QPointer<QQuickItem> m_bg; // background underlay Shape, composed on first background-color
 };

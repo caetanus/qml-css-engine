@@ -3,9 +3,11 @@
 
 #include "qmlcss/csslayout.h"
 #include "qmlcss/csstheme.h"
+#include "qmlcss/csstheme_p.h"
 #include "qmlcss/valueparser.h"
 
 #include <QFont>
+#include <QMetaProperty>
 #include <QJSValue>
 #include <QQmlComponent>
 #include <QQmlContext>
@@ -30,6 +32,41 @@ QFont::Capitalization capitalizationFor(const QString &v)
     if (s == QLatin1String("capitalize"))
         return QFont::Capitalize;
     return QFont::MixedCase;
+}
+
+// The composed label's properties, resolved ONCE per process: the label is always the same QQuickText type, so
+// the indices never change and a write skips the by-name lookup of QObject::setProperty.
+struct LabelProps {
+    QMetaProperty text, color, font, lineHeightMode, lineHeight, textFormat, verticalAlignment;
+    QMetaProperty leftPadding, rightPadding, topPadding, bottomPadding, wrapMode, elide, horizontalAlignment;
+};
+
+const LabelProps &labelProps(const QQuickItem *label)
+{
+    static const LabelProps props = [label] {
+        const QMetaObject *mo = label->metaObject();
+        auto prop = [mo](const char *name) {
+            const int index = mo->indexOfProperty(name);
+            Q_ASSERT(index >= 0);
+            return mo->property(index);
+        };
+        return LabelProps{ prop("text"), prop("color"), prop("font"), prop("lineHeightMode"), prop("lineHeight"),
+                           prop("textFormat"), prop("verticalAlignment"), prop("leftPadding"), prop("rightPadding"),
+                           prop("topPadding"), prop("bottomPadding"), prop("wrapMode"), prop("elide"),
+                           prop("horizontalAlignment") };
+    }();
+    return props;
+}
+
+// Write one payload field to the label unless it equals the value last applied (or the label is fresh).
+template <typename T>
+void putLabel(QQuickItem *label, const QMetaProperty &prop, bool fresh, const T &value, T &applied)
+{
+    if (!fresh && value == applied)
+        return;
+    prop.write(label, QVariant::fromValue(value));
+    applied = value;
+    ++Detail::g_textLabelWrites;
 }
 
 } // namespace
@@ -62,7 +99,7 @@ void CssText::setText(const QString &v)
         return;
     m_text = v;
     if (m_label)
-        m_label->setProperty("text", m_text);
+        putLabel<QString>(m_label, labelProps(m_label).text, !m_payloadApplied, m_text, m_applied.text);
     emit textChanged();
 }
 
@@ -71,8 +108,9 @@ void CssText::setStyledText(bool v)
     if (m_styledText == v)
         return;
     m_styledText = v;
-    if (m_label)
-        m_label->setProperty("textFormat", m_styledText ? 4 : 0); // Text.StyledText : PlainText
+    if (m_label) // Text.StyledText : PlainText
+        putLabel<int>(m_label, labelProps(m_label).textFormat, !m_payloadApplied, m_styledText ? 4 : 0,
+                      m_applied.textFormat);
     emit styledTextChanged();
 }
 
@@ -144,22 +182,21 @@ void CssText::applyToText()
     if (!m_label)
         return;
 
-    QQuickItem *t = m_label;
     auto styleStr = [&](const char *k) { return m_style.value(QLatin1String(k)).toString(); };
+    CssTextPayload p;
 
     // text
-    t->setProperty("text", m_text);
+    p.text = m_text;
 
     // One typed walk for all eight inherited values (own style value, else the inheriting ancestor's).
     const CssInheritedText inh = inheritedText();
 
     // color <- inheritedColor, else default.
     const QString &ic = inh.color;
-    const QColor color = (!ic.isEmpty() && m_theme) ? m_theme->parseColor(ic) : m_defaultColor;
-    t->setProperty("color", color);
+    p.color = (!ic.isEmpty() && m_theme) ? m_theme->parseColor(ic) : m_defaultColor;
 
     // --- font (family/pointSize/weight/letterSpacing/wordSpacing/capitalization/underline/strike) ---
-    QFont font;
+    QFont &font = p.font;
     const QString &fam = inh.fontFamily;
     font.setFamily(m_theme ? m_theme->resolveFontFamily(fam, m_defaultFontFamily)
                            : (fam.isEmpty() ? m_defaultFontFamily : fam));
@@ -177,43 +214,67 @@ void CssText::applyToText()
     const QString decoration = styleStr("text-decoration");
     font.setUnderline(decoration.contains(QLatin1String("underline")));
     font.setStrikeOut(decoration.contains(QLatin1String("line-through")));
-    t->setProperty("font", QVariant::fromValue(font));
 
     // line-height: mode + value (px). QML fallback px = font pixel size (or pointSize*96/72).
     const QString &lh = inh.lineHeight;
     const bool proportional = m_theme ? m_theme->isProportionalLineHeight(lh) : true;
-    t->setProperty("lineHeightMode", proportional ? 0 : 1); // Text.ProportionalHeight : Text.FixedHeight
+    p.lineHeightMode = proportional ? 0 : 1; // Text.ProportionalHeight : Text.FixedHeight
     const qreal fallbackPx = pointSize * 96.0 / 72.0;
-    t->setProperty("lineHeight", m_theme ? m_theme->parseLineHeight(lh, fallbackPx) : fallbackPx);
+    p.lineHeight = m_theme ? m_theme->parseLineHeight(lh, fallbackPx) : fallbackPx;
 
     // Transpiled JSX text is literal — PlainText unless the widget opted into StyledText
     // (menu mnemonics underline via <u>).
-    t->setProperty("textFormat", m_styledText ? 4 : 0); // Text.StyledText : Text.PlainText
-    t->setProperty("verticalAlignment", static_cast<int>(Qt::AlignVCenter));
+    p.textFormat = m_styledText ? 4 : 0; // Text.StyledText : Text.PlainText
 
-    // padding (QML boxSideLength side order: left=3, right=1, top=0, bottom=2).
-    if (m_theme) {
-        t->setProperty("leftPadding", m_theme->boxSideLength(m_style, QStringLiteral("padding"), 3));
-        t->setProperty("rightPadding", m_theme->boxSideLength(m_style, QStringLiteral("padding"), 1));
-        t->setProperty("topPadding", m_theme->boxSideLength(m_style, QStringLiteral("padding"), 0));
-        t->setProperty("bottomPadding", m_theme->boxSideLength(m_style, QStringLiteral("padding"), 2));
+    // padding (QML boxSideLength side order: left=3, right=1, top=0, bottom=2). Without a theme the
+    // padding is never written: carry the applied values so the diff leaves them alone.
+    const bool padded = m_theme;
+    if (padded) {
+        p.leftPadding = m_theme->boxSideLength(m_style, QStringLiteral("padding"), 3);
+        p.rightPadding = m_theme->boxSideLength(m_style, QStringLiteral("padding"), 1);
+        p.topPadding = m_theme->boxSideLength(m_style, QStringLiteral("padding"), 0);
+        p.bottomPadding = m_theme->boxSideLength(m_style, QStringLiteral("padding"), 2);
+    } else {
+        p.leftPadding = m_applied.leftPadding;
+        p.rightPadding = m_applied.rightPadding;
+        p.topPadding = m_applied.topPadding;
+        p.bottomPadding = m_applied.bottomPadding;
     }
 
     // white-space: nowrap -> NoWrap, else WordWrap.
-    t->setProperty("wrapMode", static_cast<int>(styleStr("white-space") == QLatin1String("nowrap")
-                                                    ? QTextOption::NoWrap
-                                                    : QTextOption::WordWrap));
+    p.wrapMode = static_cast<int>(styleStr("white-space") == QLatin1String("nowrap") ? QTextOption::NoWrap
+                                                                                     : QTextOption::WordWrap);
     // text-overflow: ellipsis -> ElideRight, else ElideNone.
-    t->setProperty("elide", static_cast<int>(styleStr("text-overflow") == QLatin1String("ellipsis")
-                                                  ? Qt::ElideRight
-                                                  : Qt::ElideNone));
+    p.elide = static_cast<int>(styleStr("text-overflow") == QLatin1String("ellipsis") ? Qt::ElideRight
+                                                                                       : Qt::ElideNone);
 
     // text-align -> horizontalAlignment.
     const QString &align = inh.textAlign;
     const Qt::Alignment halign = align == QLatin1String("center")
         ? Qt::AlignHCenter
         : (align == QLatin1String("right") ? Qt::AlignRight : Qt::AlignLeft);
-    t->setProperty("horizontalAlignment", static_cast<int>(halign));
+    p.horizontalAlignment = static_cast<int>(halign);
+
+    // Write only the fields that differ from the payload last applied (all of them on a fresh label).
+    QQuickItem *t = m_label;
+    const LabelProps &lp = labelProps(t);
+    const bool fresh = !m_payloadApplied;
+    putLabel(t, lp.text, fresh, p.text, m_applied.text);
+    putLabel(t, lp.color, fresh, p.color, m_applied.color);
+    putLabel(t, lp.font, fresh, p.font, m_applied.font);
+    putLabel(t, lp.lineHeightMode, fresh, p.lineHeightMode, m_applied.lineHeightMode);
+    putLabel(t, lp.lineHeight, fresh, p.lineHeight, m_applied.lineHeight);
+    putLabel(t, lp.textFormat, fresh, p.textFormat, m_applied.textFormat);
+    if (padded) {
+        putLabel(t, lp.leftPadding, fresh, p.leftPadding, m_applied.leftPadding);
+        putLabel(t, lp.rightPadding, fresh, p.rightPadding, m_applied.rightPadding);
+        putLabel(t, lp.topPadding, fresh, p.topPadding, m_applied.topPadding);
+        putLabel(t, lp.bottomPadding, fresh, p.bottomPadding, m_applied.bottomPadding);
+    }
+    putLabel(t, lp.wrapMode, fresh, p.wrapMode, m_applied.wrapMode);
+    putLabel(t, lp.elide, fresh, p.elide, m_applied.elide);
+    putLabel(t, lp.horizontalAlignment, fresh, p.horizontalAlignment, m_applied.horizontalAlignment);
+    m_payloadApplied = true;
 
     // display:none never writes `visible` (imperative writes sever author bindings, e.g. the
     // <Show> guard); the layout skips it by style, painting dies via opacity 0.
@@ -356,6 +417,10 @@ void CssText::componentComplete()
                     label->setParent(this); // C++ ownership: beginCreate() means C++ owns it
                     label->setParentItem(this);
                     m_label = label;
+                    m_payloadApplied = false; // a fresh label: the first apply writes the whole payload
+                    // Constant for every label, so written once here instead of in the payload.
+                    labelProps(label).verticalAlignment.write(label, static_cast<int>(Qt::AlignVCenter));
+                    ++Detail::g_textLabelWrites;
                     applyToText();
                     comp->completeCreate();
                 } else {

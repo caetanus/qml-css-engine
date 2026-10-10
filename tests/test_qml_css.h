@@ -215,4 +215,8 @@ private slots:
     // ...and every inherited* getter returns exactly what it returned before, on a nested tree with
     // own/inherited values, a level that sets nothing and the CssText grandparent rule.
     void inheritanceGettersUnchanged();
+
+    // 4b-4 Task 2: applyToText diffs a typed payload against the last one applied — a re-apply with
+    // nothing changed writes nothing to the composed label; one changed value writes one property.
+    void textPayloadWritesOnlyChanges();
 };

@@ -4074,3 +4074,66 @@ void QmlCssTests::inheritanceGettersUnchanged()
                                          node->property(getters[g]).toString(), row.values.at(g))));
     }
 }
+
+// 4b-4 Task 2: rect(.row) > text. Count the properties written to the composed label: the mount writes the
+// whole payload, an unchanged re-apply writes none, and each single change writes exactly its own property.
+void QmlCssTests::textPayloadWritesOnlyChanges()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(".row { color: #111111; } .row2 { color: #222222; }"));
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent c(&engine);
+    c.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect { cssPrimitive: "div"; cssClass: ["row"]; width: 100; height: 50
+            CssText { objectName: "t"; text: "a" } }
+    )", QUrl());
+    int mark = Detail::g_textLabelWrites;
+    QScopedPointer<QObject> row(c.create());
+    QVERIFY2(row, qPrintable(c.errorString()));
+    QQuickWindow window;
+    qobject_cast<QQuickItem *>(row.data())->setParentItem(window.contentItem());
+    auto *text = row->findChild<QQuickItem *>(QStringLiteral("t"));
+    QVERIFY(text);
+    QQuickItem *label = composedText(text);
+    QVERIFY(label);
+    auto delta = [&mark]() {
+        const int d = Detail::g_textLabelWrites - mark;
+        mark = Detail::g_textLabelWrites;
+        return d;
+    };
+    // 1. the mount writes the whole payload
+    QVERIFY(delta() > 0);
+    QCOMPARE(label->property("color").value<QColor>(), QColor(QStringLiteral("#111111")));
+
+    // 2. an unchanged re-resolve, plus a forced full re-apply through the inheritance chain, writes nothing
+    theme.loadCss(qobject_cast<QQuickItem *>(row.data()));
+    QVERIFY(QMetaObject::invokeMethod(row.data(), "inheritedChanged"));
+    QCOMPARE(delta(), 0);
+
+    // 3. the inherited color changes: one write (color)
+    row->setProperty("cssClass", QStringList{QStringLiteral("row2")});
+    QCOMPARE(delta(), 1);
+    QCOMPARE(label->property("color").value<QColor>(), QColor(QStringLiteral("#222222")));
+
+    // 4. a new default font size with no inherited font-size: one write (font; line-height stays "normal")
+    text->setProperty("defaultFontSize", 15.0);
+    QCOMPARE(delta(), 1);
+    QCOMPARE(label->property("font").value<QFont>().pointSizeF(), 15.0);
+
+    // 5. the text changes: one write
+    text->setProperty("text", QStringLiteral("b"));
+    QCOMPARE(delta(), 1);
+    QCOMPARE(label->property("text").toString(), QStringLiteral("b"));
+
+    // 6. styledText goes through the same payload: one write, and a forced re-apply after it writes nothing
+    text->setProperty("styledText", true);
+    QCOMPARE(delta(), 1);
+    QCOMPARE(label->property("textFormat").toInt(), 4); // Text.StyledText
+    QVERIFY(QMetaObject::invokeMethod(row.data(), "inheritedChanged"));
+    QCOMPARE(delta(), 0);
+}
