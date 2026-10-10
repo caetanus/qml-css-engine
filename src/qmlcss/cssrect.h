@@ -119,6 +119,8 @@ public:
     // Engine-internal: CssLayoutEngine::layout() checks this BEFORE walking children to publish
     // the scroll extent — only scroll boxes need that work (Task 4 review finding #3).
     bool hasScroll() const { return m_flickable; }
+    // Engine-internal (5v-1): the composed scroll Flickable (null when the box does not scroll).
+    QQuickItem *scrollFlickable() const { return m_flickable; }
     explicit CssRect(QQuickItem *parent = nullptr);
 
     // Engine-internal: the layout pass inspects a CHILD box's content to classify it (e.g. the

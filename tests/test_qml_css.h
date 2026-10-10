@@ -238,4 +238,14 @@ private slots:
     // memo — every box got its OWN parsed CssLayoutStyle. The bounded cache shares across the whole
     // rotation: 300 boxes of 3 distinct classes hold only 3 distinct CssLayoutStyle pointers.
     void typedStylesSharedAcrossAlternatingClasses();
+
+    // Step 5v-1: a `virtualize: true` CssRepeater in a vertically scrolling flex/block column with a
+    // runtime-proven FIXED row pitch instantiates only the rows in the viewport +- one viewport,
+    // publishes the exact LOGICAL extent, renders pixel-identical to the eager list, touches only
+    // window rows on keyed updates, and falls back to eager when any eligibility condition breaks.
+    void virtualListMaterializesOnlyTheWindow();
+    void virtualListScrollsExactly();
+    void virtualListMatchesEagerPixels();
+    void virtualListKeyedUpdate();
+    void virtualListFallsBackEager();
 };

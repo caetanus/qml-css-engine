@@ -1,8 +1,12 @@
 #include "qmlcss/cssrepeater.h"
 
+#include "qmlcss/cssbox.h"
+#include "qmlcss/csscontentholder.h"
 #include "qmlcss/csslayout.h"
+#include "qmlcss/csslength.h"
 #include "csstheme_p.h" // LayoutBatchGuard
 
+#include <QAccessible>
 #include <QDebug>
 #include <QElapsedTimer>
 #include <QHash>
@@ -13,6 +17,7 @@
 #include <QQmlEngine>
 #include <QVarLengthArray>
 #include <algorithm>
+#include <cmath>
 
 namespace QmlCss {
 
@@ -61,6 +66,8 @@ CssRepeater::~CssRepeater()
     // connections are gone by the time ~QObject deletes us), so nothing touches it. m_layout is a
     // QPointer: the guard is a no-op if the engine already died.
     const Detail::LayoutBatchGuard batch(m_layout);
+    if (m_layout && m_registeredHolder)
+        m_layout->unregisterVirtualRepeater(m_registeredHolder, this);
     for (Row &row : m_rows)
         destroyRow(row);
     m_rows.clear();
@@ -84,25 +91,88 @@ void CssRepeater::setDelegate(QQmlComponent *c)
         rebuild();
 }
 
+void CssRepeater::setVirtualize(bool v)
+{
+    if (m_virtualize == v)
+        return;
+    m_virtualize = v;
+    emit virtualizeChanged();
+    if (!isComponentComplete())
+        return;
+    registerWithEngine();
+    if (!m_virtualize) {
+        // Back to plain eager: every logical row gets its item.
+        watchFlickable(nullptr);
+        m_mode = Mode::Eager;
+        const Detail::LayoutBatchGuard batch(m_layout);
+        if (materialize(0, int(m_rows.size()) - 1, false)) {
+            restack();
+            notifyLayout();
+        }
+        return;
+    }
+    // Rows that exist stay until the holder's next layout decides to window them.
+    notifyLayout();
+}
+
 void CssRepeater::componentComplete()
 {
     QQuickItem::componentComplete();
     if (QQmlContext *ctx = qmlContext(this))
         m_layout = qobject_cast<CssLayoutEngine *>(ctx->contextProperty(QStringLiteral("cssLayout")).value<QObject *>());
+    registerWithEngine();
+    // Virtual and registered: materialize nothing yet — the holder's first layout (which runs when
+    // its box completes, with the scroll composed and the container style resolved) decides between
+    // the window and eager. Creating every row first would defeat the point for a 10k-row model.
+    if (m_registeredHolder)
+        m_mode = Mode::Pending;
     rebuild();
+}
+
+void CssRepeater::itemChange(ItemChange change, const ItemChangeData &data)
+{
+    QQuickItem::itemChange(change, data);
+    if (change != ItemParentHasChanged || !isComponentComplete() || !m_virtualize)
+        return;
+    registerWithEngine();
+    if (!m_registeredHolder && m_mode != Mode::Eager) {
+        // No layout will window us any more (detached, or a holder already taken): eager.
+        watchFlickable(nullptr);
+        m_mode = Mode::Eager;
+    }
+}
+
+void CssRepeater::registerWithEngine()
+{
+    QQuickItem *holder = m_virtualize ? parentItem() : nullptr;
+    if (m_registeredHolder && m_registeredHolder != holder) {
+        if (m_layout)
+            m_layout->unregisterVirtualRepeater(m_registeredHolder, this);
+        m_registeredHolder = nullptr;
+    }
+    // Only a box's content holder is laid out by the engine (and so ever syncs us).
+    if (!holder || !m_layout || m_registeredHolder || !qobject_cast<CssContentHolder *>(holder))
+        return;
+    if (m_layout->registerVirtualRepeater(holder, this))
+        m_registeredHolder = holder;
 }
 
 void CssRepeater::destroyRow(Row &row)
 {
+    if (!row.item && !row.context)
+        return; // a logical row that was never materialized (virtual mode)
     QElapsedTimer t;
     if (Detail::g_phaseStats.enabled)
         t.start();
     if (row.item) {
+        --m_matCount;
         row.item->setParentItem(nullptr);
         row.item->deleteLater();
     }
     if (row.context)
         row.context->deleteLater();
+    row.item = nullptr;
+    row.context = nullptr;
     if (Detail::g_phaseStats.enabled)
         Detail::g_phaseStats.time("repeater.destroyRow", t.nsecsElapsed());
 }
@@ -166,6 +236,7 @@ bool CssRepeater::createRow(int i, const QVariant &data, Row &row)
     }
     row.item = item;
     row.context = ctx;
+    ++m_matCount;
     return true;
 }
 
@@ -205,18 +276,20 @@ void CssRepeater::rebuild()
         }
     }
 
+    // m_rows holds EVERY logical entry (an item only when materialized): matching runs over all of
+    // them, so keys/order survive for rows outside a virtual window, and only materialize() below
+    // creates or destroys items.
     QVector<Row> next;
     next.reserve(data.size());
     QVector<bool> used(m_rows.size(), false);
     bool changed = false;
     QHash<QString, int> byKey;
     if (keyed) {
-        for (int j = 0; j < m_rows.size(); ++j)
-            if (m_rows[j].item) {
-                const QString k = keyOf(m_rows[j].data);
-                if (!k.isEmpty() && !byKey.contains(k))
-                    byKey.insert(k, j);
-            }
+        for (int j = 0; j < m_rows.size(); ++j) {
+            const QString k = keyOf(m_rows[j].data);
+            if (!k.isEmpty() && !byKey.contains(k))
+                byKey.insert(k, j);
+        }
     }
     if (Detail::g_phaseStats.enabled) {
         // Key building + byKey: one sample for the whole up-front pass (the survivor scan below
@@ -234,7 +307,7 @@ void CssRepeater::rebuild()
         } else {
             // Reconcile by VALUE, stable first-match: surviving entries keep their delegate.
             for (int j = 0; j < m_rows.size(); ++j) {
-                if (!used[j] && m_rows[j].item && m_rows[j].data == data.at(i)) {
+                if (!used[j] && m_rows[j].data == data.at(i)) {
                     found = j;
                     break;
                 }
@@ -264,22 +337,7 @@ void CssRepeater::rebuild()
             next.append(row);
         } else {
             Row row;
-            if (!createRow(i, data.at(i), row))
-                continue;
-            // createRow() parents the new item to parentItem() (or us) via setParentItem(), which
-            // APPENDS it to the end of that parent's children — in a header/footer-wrapped list that
-            // lands it after the footer. Stack it after its model predecessor right away (or after US
-            // for the very first row), so restack()'s fast path finds everything already in place and
-            // never falls back to the O(n^2) loop just because we create/append next to a static
-            // sibling. When creating/appending (no concurrent reorder) this stackAfter is cheap: the new
-            // item and its anchor both sit at/near the END of the sibling list, so its two lastIndexOf()
-            // scans (which run from the back) and the siblingOrderChanged bookkeeping only touch the
-            // few items after the anchor (e.g. the footer). If the same rebuild also reorders, the
-            // anchor may still be at its old position — that one call is then O(n), as before, and
-            // restack() fixes the final order regardless.
-            QQuickItem *anchor = next.isEmpty() ? this : next.constLast().item.data();
-            if (anchor && row.item && anchor->parentItem() == row.item->parentItem())
-                row.item->stackAfter(anchor);
+            row.data = data.at(i);
             next.append(row);
             changed = true;
         }
@@ -291,12 +349,243 @@ void CssRepeater::rebuild()
         }
     }
     m_rows = next;
+    // Survivors may now sit anywhere (a swap moves a materialized row out of the window): sweep every
+    // logical row once — the matching above was O(n) already.
+    int a, b;
+    targetRange(&a, &b);
+    if (materialize(a, b, true))
+        changed = true;
     if (changed) {
         if (Detail::g_phaseStats.enabled)
             t.start();
         restack();
         if (Detail::g_phaseStats.enabled)
             Detail::g_phaseStats.time("repeater.restack", t.nsecsElapsed());
+        notifyLayout();
+    }
+}
+
+bool CssRepeater::materialize(int a, int b, bool sweepAll)
+{
+    const int n = int(m_rows.size());
+    a = std::max(a, 0);
+    b = std::min(b, n - 1);
+    bool changed = false;
+    // Rows leaving: everything outside [a, b] (only the previous range can hold items, unless a
+    // reconciliation just moved them).
+    const int lo = sweepAll ? 0 : std::max(m_matFirst, 0);
+    const int hi = sweepAll ? n - 1 : std::min(m_matLast, n - 1);
+    for (int i = lo; i <= hi; ++i) {
+        if ((i < a || i > b) && (m_rows[i].item || m_rows[i].context)) {
+            destroyRow(m_rows[i]);
+            changed = true;
+        }
+    }
+    // Rows entering, in model order. setParentItem() APPENDS a new item to the holder's children (in
+    // a header/footer-wrapped list that lands it after the footer): stack it after its model
+    // predecessor right away (or after US for the first row), so restack()'s fast path finds
+    // everything already in place and never falls back to the O(n^2) loop just because we
+    // create/append next to a static sibling. Creating at the end, the new item and its anchor both
+    // sit at/near the END of the sibling list, so stackAfter's two lastIndexOf() scans (which run
+    // from the back) only touch the few items after the anchor; restack() fixes any reorder.
+    QQuickItem *anchor = this;
+    for (int i = a; i <= b; ++i) {
+        Row &row = m_rows[i];
+        if (!row.item) {
+            if (row.context) // its item died under us: drop the orphaned context before recreating
+                destroyRow(row);
+            if (!createRow(i, row.data, row))
+                continue;
+            if (anchor->parentItem() == row.item->parentItem())
+                row.item->stackAfter(anchor);
+            changed = true;
+        }
+        anchor = row.item;
+    }
+    if (a <= b) {
+        m_matFirst = a;
+        m_matLast = b;
+    } else {
+        m_matFirst = 0;
+        m_matLast = -1;
+    }
+    return changed;
+}
+
+void CssRepeater::targetRange(int *a, int *b) const
+{
+    switch (m_mode) {
+    case Mode::Eager:
+        *a = 0;
+        *b = int(m_rows.size()) - 1;
+        return;
+    case Mode::Pending:
+        *a = 0;
+        *b = -1;
+        return;
+    case Mode::Windowed:
+        windowRange(a, b);
+        return;
+    }
+}
+
+void CssRepeater::windowRange(int *a, int *b) const
+{
+    const int n = int(m_rows.size());
+    if (n == 0 || !(m_flow.pitch > 0)) {
+        *a = 0;
+        *b = -1;
+        return;
+    }
+    double cy = 0, vh = 0;
+    if (m_flick) {
+        cy = m_flick->property("contentY").toReal();
+        vh = m_flick->height();
+    }
+    if (const QQuickItem *holder = parentItem())
+        cy -= holder->y();
+    // Rows intersecting [contentY - viewport, contentY + 2 * viewport]: row i occupies
+    // [base + i * pitch, base + i * pitch + rowH).
+    const double base = m_container.originY + m_flow.marginTop;
+    const double lo = cy - vh;
+    const double hi = cy + 2 * vh;
+    const double firstF = std::floor((lo - base - m_flow.rowH) / m_flow.pitch) + 1;
+    const double lastF = std::ceil((hi - base) / m_flow.pitch) - 1;
+    int first = int(std::clamp(firstF, 0.0, double(n - 1)));
+    int last = int(std::clamp(lastF, 0.0, double(n - 1)));
+    // Keep at least one row: its style is what re-validates the pitch on the next layout.
+    if (last < first)
+        last = first;
+    *a = first;
+    *b = last;
+}
+
+bool CssRepeater::measureRows(VirtualFlow *flow) const
+{
+    if (!m_layout || m_matCount == 0)
+        return false;
+    bool have = false;
+    for (int i = std::max(m_matFirst, 0); i <= m_matLast && i < m_rows.size(); ++i) {
+        QQuickItem *item = m_rows[i].item;
+        const auto *box = qobject_cast<const CssBox *>(item);
+        if (!box || !item->isVisible())
+            return false;
+        const CssLayoutStyle &st = box->layoutStyle();
+        // A definite, positive px height that nothing else on the main axis can change.
+        if (st.displayNone || st.positionAbsolute || st.height.kind != CssLength::Number || !(st.height.value > 0)
+            || st.minHeight.kind != CssLength::Absent || st.maxHeight.kind != CssLength::Absent
+            || st.flexBasis.kind != CssLength::Absent || st.grow != 0 || st.shrink != 0 || st.order != 0)
+            return false;
+        double h = st.height.value;
+        if (!st.borderBox) {
+            // content-box: the laid-out border box adds padding + border (layoutFlex's rule).
+            const auto p = m_layout->paddingOf(st);
+            const auto bo = m_layout->borderOf(st);
+            h += p[0] + p[2] + bo[0] + bo[2];
+        }
+        const auto m = m_layout->marginOf(st);
+        if (!have) {
+            flow->rowH = h;
+            flow->marginTop = m[0];
+            flow->pitch = m[0] + h + m[2]; // + gap, by the caller
+            have = true;
+        } else if (h != flow->rowH || m[0] != flow->marginTop || m[0] + h + m[2] != flow->pitch) {
+            return false; // rows disagree: no fixed pitch
+        }
+    }
+    return have;
+}
+
+bool CssRepeater::holderHoldsOnlyOurRows() const
+{
+    const QQuickItem *holder = parentItem();
+    if (!holder)
+        return false;
+    const auto kids = holder->childItems();
+    for (const QQuickItem *k : kids) {
+        if (k == this || k->parent() == this || !k->isVisible())
+            continue; // us, our rows (QObject children), or out of flow
+        return false;
+    }
+    return true;
+}
+
+void CssRepeater::watchFlickable(QQuickItem *flick)
+{
+    if (m_flick == flick)
+        return;
+    if (m_flick)
+        disconnect(m_flick, nullptr, this, nullptr);
+    m_flick = flick;
+    if (flick) {
+        connect(flick, SIGNAL(contentYChanged()), this, SLOT(viewportMoved()));
+        connect(flick, SIGNAL(heightChanged()), this, SLOT(viewportMoved()));
+    }
+}
+
+bool CssRepeater::syncVirtual(const VirtualContainer &container)
+{
+    if (!m_virtualize || m_syncing || !m_delegate)
+        return m_mode == Mode::Windowed;
+    m_container = container;
+    watchFlickable(container.flick);
+    const int n = int(m_rows.size());
+    if (n == 0) {
+        m_mode = Mode::Pending; // nothing to window; the eager path lays out zero rows identically
+        return false;
+    }
+    // One batch for every row created/destroyed here; declared BEFORE the re-entrancy flag's reset so
+    // the flag is clear again when the batch's flush relayouts the holder (outside a flush).
+    const Detail::LayoutBatchGuard batch(m_layout);
+    m_syncing = true;
+    struct Reset {
+        bool &flag;
+        ~Reset() { flag = false; }
+    } reset{ m_syncing };
+
+    bool changed = false;
+    const bool a11y = Detail::g_virtualA11yOverride >= 0 ? Detail::g_virtualA11yOverride != 0
+                                                         : QAccessible::isActive();
+    Mode want = Mode::Eager;
+    VirtualFlow flow;
+    if (container.eligible && !a11y && holderHoldsOnlyOurRows()) {
+        if (m_matCount == 0) {
+            // Probe: one materialized row proves (or refutes) the pitch — where the window was, if a
+            // pitch is known from before.
+            int a = 0, b = -1;
+            windowRange(&a, &b);
+            changed |= materialize(a, a, false);
+        }
+        if (measureRows(&flow)) {
+            flow.gap = container.gap;
+            flow.pitch += container.gap;
+            flow.total = n;
+            want = Mode::Windowed;
+        }
+    }
+    m_mode = want;
+    if (want == Mode::Windowed)
+        m_flow = flow;
+    int a, b;
+    targetRange(&a, &b);
+    changed |= materialize(a, b, false);
+    if (changed)
+        restack();
+    m_flow.first = m_matFirst;
+    return m_mode == Mode::Windowed;
+}
+
+void CssRepeater::viewportMoved()
+{
+    if (m_mode != Mode::Windowed || m_syncing)
+        return;
+    int a, b;
+    windowRange(&a, &b);
+    if (a == m_matFirst && b == m_matLast)
+        return;
+    const Detail::LayoutBatchGuard batch(m_layout);
+    if (materialize(a, b, false)) {
+        restack();
         notifyLayout();
     }
 }
@@ -316,9 +605,9 @@ void CssRepeater::restack()
     if (!parent)
         return;
     QVarLengthArray<QQuickItem *, 256> items;
-    for (const Row &row : m_rows)
-        if (row.item)
-            items.append(row.item);
+    for (int i = std::max(m_matFirst, 0); i <= m_matLast && i < m_rows.size(); ++i)
+        if (m_rows[i].item)
+            items.append(m_rows[i].item);
     const int n = int(items.size());
     if (n == 0)
         return;

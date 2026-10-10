@@ -18,6 +18,7 @@ class QTimer;
 
 namespace QmlCss {
 class CssTheme;
+class CssRepeater;
 struct CssLength;
 struct CssLayoutStyle;
 
@@ -63,6 +64,13 @@ public:
     // lets tests assert O(N) vs O(N^2) layout work without timing. A running total for the engine's
     // lifetime (never reset): callers diff a before/after pair.
     quint64 childVisits() const { return m_childVisits; }
+
+    // 5v-1: a `virtualize: true` CssRepeater registers its holder; every layout() of that holder
+    // first lets it re-validate eligibility and its window (CssRepeater::syncVirtual), then places only
+    // the materialized window and publishes the LOGICAL extent. One virtual repeater per holder:
+    // registration fails (false) while another live one holds it.
+    bool registerVirtualRepeater(QQuickItem *holder, CssRepeater *rep);
+    void unregisterVirtualRepeater(QQuickItem *holder, CssRepeater *rep);
 
     // Transform-keyframe animation. buildAnimStops normalizes `@keyframes` frames into
     // [{offset, rotate, scale, tx, ty}] (identity-filled, 0%/100% synthesised); applyAnim
@@ -135,6 +143,7 @@ private:
     CssTheme *m_theme;
     QHash<QQuickItem *, QPointer<QQuickItem>> m_pending; // root -> content
     QHash<QQuickItem *, QPointer<QQuickItem>> m_known;   // every root ever laid out (viewport relayout)
+    QHash<QQuickItem *, QPointer<CssRepeater>> m_virtualRepeaters; // holder -> its virtual repeater
     QTimer *m_flushTimer;
     int m_batchDepth = 0;
     bool m_flushing = false;

@@ -4561,3 +4561,348 @@ void QmlCssTests::typedStylesSharedAcrossAlternatingClasses()
     // Today (the one-entry memo): ~300, one per box. After the bounded cache: 3 — one per class.
     QCOMPARE(distinct.size(), 3);
 }
+
+// ---- Step 5v-1: virtualized CssRepeater (fixed pitch, no pool) ----------------------------------
+
+namespace {
+
+// A 400px scroll column of fixed 20px rows, 2px apart, 8px padding on every side: row i sits at
+// y = 8 + i * 22 and the logical extent of N rows is 8 + N * 20 + (N - 1) * 2 + 8.
+const char *const kVirtualCss = R"(
+    .list { display: flex; flex-direction: column; overflow-y: auto; padding: 8px; gap: 2px; }
+    .row { display: flex; flex-direction: row; height: 20px; gap: 4px; background-color: #dde6f0; }
+    .id { width: 48px; color: #203040; font-size: 12px; }
+    .label { flex: 1; color: #102030; font-size: 12px; }
+)";
+constexpr qreal kPad = 8, kRowH = 20, kGap = 2, kPitch = kRowH + kGap, kViewH = 400;
+
+QVariantList makeVirtualRows(int n, int idBase = 0)
+{
+    QVariantList rows;
+    rows.reserve(n);
+    for (int i = 0; i < n; ++i)
+        rows.append(QVariantMap{ { QStringLiteral("id"), idBase + i + 1 },
+                                 { QStringLiteral("label"), QStringLiteral("row %1").arg(idBase + i) } });
+    return rows;
+}
+
+struct VirtualScene {
+    CssTheme theme;
+    CssLayoutEngine layout{ &theme };
+    QQmlEngine engine;
+    QQuickWindow window;
+    QScopedPointer<QObject> root;
+    QQuickItem *list = nullptr;
+    QQuickItem *flick = nullptr;
+    QQuickItem *holder = nullptr;
+    CssRepeater *rep = nullptr;
+
+    explicit VirtualScene(const QString &css)
+    {
+        theme.loadFromString(css);
+        engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+        engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layout);
+        window.resize(300, int(kViewH));
+        window.setColor(Qt::white);
+    }
+
+    QString mount(bool virtualize, const QVariantList &rows)
+    {
+        QQmlComponent c(&engine);
+        c.setData(QByteArray(R"(
+            import QtQuick
+            import qmlcss
+            CssRect {
+                id: list
+                objectName: "list"
+                cssClass: ["list"]
+                cssPrimitive: "div"
+                width: 300; height: 400
+                property var rows: []
+                CssRepeater {
+                    model: list.rows
+                    virtualize: )") + (virtualize ? "true" : "false") + R"(
+                    delegate: Component {
+                        CssRect { cssClass: ["row"]; cssPrimitive: "div"
+                            CssText { cssClass: ["id"]; text: "" + modelData.id }
+                            CssText { objectName: "label"; cssClass: ["label"]; text: "" + modelData.label }
+                        }
+                    }
+                }
+            }
+        )", QUrl());
+        root.reset(c.create());
+        if (!root)
+            return c.errorString();
+        list = qobject_cast<QQuickItem *>(root.data());
+        list->setParentItem(window.contentItem());
+        rep = root->findChild<CssRepeater *>();
+        for (QQuickItem *k : root->findChildren<QQuickItem *>()) {
+            if (QByteArray(k->metaObject()->className()).contains("Flickable")) {
+                flick = k;
+                break;
+            }
+        }
+        if (!rep || !flick)
+            return QStringLiteral("no repeater / no Flickable");
+        holder = rep->parentItem();
+        setRows(rows);
+        return QString();
+    }
+    void setRows(const QVariantList &rows) { root->setProperty("rows", QVariant::fromValue(rows)); }
+    void setContentY(qreal y) { flick->setProperty("contentY", y); }
+    qreal contentHeight() const { return flick->property("contentHeight").toReal(); }
+    qreal maxContentY() const { return contentHeight() - flick->height(); }
+
+    // The materialized rows (the holder's row children), in document order.
+    QList<QQuickItem *> rows() const
+    {
+        QList<QQuickItem *> out;
+        for (QQuickItem *k : holder->childItems())
+            if (qobject_cast<CssRect *>(k))
+                out.append(k);
+        return out;
+    }
+    static int indexOf(QQuickItem *row) { return qmlContext(row)->contextProperty(QStringLiteral("index")).toInt(); }
+    static QString labelOf(QQuickItem *row)
+    {
+        QObject *l = row->findChild<QObject *>(QStringLiteral("label"));
+        return l ? l->property("text").toString() : QString();
+    }
+    QImage grab()
+    {
+        QCoreApplication::processEvents();
+        return window.grabWindow().convertToFormat(QImage::Format_ARGB32);
+    }
+};
+
+// Every materialized row shows its model entry at its logical position; returns "" or the problem.
+QString checkVirtualRows(const VirtualScene &s, const QVariantList &model)
+{
+    const QList<QQuickItem *> rows = s.rows();
+    for (QQuickItem *row : rows) {
+        const int i = VirtualScene::indexOf(row);
+        if (i < 0 || i >= model.size())
+            return QStringLiteral("row with index %1 of %2").arg(i).arg(model.size());
+        const QString want = model.at(i).toMap().value(QStringLiteral("label")).toString();
+        if (VirtualScene::labelOf(row) != want)
+            return QStringLiteral("row %1 shows '%2', model says '%3'").arg(i).arg(VirtualScene::labelOf(row), want);
+        if (!qFuzzyCompare(row->y() + 1, kPad + i * kPitch + 1) || !qFuzzyCompare(row->height(), kRowH))
+            return QStringLiteral("row %1 at y %2 h %3, want y %4").arg(i).arg(row->y()).arg(row->height()).arg(kPad + i * kPitch);
+    }
+    return QString();
+}
+
+struct CreateDestroyCounts {
+    qint64 created = 0, destroyed = 0;
+};
+CreateDestroyCounts takeCounts()
+{
+    CreateDestroyCounts c;
+    c.created = Detail::g_phaseStats.buckets.value("repeater.beginCreate").count;
+    c.destroyed = Detail::g_phaseStats.buckets.value("repeater.destroyRow").count;
+    Detail::g_phaseStats.buckets.clear();
+    return c;
+}
+
+} // namespace
+
+void QmlCssTests::virtualListMaterializesOnlyTheWindow()
+{
+    VirtualScene s(QString::fromLatin1(kVirtualCss));
+    const QString err = s.mount(true, makeVirtualRows(10000));
+    QVERIFY2(err.isEmpty(), qPrintable(err));
+    const int bound = 3 * int(kViewH / kPitch) + 4;
+    for (const qreal y : { 0.0, 110000.0 }) {
+        s.setContentY(y);
+        const int alive = s.rows().size();
+        QVERIFY2(alive > 0 && alive <= bound, qPrintable(QStringLiteral("contentY %1: %2 rows alive (bound %3)").arg(y).arg(alive).arg(bound)));
+        QCOMPARE(s.rep->materializedCount(), alive);
+    }
+    QCOMPARE(s.contentHeight(), kPad + 10000 * kRowH + 9999 * kGap + kPad);
+}
+
+void QmlCssTests::virtualListScrollsExactly()
+{
+    VirtualScene s(QString::fromLatin1(kVirtualCss));
+    const QVariantList model = makeVirtualRows(10000);
+    QVERIFY2(s.mount(true, model).isEmpty(), "mount");
+    for (const qreal cy : { 110000.0, s.maxContentY() }) {
+        s.setContentY(cy);
+        QCOMPARE(s.flick->property("contentY").toReal(), cy);
+        const QString bad = checkVirtualRows(s, model);
+        QVERIFY2(bad.isEmpty(), qPrintable(bad));
+        QSet<int> alive;
+        for (QQuickItem *row : s.rows()) {
+            const int i = VirtualScene::indexOf(row);
+            alive.insert(i);
+            const qreal top = kPad + i * kPitch;
+            // Nothing outside the window [contentY - viewport, contentY + 2 viewport] exists.
+            QVERIFY2(top + kRowH > cy - kViewH && top < cy + 2 * kViewH,
+                     qPrintable(QStringLiteral("row %1 outside the window at contentY %2").arg(i).arg(cy)));
+            QCOMPARE(row->x(), kPad);
+            QCOMPARE(row->width(), 300 - 2 * kPad);
+        }
+        // Every row intersecting the viewport is materialized.
+        for (int i = 0; i < model.size(); ++i) {
+            const qreal top = kPad + i * kPitch;
+            if (top + kRowH > cy && top < cy + kViewH)
+                QVERIFY2(alive.contains(i), qPrintable(QStringLiteral("visible row %1 missing at contentY %2").arg(i).arg(cy)));
+        }
+    }
+}
+
+void QmlCssTests::virtualListMatchesEagerPixels()
+{
+    const QVariantList model = makeVirtualRows(1000);
+    VirtualScene eager(QString::fromLatin1(kVirtualCss));
+    VirtualScene virt(QString::fromLatin1(kVirtualCss));
+    QVERIFY2(eager.mount(false, model).isEmpty(), "eager mount");
+    QVERIFY2(virt.mount(true, model).isEmpty(), "virtual mount");
+    QCOMPARE(eager.rows().size(), 1000);
+    QVERIFY(virt.rows().size() < 1000);
+    QCOMPARE(virt.contentHeight(), eager.contentHeight());
+    eager.window.show();
+    virt.window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&eager.window));
+    QVERIFY(QTest::qWaitForWindowExposed(&virt.window));
+    for (const qreal cy : { 0.0, 1234.0, eager.maxContentY() }) {
+        eager.setContentY(cy);
+        virt.setContentY(cy);
+        const QImage a = eager.grab();
+        const QImage b = virt.grab();
+        QCOMPARE(a.size(), b.size());
+        int diff = 0, painted = 0;
+        for (int y = 0; y < a.height(); ++y) {
+            for (int x = 0; x < a.width(); ++x) {
+                diff += a.pixel(x, y) != b.pixel(x, y);
+                painted += a.pixel(x, y) != QColor(Qt::white).rgba();
+            }
+        }
+        if (!qEnvironmentVariableIsEmpty("SQ_VIRTUAL_GRAB_DIR")) {
+            const QString dir = qEnvironmentVariable("SQ_VIRTUAL_GRAB_DIR");
+            a.save(QStringLiteral("%1/eager-%2.png").arg(dir).arg(int(cy)));
+            b.save(QStringLiteral("%1/virtual-%2.png").arg(dir).arg(int(cy)));
+        }
+        QVERIFY2(diff == 0, qPrintable(QStringLiteral("contentY %1: %2 pixels differ").arg(cy).arg(diff)));
+        // ...and the frame is not blank: rows actually painted.
+        QVERIFY2(painted > a.width() * a.height() / 2, qPrintable(QString::number(painted)));
+    }
+}
+
+void QmlCssTests::virtualListKeyedUpdate()
+{
+    VirtualScene s(QString::fromLatin1(kVirtualCss));
+    QVariantList model = makeVirtualRows(1000);
+    QVERIFY2(s.mount(true, model).isEmpty(), "mount");
+    const int window = s.rows().size();
+    QVERIFY(window > 0 && window < 100);
+
+    const bool wasOn = Detail::g_phaseStats.enabled;
+    Detail::g_phaseStats.enabled = true;
+    Detail::g_phaseStats.buckets.clear();
+    const auto verify = [&](const char *what) {
+        const QString bad = checkVirtualRows(s, model);
+        QVERIFY2(bad.isEmpty(), qPrintable(QStringLiteral("%1: %2").arg(QLatin1String(what), bad)));
+        QCOMPARE(s.contentHeight(), kPad + model.size() * kRowH + (model.size() - 1) * kGap + kPad);
+    };
+
+    // swap 1 <-> 998 at the top: row 1 leaves the window (destroyed), entry 998 enters it (created).
+    model.swapItemsAt(1, 998);
+    s.setRows(model);
+    CreateDestroyCounts c = takeCounts();
+    QCOMPARE(c.created, qint64(1));
+    QCOMPARE(c.destroyed, qint64(1));
+    verify("swap");
+    s.setContentY(s.maxContentY());
+    verify("swap, at the end");
+    s.setContentY(0);
+    verify("swap, back at the top");
+    takeCounts();
+
+    // remove 500 (outside the window): nothing is created or destroyed.
+    model.removeAt(500);
+    s.setRows(model);
+    c = takeCounts();
+    QCOMPARE(c.created, qint64(0));
+    QCOMPARE(c.destroyed, qint64(0));
+    verify("remove");
+    s.setContentY(kPad + 500 * kPitch - 100);
+    verify("remove, around 500");
+    s.setContentY(0);
+    takeCounts();
+
+    // update every 10th label (fresh maps, same ids): window rows rebind in place, nothing created.
+    for (int i = 0; i < model.size(); i += 10) {
+        QVariantMap m = model.at(i).toMap();
+        m.insert(QStringLiteral("label"), QStringLiteral("updated %1").arg(i));
+        model[i] = m;
+    }
+    s.setRows(model);
+    c = takeCounts();
+    QCOMPARE(c.created, qint64(0));
+    QCOMPARE(c.destroyed, qint64(0));
+    verify("update");
+
+    // append below the window: nothing is created until scrolled to.
+    model.append(makeVirtualRows(25, 5000));
+    s.setRows(model);
+    c = takeCounts();
+    QCOMPARE(c.created, qint64(0));
+    QCOMPARE(c.destroyed, qint64(0));
+    verify("append");
+    s.setContentY(s.maxContentY());
+    verify("append, at the end");
+    c = takeCounts();
+    QVERIFY(c.created <= window + 2 && c.destroyed <= window + 2);
+
+    Detail::g_phaseStats.enabled = wasOn;
+    Detail::g_phaseStats.buckets.clear();
+}
+
+void QmlCssTests::virtualListFallsBackEager()
+{
+    const QString fixed = QString::fromLatin1(kVirtualCss);
+    const QString autoHeight = fixed + QStringLiteral(" .row { height: auto; }");
+    const QString wrapped = fixed + QStringLiteral(" .list { flex-wrap: wrap; }");
+    const QVariantList model = makeVirtualRows(300);
+
+    VirtualScene s(fixed);
+    QVERIFY2(s.mount(true, model).isEmpty(), "mount");
+    QVERIFY(s.rows().size() < 300);
+
+    // The row's y for every logical index, from a scene where all rows exist.
+    const auto ys = [](const VirtualScene &v) {
+        QHash<int, qreal> out;
+        for (QQuickItem *row : v.rows())
+            out.insert(VirtualScene::indexOf(row), row->y());
+        return out;
+    };
+
+    for (const QString &broken : { autoHeight, wrapped }) {
+        s.theme.loadFromString(broken);
+        QCOMPARE(s.rows().size(), 300);
+        QCOMPARE(s.rep->materializedCount(), 300);
+        VirtualScene eager(broken);
+        QVERIFY2(eager.mount(false, model).isEmpty(), "eager mount");
+        QCOMPARE(ys(s), ys(eager));
+        QCOMPARE(s.contentHeight(), eager.contentHeight());
+
+        s.theme.loadFromString(fixed);
+        QVERIFY2(s.rows().size() < 300, qPrintable(QString::number(s.rows().size())));
+        const QString bad = checkVirtualRows(s, model);
+        QVERIFY2(bad.isEmpty(), qPrintable(bad));
+    }
+
+    // Accessibility active -> eager (the AT sees every row); inactive again -> windowed.
+    const int previous = Detail::g_virtualA11yOverride;
+    Detail::g_virtualA11yOverride = 1;
+    QVERIFY(QMetaObject::invokeMethod(s.list, "requestRelayout"));
+    QCOMPARE(s.rows().size(), 300);
+    Detail::g_virtualA11yOverride = 0;
+    QVERIFY(QMetaObject::invokeMethod(s.list, "requestRelayout"));
+    QVERIFY(s.rows().size() < 300);
+    Detail::g_virtualA11yOverride = previous;
+    const QString bad = checkVirtualRows(s, model);
+    QVERIFY2(bad.isEmpty(), qPrintable(bad));
+}

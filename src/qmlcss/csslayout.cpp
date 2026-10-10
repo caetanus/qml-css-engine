@@ -5,6 +5,7 @@
 #include "cssfill.h"
 #include "csslength.h"
 #include "cssrect.h"
+#include "cssrepeater.h"
 #include "csstheme.h"
 
 #include <QElapsedTimer>
@@ -123,6 +124,24 @@ void CssLayoutEngine::endBatch()
 {
     if (--m_batchDepth == 0 && !m_pending.isEmpty() && !m_flushing)
         flush();
+}
+
+bool CssLayoutEngine::registerVirtualRepeater(QQuickItem *holder, CssRepeater *rep)
+{
+    if (!holder || !rep)
+        return false;
+    QPointer<CssRepeater> &slot = m_virtualRepeaters[holder];
+    if (slot && slot != rep)
+        return false;
+    slot = rep;
+    return true;
+}
+
+void CssLayoutEngine::unregisterVirtualRepeater(QQuickItem *holder, CssRepeater *rep)
+{
+    const auto it = m_virtualRepeaters.find(holder);
+    if (it != m_virtualRepeaters.end() && (!it.value() || it.value() == rep))
+        m_virtualRepeaters.erase(it);
 }
 
 // --- scheduling -------------------------------------------------------------------------
@@ -561,6 +580,30 @@ void CssLayoutEngine::layout(QQuickItem *root, QQuickItem *content)
     const bool isGrid = rootStyle.displayGrid;
     const bool isFlex = rootStyle.displayFlex;
 
+    CssRect *scrollRect = qobject_cast<CssRect *>(root);
+    CssFill *scrollFill = scrollRect ? nullptr : qobject_cast<CssFill *>(root);
+
+    // 5v-1: a holder whose flow is a virtual repeater's rows. The repeater re-validates eligibility and
+    // its window FIRST (it may create/destroy rows), so the child scan below sees the final set. The
+    // container half of the eligibility is ours: a vertical scroll box laying the holder out as one
+    // non-wrapping column, justify-content start, with a numeric gap.
+    CssRepeater *virt = nullptr;
+    if (!m_virtualRepeaters.isEmpty()) {
+        const auto it = m_virtualRepeaters.constFind(content);
+        if (it != m_virtualRepeaters.cend() && it.value()) {
+            QQuickItem *flick = scrollRect ? scrollRect->scrollFlickable()
+                                           : (scrollFill ? scrollFill->scrollFlickable() : nullptr);
+            CssRepeater::VirtualContainer vc;
+            vc.gap = rootStyle.gap.kind == CssLength::Absent ? 0 : eval(rootStyle, rootStyle.gap, 0);
+            vc.originY = originY;
+            vc.flick = flick;
+            vc.eligible = flick && !isGrid && (!isFlex || (!rootStyle.directionRow && !rootStyle.wrap))
+                && rootStyle.justify == CssLayoutStyle::Justify::Start && !std::isnan(vc.gap);
+            if (it.value()->syncVirtual(vc))
+                virt = it.value();
+        }
+    }
+
     QList<QQuickItem *> flow, abs, foreign;
     const auto kids = content->childItems();
     m_childVisits += quint64(kids.size());
@@ -602,9 +645,20 @@ void CssLayoutEngine::layout(QQuickItem *root, QQuickItem *content)
             flow[i] = byOrder[i].second;
     }
 
-    const QPair<double, double> contentSize = isGrid
-        ? layoutGrid(flow, styleOf(root), cw, ch, originX, originY)
-        : layoutFlex(flow, rootStyle, cw, ch, originX, originY, isFlex);
+    QPair<double, double> contentSize;
+    if (virt) {
+        // The window is a contiguous run of fixed-pitch rows: lay it out exactly as the eager column
+        // would (same cross-axis sizing — it IS layoutFlex), starting at its first row's slot; the
+        // main-axis content size is the LOGICAL one, N rows and N-1 gaps. (The cross-axis content
+        // size — the box's implicit width — only sees the window's rows.)
+        const CssRepeater::VirtualFlow &vf = virt->virtualFlow();
+        contentSize = layoutFlex(flow, rootStyle, cw, ch, originX, originY + vf.first * vf.pitch, isFlex);
+        contentSize.second = vf.total > 0 ? vf.total * vf.pitch - vf.gap : 0.0;
+    } else {
+        contentSize = isGrid
+            ? layoutGrid(flow, styleOf(root), cw, ch, originX, originY)
+            : layoutFlex(flow, rootStyle, cw, ch, originX, originY, isFlex);
+    }
 
     for (QQuickItem *k : abs)
         placeAbsolute(k, *layoutStyleOf(k), originX, originY, cw, ch);
@@ -639,9 +693,17 @@ void CssLayoutEngine::layout(QQuickItem *root, QQuickItem *content)
     // (CssRect/CssFill::ensureScrollable) calls requestRelayout() right after composing the
     // Flickable, so its first publish happens on that very next layout() — hasScroll() is already
     // true by the time this runs.
-    CssRect *scrollRect = qobject_cast<CssRect *>(root);
-    CssFill *scrollFill = scrollRect ? nullptr : qobject_cast<CssFill *>(root);
-    if ((scrollRect && scrollRect->hasScroll()) || (scrollFill && scrollFill->hasScroll())) {
+    if (virt) {
+        // The LOGICAL extent, exactly what the eager walk below would find with all N rows placed:
+        // the first row's top (padding-top + its margin) and the last row's bottom — never the window's.
+        const CssRepeater::VirtualFlow &vf = virt->virtualFlow();
+        const double top = originY + vf.marginTop;
+        const double bottom = vf.total > 0 ? top + (vf.total - 1) * vf.pitch + vf.rowH : 0.0;
+        if (scrollRect)
+            scrollRect->setLaidOutExtent(vf.total > 0 ? top : 0.0, bottom);
+        else if (scrollFill)
+            scrollFill->setLaidOutExtent(vf.total > 0 ? top : 0.0, bottom);
+    } else if ((scrollRect && scrollRect->hasScroll()) || (scrollFill && scrollFill->hasScroll())) {
         // extentTop is the real MINIMUM child y (Task 4 review finding #2) — starts at +infinity
         // so it converges down to the first child's y (== padding-top for the common flex-column
         // case), never an initial 0.0 that can only shrink via std::min and so can never report
