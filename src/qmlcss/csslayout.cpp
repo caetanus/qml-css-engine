@@ -248,14 +248,27 @@ void CssLayoutEngine::flush()
     while (!m_pending.isEmpty() && guard++ < maxPasses) {
         if (Detail::g_phaseStats.enabled)
             Detail::g_phaseStats.bump("layout.drains");
-        const auto batch = m_pending;
-        m_pending.clear();
-        for (auto it = batch.constBegin(); it != batch.constEnd(); ++it) {
-            if (it.key() && it.value())
-                layout(it.key(), it.value());
+        // Each root leaves the pass's set as it is laid out: what remains is still to come
+        // (subtreeQueued reads it).
+        QHash<QQuickItem *, QPointer<QQuickItem>> batch;
+        batch.swap(m_pending);
+        m_inFlight = &batch;
+        for (auto it = batch.begin(); it != batch.end();) {
+            QQuickItem *const root = it.key();
+            const QPointer<QQuickItem> content = it.value();
+            it = batch.erase(it);
+            if (root && content)
+                layout(root, content);
         }
+        m_inFlight = nullptr;
     }
     m_flushing = false;
+    // 5v-3: anchored virtual lists re-base their anchor on the settled result (each one a flag test
+    // unless it committed a correction in this flush).
+    for (auto it = m_virtualRepeaters.cbegin(); it != m_virtualRepeaters.cend(); ++it) {
+        if (it.value())
+            it.value()->layoutSettled();
+    }
 
     if (Detail::g_phaseStats.enabled)
         Detail::g_phaseStats.time("layout.flush", t.nsecsElapsed());
@@ -263,6 +276,25 @@ void CssLayoutEngine::flush()
     // Only reached if the guard tripped (non-convergent): finish the remainder next turn.
     if (!m_pending.isEmpty() && !m_flushTimer->isActive())
         m_flushTimer->start();
+}
+
+bool CssLayoutEngine::subtreeQueued(const QQuickItem *root) const
+{
+    if (!root || (m_pending.isEmpty() && (!m_inFlight || m_inFlight->isEmpty())))
+        return false;
+    QVarLengthArray<const QQuickItem *, 32> stack;
+    stack.append(root);
+    while (!stack.isEmpty()) {
+        const QQuickItem *k = stack.last();
+        stack.removeLast();
+        QQuickItem *const key = const_cast<QQuickItem *>(k);
+        if (m_pending.contains(key) || (m_inFlight && m_inFlight->contains(key)))
+            return true;
+        const auto kids = k->childItems();
+        for (const QQuickItem *c : kids)
+            stack.append(c);
+    }
+    return false;
 }
 
 // --- length / calc ----------------------------------------------------------------------
@@ -596,6 +628,8 @@ void CssLayoutEngine::layout(QQuickItem *root, QQuickItem *content)
             CssRepeater::VirtualContainer vc;
             vc.gap = rootStyle.gap.kind == CssLength::Absent ? 0 : eval(rootStyle, rootStyle.gap, 0);
             vc.originY = originY;
+            vc.width = cw;
+            vc.padBottom = pad[2];
             vc.flick = flick;
             vc.eligible = flick && !isGrid && (!isFlex || (!rootStyle.directionRow && !rootStyle.wrap))
                 && rootStyle.justify == CssLayoutStyle::Justify::Start && !std::isnan(vc.gap);
@@ -652,8 +686,22 @@ void CssLayoutEngine::layout(QQuickItem *root, QQuickItem *content)
         // main-axis content size is the LOGICAL one, N rows and N-1 gaps. (The cross-axis content
         // size — the box's implicit width — only sees the window's rows.)
         const CssRepeater::VirtualFlow &vf = virt->virtualFlow();
-        contentSize = layoutFlex(flow, rootStyle, cw, ch, originX, originY + vf.first * vf.pitch, isFlex);
-        contentSize.second = vf.total > 0 ? vf.total * vf.pitch - vf.gap : 0.0;
+        if (vf.variable) {
+            // 5v-3: rows of their own sizes. The window starts at its first slot's logical top; the
+            // repeater measures what the column computed, and the window follows its first slot if the
+            // estimates above it moved (same pass: no frame sees the window at the old place).
+            QVarLengthArray<double, 128> mains(flow.size());
+            contentSize = layoutFlex(flow, rootStyle, cw, ch, originX, originY + vf.firstTop, isFlex, mains.data());
+            const double shift = virt->measureWindow(mains.constData(), int(flow.size()));
+            if (shift != 0) {
+                for (QQuickItem *k : std::as_const(flow))
+                    k->setY(k->y() + shift);
+            }
+            contentSize.second = vf.content;
+        } else {
+            contentSize = layoutFlex(flow, rootStyle, cw, ch, originX, originY + vf.first * vf.pitch, isFlex);
+            contentSize.second = vf.total > 0 ? vf.total * vf.pitch - vf.gap : 0.0;
+        }
     } else {
         contentSize = isGrid
             ? layoutGrid(flow, styleOf(root), cw, ch, originX, originY)
@@ -697,12 +745,16 @@ void CssLayoutEngine::layout(QQuickItem *root, QQuickItem *content)
         // The LOGICAL extent, exactly what the eager walk below would find with all N rows placed:
         // the first row's top (padding-top + its margin) and the last row's bottom — never the window's.
         const CssRepeater::VirtualFlow &vf = virt->virtualFlow();
-        const double top = originY + vf.marginTop;
-        const double bottom = vf.total > 0 ? top + (vf.total - 1) * vf.pitch + vf.rowH : 0.0;
+        const double top = vf.variable ? vf.extentTop : originY + vf.marginTop;
+        const double bottom = vf.total <= 0 ? 0.0
+            : vf.variable ? vf.extentBottom : top + (vf.total - 1) * vf.pitch + vf.rowH;
         if (scrollRect)
             scrollRect->setLaidOutExtent(vf.total > 0 ? top : 0.0, bottom);
         else if (scrollFill)
             scrollFill->setLaidOutExtent(vf.total > 0 ? top : 0.0, bottom);
+        // The anchor correction lands with the extent it compensates (contract 7).
+        if (vf.variable)
+            virt->commitAnchor();
     } else if ((scrollRect && scrollRect->hasScroll()) || (scrollFill && scrollFill->hasScroll())) {
         // extentTop is the real MINIMUM child y (Task 4 review finding #2) — starts at +infinity
         // so it converges down to the first child's y (== padding-top for the common flex-column
@@ -745,7 +797,8 @@ void CssLayoutEngine::layout(QQuickItem *root, QQuickItem *content)
 
 QPair<double, double> CssLayoutEngine::layoutFlex(const QList<QQuickItem *> &flow,
                                                   const CssLayoutStyle &rootStyle, double cw, double ch,
-                                                  double originX, double originY, bool isFlex) const
+                                                  double originX, double originY, bool isFlex,
+                                                  double *mainOut) const
 {
     using Align = CssLayoutStyle::Align;
     const bool horizontal = isFlex ? rootStyle.directionRow : false;
@@ -995,6 +1048,8 @@ QPair<double, double> CssLayoutEngine::layoutFlex(const QList<QQuickItem *> &flo
             else place(flow[i], ks, originX + crossPos, originY + mainPos, csz, msz);
 
             pos = mainPos + msz + mMar[i].second + between;
+            if (mainOut)
+                mainOut[i] = mMar[i].first + msz + mMar[i].second;
             Q_UNUSED(naturalCross);
         }
         const double lineMainUsed = ln > 0 ? (pos - between) : 0;

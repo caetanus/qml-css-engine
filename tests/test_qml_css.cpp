@@ -4596,6 +4596,7 @@ struct VirtualScene {
     QQuickItem *flick = nullptr;
     QQuickItem *holder = nullptr;
     CssRepeater *rep = nullptr;
+    QByteArray rootClass = "list";
 
     explicit VirtualScene(const QString &css)
     {
@@ -4620,7 +4621,7 @@ struct VirtualScene {
             CssRect {
                 id: list
                 objectName: "list"
-                cssClass: ["list"]
+                cssClass: [")" + rootClass + R"("]
                 cssPrimitive: "div"
                 width: 300; height: 400
                 property var rows: []
@@ -4631,6 +4632,7 @@ struct VirtualScene {
                 function truncate(n) { rows = rows.slice(0, n) }
                 function swapRows(a, b) { const r = rows.slice(); const t = r[a]; r[a] = r[b]; r[b] = t; rows = r }
                 function removeRow(i) { const r = rows.slice(); r.splice(i, 1); rows = r }
+                function setLabel(i, t) { const r = rows.slice(); r[i] = { id: r[i].id, label: t }; rows = r }
                 function updateEvery(k) {
                     rows = rows.map((e, i) => i % k ? e : ({ id: e.id, label: e.label + " !" }))
                 }
@@ -4897,7 +4899,8 @@ void QmlCssTests::virtualListKeyedUpdate()
 void QmlCssTests::virtualListFallsBackEager()
 {
     const QString fixed = QString::fromLatin1(kVirtualCss);
-    const QString autoHeight = fixed + QStringLiteral(" .row { height: auto; }");
+    // (Auto height is windowed since 5v-3; a percentage height still depends on the container.)
+    const QString autoHeight = fixed + QStringLiteral(" .row { height: 5%; }");
     const QString wrapped = fixed + QStringLiteral(" .list { flex-wrap: wrap; }");
     const QVariantList model = makeVirtualRows(300);
 
@@ -5514,11 +5517,12 @@ void QmlCssTests::virtualPoolDrains()
     QVERIFY(allDead(parked));
     QVERIFY(noDetached());
 
-    // eligibility flips to eager (auto-height rows): the pool drains, every row is in the holder
+    // eligibility flips to eager (container-relative row heights): the pool drains, every row is in
+    // the holder
     s.setRows(model);
     parked = park();
     QVERIFY(!parked.isEmpty());
-    s.theme.loadFromString(fixed + QStringLiteral(" .row { height: auto; }"));
+    s.theme.loadFromString(fixed + QStringLiteral(" .row { height: 5%; }"));
     QCOMPARE(s.rep->materializedCount(), 1000);
     QCOMPARE(s.rep->pooledCount(), 0);
     flushDeletes();
@@ -5599,4 +5603,329 @@ void QmlCssTests::virtualPoolThemeReload()
     }
     bad = checkPoolColors(s, a, b);
     QVERIFY2(bad.isEmpty(), qPrintable(bad));
+}
+
+// ---- Step 5v-3: auto-height rows — measured/estimated extent, key anchoring ----------------------
+
+namespace {
+
+// The 5v-1 column without a row height: each row is as tall as its label, which wraps in the column
+// width — one line for a short label, two for a long one.
+const char *const kAutoCss = R"(
+    .list { display: flex; flex-direction: column; overflow-y: auto; padding: 8px; gap: 2px; }
+    .row { display: flex; flex-direction: row; gap: 4px; background-color: #dde6f0; }
+    .id { width: 48px; color: #203040; font-size: 12px; }
+    .label { flex: 1; color: #102030; font-size: 12px; }
+)";
+
+QString shortLabel(int i) { return QStringLiteral("row %1").arg(i); }
+QString longLabel(int i) { return QStringLiteral("row %1 has a longer label that wraps to two lines").arg(i); }
+
+template <typename IsLong>
+QVariantList makeAutoRows(int n, IsLong isLong)
+{
+    QVariantList rows;
+    rows.reserve(n);
+    for (int i = 0; i < n; ++i)
+        rows.append(QVariantMap{ { QStringLiteral("id"), i + 1 },
+                                 { QStringLiteral("label"), isLong(i) ? longLabel(i) : shortLabel(i) } });
+    return rows;
+}
+
+qreal screenY(const VirtualScene &s, QQuickItem *row) { return row->mapToItem(s.list, QPointF(0, 0)).y(); }
+qreal contentYOf(const VirtualScene &s) { return s.flick->property("contentY").toReal(); }
+
+// The row at the viewport top: the first materialized row whose bottom is below it.
+QQuickItem *topRow(const VirtualScene &s)
+{
+    for (QQuickItem *row : s.rows())
+        if (screenY(s, row) + row->height() > 0)
+            return row;
+    return nullptr;
+}
+
+QQuickItem *rowLabelled(const VirtualScene &s, const QString &label)
+{
+    for (QQuickItem *row : s.rows())
+        if (VirtualScene::labelOf(row) == label)
+            return row;
+    return nullptr;
+}
+
+// Every materialized row shows its model entry, in index order, stacked without overlap.
+QString checkAutoRows(const VirtualScene &s, const QVariantList &model)
+{
+    qreal prevBottom = -1e9;
+    for (QQuickItem *row : s.rows()) {
+        const int i = VirtualScene::indexOf(row);
+        if (i < 0 || i >= model.size())
+            return QStringLiteral("row with index %1 of %2").arg(i).arg(model.size());
+        const QString want = model.at(i).toMap().value(QStringLiteral("label")).toString();
+        if (VirtualScene::labelOf(row) != want)
+            return QStringLiteral("row %1 shows '%2', model says '%3'").arg(i).arg(VirtualScene::labelOf(row), want);
+        if (row->y() < prevBottom + kGap - 0.5)
+            return QStringLiteral("row %1 at y %2 overlaps the previous row (bottom %3)").arg(i).arg(row->y()).arg(prevBottom);
+        prevBottom = row->y() + row->height();
+    }
+    return QString();
+}
+
+// Top to bottom in viewport steps (the window keeps one viewport on each side: every row is seen).
+// Returns the number of steps, or -1 when it did not reach the end.
+int traverse(VirtualScene &s, int maxAlive = 0)
+{
+    qreal cy = 0;
+    for (int steps = 1; steps < 100000; ++steps) {
+        s.setContentY(cy);
+        if (maxAlive && s.rows().size() > maxAlive)
+            return -1;
+        const qreal at = contentYOf(s);
+        if (at >= s.maxContentY() - 0.5)
+            return steps;
+        cy = std::min(at + kViewH, s.maxContentY());
+    }
+    return -1;
+}
+
+const char *const kAutoTallDelegate = R"(
+                        CssRect { cssClass: modelData.id % 10 == 0 ? ["row", "tall"] : ["row"]; cssPrimitive: "div"
+                            CssText { cssClass: ["id"]; text: "" + modelData.id }
+                            CssText { objectName: "label"; cssClass: ["label"]; text: "" + modelData.label }
+                        })";
+
+} // namespace
+
+void QmlCssTests::virtualAutoHeightWindows()
+{
+    const int n = 5000;
+    const QVariantList model = makeAutoRows(n, [](int i) { return i % 2 == 1; });
+    VirtualScene eager(QString::fromLatin1(kAutoCss));
+    QVERIFY2(eager.mount(false, model).isEmpty(), "eager mount");
+    const qreal shortH = eager.rows().at(0)->height(), longH = eager.rows().at(1)->height();
+    QVERIFY2(longH > shortH + 4, qPrintable(QStringLiteral("short %1 long %2").arg(shortH).arg(longH)));
+
+    VirtualScene s(QString::fromLatin1(kAutoCss));
+    QVERIFY2(s.mount(true, model).isEmpty(), "virtual mount");
+    const int bound = int(3 * kViewH / (shortH + kGap)) + 4;
+    const int alive = s.rows().size();
+    QVERIFY2(alive > 0 && alive <= bound, qPrintable(QStringLiteral("%1 rows alive (bound %2)").arg(alive).arg(bound)));
+    QCOMPARE(s.rep->materializedCount(), alive);
+    // Before every row was seen the extent is an estimate between all-short and all-long.
+    const qreal lo = 2 * kPad + n * shortH + (n - 1) * kGap, hi = 2 * kPad + n * longH + (n - 1) * kGap;
+    QVERIFY2(s.contentHeight() >= lo && s.contentHeight() <= hi,
+             qPrintable(QStringLiteral("extent %1 outside [%2, %3]").arg(s.contentHeight()).arg(lo).arg(hi)));
+    // Seen once, every row is measured: the extent is exactly the eager one.
+    QVERIFY2(traverse(s, bound) > 0, "traversal did not reach the end, or the window grew past its bound");
+    QVERIFY2(qAbs(s.contentHeight() - eager.contentHeight()) < 0.01,
+             qPrintable(QStringLiteral("extent %1, eager %2").arg(s.contentHeight()).arg(eager.contentHeight())));
+    const QString bad = checkAutoRows(s, model);
+    QVERIFY2(bad.isEmpty(), qPrintable(bad));
+
+    // The ORIGINAL rows bench (examples/bench-rows.css: auto-height rows) is eligible now.
+    VirtualScene bench(QStringLiteral(R"(
+        .bench { display: flex; flex-direction: column; overflow-y: auto; height: 100vh; }
+        .bench-row { display: flex; flex-direction: row; gap: 8px; padding: 2px 8px; }
+        .bench-id { width: 60px; }
+        .bench-label { flex-grow: 1; }
+    )"));
+    bench.rootClass = "bench";
+    QVERIFY2(bench.mount(true, makeVirtualRows(10000), R"(
+                        CssRect { cssClass: ["bench-row"]; cssPrimitive: "div"
+                            CssText { cssClass: ["bench-id"]; text: "" + modelData.id }
+                            CssText { objectName: "label"; cssClass: ["bench-label"]; text: "" + modelData.label }
+                        })").isEmpty(), "bench mount");
+    QVERIFY2(bench.rep->materializedCount() > 0 && bench.rep->materializedCount() < 200,
+             qPrintable(QString::number(bench.rep->materializedCount())));
+}
+
+void QmlCssTests::virtualAnchorNoJump()
+{
+    const int n = 5000;
+    // Short rows up to 2000, long after: the rows measured at the top and in the middle disagree, so
+    // every newly measured row moves the estimate — and every estimated row above the viewport.
+    const QVariantList model = makeAutoRows(n, [](int i) { return i >= 2000; });
+    VirtualScene s(QString::fromLatin1(kAutoCss));
+    QVERIFY2(s.mount(true, model).isEmpty(), "mount");
+    s.setContentY(s.contentHeight() / 2);
+    QVERIFY(s.rows().size() < 200);
+    const qreal cy = contentYOf(s);
+    QVERIFY(cy > 10 * kViewH);
+    // R: the row that will be at the viewport top one viewport up (already in the window, measured).
+    QQuickItem *r = nullptr;
+    for (QQuickItem *row : s.rows()) {
+        if (screenY(s, row) + row->height() > -kViewH) {
+            r = row;
+            break;
+        }
+    }
+    QVERIFY(r);
+    const QString label = VirtualScene::labelOf(r);
+    const qreal expected = screenY(s, r) + kViewH;
+    const qreal extentBefore = s.contentHeight();
+    s.setContentY(cy - kViewH);
+    // Rows entered the window and were measured: the estimate (and the extent) changed.
+    QVERIFY2(qAbs(s.contentHeight() - extentBefore) > 1, qPrintable(QString::number(s.contentHeight() - extentBefore)));
+    QQuickItem *r2 = rowLabelled(s, label);
+    QVERIFY(r2);
+    const qreal jump = screenY(s, r2) - expected;
+    fprintf(stderr, "[5v-3] estimate correction: extent %+.1f px, row at the viewport top moved %+.4f px\n",
+            s.contentHeight() - extentBefore, jump);
+    QVERIFY2(qAbs(jump) <= 0.5, qPrintable(QStringLiteral("the top row jumped %1 px").arg(jump)));
+    const QString bad = checkAutoRows(s, model);
+    QVERIFY2(bad.isEmpty(), qPrintable(bad));
+}
+
+void QmlCssTests::virtualAutoHeightPixelParity()
+{
+    const QVariantList model = makeAutoRows(1000, [](int i) { return i % 3 == 0; });
+    VirtualScene eager(QString::fromLatin1(kAutoCss));
+    VirtualScene virt(QString::fromLatin1(kAutoCss));
+    QVERIFY2(eager.mount(false, model).isEmpty(), "eager mount");
+    QVERIFY2(virt.mount(true, model).isEmpty(), "virtual mount");
+    QVERIFY(virt.rows().size() < 200);
+    QVERIFY(traverse(virt) > 0);
+    QVERIFY2(qAbs(virt.contentHeight() - eager.contentHeight()) < 0.01,
+             qPrintable(QStringLiteral("%1 vs %2").arg(virt.contentHeight()).arg(eager.contentHeight())));
+    eager.window.show();
+    virt.window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&eager.window));
+    QVERIFY(QTest::qWaitForWindowExposed(&virt.window));
+    for (const qreal cy : { 0.0, 1234.0, eager.maxContentY() }) {
+        eager.setContentY(cy);
+        virt.setContentY(cy);
+        QCOMPARE(contentYOf(virt), contentYOf(eager));
+        const QImage a = eager.grab();
+        const QImage b = virt.grab();
+        QCOMPARE(a.size(), b.size());
+        int diff = 0, painted = 0;
+        for (int y = 0; y < a.height(); ++y) {
+            for (int x = 0; x < a.width(); ++x) {
+                diff += a.pixel(x, y) != b.pixel(x, y);
+                painted += a.pixel(x, y) != QColor(Qt::white).rgba();
+            }
+        }
+        QVERIFY2(diff == 0, qPrintable(QStringLiteral("contentY %1: %2 pixels differ").arg(cy).arg(diff)));
+        QVERIFY2(painted > a.width() * a.height() / 2, qPrintable(QString::number(painted)));
+    }
+}
+
+void QmlCssTests::virtualMeasurementInvalidation()
+{
+    const PhaseStatsOn stats;
+    const int n = 600;
+    VirtualScene s(QString::fromLatin1(kAutoCss));
+    QVERIFY2(s.mount(true, makeAutoRows(n, [](int) { return false; })).isEmpty(), "mount");
+    QVERIFY(traverse(s) > 0);
+    s.setContentY(s.contentHeight() / 2);
+    QQuickItem *top = topRow(s);
+    QVERIFY(top);
+    const QString topLabel = VirtualScene::labelOf(top);
+    const qreal topY = screenY(s, top);
+    const qreal shortH = top->height();
+    // A row above the viewport top, inside the window: it grows from one line to two.
+    const int u = VirtualScene::indexOf(top) - 3;
+    QVERIFY(rowLabelled(s, shortLabel(u)));
+    const qreal extentBefore = s.contentHeight();
+    Detail::g_phaseStats.buckets.clear();
+    QVERIFY(s.call("setLabel", u, longLabel(u)));
+    QQuickItem *grown = rowLabelled(s, longLabel(u));
+    QVERIFY(grown);
+    const qreal delta = grown->height() - shortH;
+    QVERIFY2(delta > 4, qPrintable(QString::number(delta)));
+    QCOMPARE(bucketCount("repeater.measure"), qint64(1)); // only that row re-measured
+    QVERIFY2(qAbs(s.contentHeight() - (extentBefore + delta)) < 0.01,
+             qPrintable(QStringLiteral("extent %1, want %2").arg(s.contentHeight()).arg(extentBefore + delta)));
+    QVERIFY(rowLabelled(s, topLabel));
+    QVERIFY2(qAbs(screenY(s, rowLabelled(s, topLabel)) - topY) <= 0.5,
+             qPrintable(QStringLiteral("top row moved %1 px").arg(screenY(s, rowLabelled(s, topLabel)) - topY)));
+
+    // The container width changes: every measurement is invalid, re-measured as rows are seen.
+    const QVariantList model = s.currentRows();
+    Detail::g_phaseStats.buckets.clear();
+    s.list->setWidth(220);
+    QVERIFY2(bucketCount("repeater.measure") >= s.rows().size(),
+             qPrintable(QStringLiteral("%1 measured, %2 rows").arg(bucketCount("repeater.measure")).arg(s.rows().size())));
+    QVERIFY(traverse(s) > 0);
+    {
+        VirtualScene eager(QString::fromLatin1(kAutoCss));
+        QVERIFY2(eager.mount(false, model).isEmpty(), "eager mount");
+        eager.list->setWidth(220);
+        QVERIFY2(qAbs(s.contentHeight() - eager.contentHeight()) < 0.01,
+                 qPrintable(QStringLiteral("width: %1 vs eager %2").arg(s.contentHeight()).arg(eager.contentHeight())));
+    }
+    // A theme reload (a new font size): likewise.
+    const QString bigger = QString::fromLatin1(kAutoCss) + QStringLiteral(" .label { font-size: 16px; }");
+    Detail::g_phaseStats.buckets.clear();
+    s.theme.loadFromString(bigger);
+    QVERIFY(bucketCount("repeater.measure") >= s.rows().size());
+    QVERIFY(traverse(s) > 0);
+    {
+        VirtualScene eager(bigger);
+        QVERIFY2(eager.mount(false, model).isEmpty(), "eager mount");
+        eager.list->setWidth(220);
+        QVERIFY2(qAbs(s.contentHeight() - eager.contentHeight()) < 0.01,
+                 qPrintable(QStringLiteral("theme: %1 vs eager %2").arg(s.contentHeight()).arg(eager.contentHeight())));
+    }
+    const QString bad = checkAutoRows(s, model);
+    QVERIFY2(bad.isEmpty(), qPrintable(bad));
+}
+
+void QmlCssTests::virtualAnchorRemoved()
+{
+    const int n = 2000;
+    VirtualScene s(QString::fromLatin1(kAutoCss));
+    QVERIFY2(s.mount(true, makeAutoRows(n, [](int i) { return i % 3 == 0; })).isEmpty(), "mount");
+    s.setContentY(s.contentHeight() / 2);
+    QQuickItem *top = topRow(s);
+    QVERIFY(top);
+    const int idx = VirtualScene::indexOf(top);
+    const QString succLabel = VirtualScene::labelOf(s.rows().at(s.rows().indexOf(top) + 1));
+    const qreal succY = screenY(s, rowLabelled(s, succLabel));
+    QVERIFY(s.call("removeRow", idx));
+    QQuickItem *succ = rowLabelled(s, succLabel);
+    QVERIFY(succ);
+    QCOMPARE(VirtualScene::indexOf(succ), idx);
+    QVERIFY2(qAbs(screenY(s, succ) - succY) <= 0.5,
+             qPrintable(QStringLiteral("successor moved %1 px").arg(screenY(s, succ) - succY)));
+    QString bad = checkAutoRows(s, s.currentRows());
+    QVERIFY2(bad.isEmpty(), qPrintable(bad));
+
+    // At the end, the viewport stays at the end (bottom-stick) when a visible row goes.
+    s.setContentY(s.maxContentY());
+    QVERIFY(s.call("removeRow", VirtualScene::indexOf(topRow(s))));
+    QVERIFY2(qAbs(contentYOf(s) - s.maxContentY()) <= 0.5,
+             qPrintable(QStringLiteral("contentY %1, end %2").arg(contentYOf(s)).arg(s.maxContentY())));
+    bad = checkAutoRows(s, s.currentRows());
+    QVERIFY2(bad.isEmpty(), qPrintable(bad));
+}
+
+void QmlCssTests::virtualFixedPitchStaysExact()
+{
+    const PhaseStatsOn stats;
+    {
+        // Equal fixed-height rows: the exact 5v-1 path, no measurement and no prefix sums at all.
+        VirtualScene s(QString::fromLatin1(kVirtualCss));
+        const QVariantList model = makeVirtualRows(2000);
+        QVERIFY2(s.mount(true, model).isEmpty(), "mount");
+        for (const qreal cy : { 0.0, 20000.0, s.maxContentY(), 777.0 }) {
+            s.setContentY(cy);
+            QCOMPARE(contentYOf(s), cy);
+            const QString bad = checkVirtualRows(s, model);
+            QVERIFY2(bad.isEmpty(), qPrintable(bad));
+        }
+        QCOMPARE(bucketCount("repeater.measure"), qint64(0));
+        QCOMPARE(bucketCount("repeater.extentRebuild"), qint64(0));
+    }
+    // Fixed heights that DISAGREE (every 10th row is taller) are no longer an eager fallback: windowed
+    // over measured extents, exact once seen.
+    const QString css = QString::fromLatin1(kVirtualCss) + QStringLiteral(" .row.tall { height: 40px; }");
+    const QVariantList model = makeVirtualRows(2000);
+    VirtualScene eager(css);
+    QVERIFY2(eager.mount(false, model, kAutoTallDelegate).isEmpty(), "eager mount");
+    VirtualScene s(css);
+    QVERIFY2(s.mount(true, model, kAutoTallDelegate).isEmpty(), "mount");
+    QVERIFY2(s.rows().size() < 200, qPrintable(QString::number(s.rows().size())));
+    QVERIFY(traverse(s) > 0);
+    QVERIFY2(qAbs(s.contentHeight() - eager.contentHeight()) < 0.01,
+             qPrintable(QStringLiteral("%1 vs %2").arg(s.contentHeight()).arg(eager.contentHeight())));
 }

@@ -33,6 +33,13 @@ class CssTheme;
 // and REBINDS it — re-parented into the holder first (CSS resolves under its real ancestors), then
 // modelData/index, then its transient state reset (hover, transitions) — instead of creating a new
 // delegate. The pool drains on clear, on leaving windowed mode, on a delegate change and with us.
+// VARIABLE EXTENTS (5v-3): rows whose main size comes from their own content (auto height, wrapping
+// text, or fixed heights that disagree) are windowed too. Each logical row (its m_pool slot) keeps its
+// last MEASURED slot size, valid for its data and for the container width / font / theme revision it
+// was measured under; unseen rows count as the mean of the valid measurements. Fenwick trees over the
+// measured sizes give y(i), the total and index-at-offset in O(log N). The viewport is ANCHORED to a row
+// (slot) and an offset into it: every pass that moves rows (measurements, estimate, model, width) puts
+// contentY back on the anchor in the same layout pass — no frame shows the jump.
 class CssRepeater : public QQuickItem {
     Q_OBJECT
     Q_PROPERTY(QVariant model READ model WRITE setModel NOTIFY modelChanged)
@@ -65,10 +72,15 @@ public:
     // What the container's own style allows: a vertical scroll box laying its holder out as ONE
     // non-wrapping column with justify-content start. `gap` is the evaluated main-axis gap, `originY`
     // the holder's content origin (padding-top), `flick` the box's scroll Flickable.
+    // `variable` (5v-3): rows are not of one pitch — the window's first slot starts at originY + firstTop,
+    // the engine lays the window out as the eager column would, hands its computed main sizes to
+    // measureWindow() and publishes [extentTop, extentBottom]; `content` is the logical main content size.
     struct VirtualContainer {
         bool eligible = false;
         double gap = 0;
         double originY = 0;
+        double width = 0;     // the holder's content width (measurements are valid for one width)
+        double padBottom = 0; // the box's padding-bottom (the scroll extent's breathing room)
         QQuickItem *flick = nullptr;
     };
     // The materialized window, as the engine lays it out: rows [first, first + count) are the flow
@@ -81,12 +93,29 @@ public:
         double pitch = 0;
         double marginTop = 0;
         double rowH = 0;
+        bool variable = false;
+        double firstTop = 0;
+        double marginBottom = 0;
+        double content = 0;
+        double extentTop = 0;
+        double extentBottom = 0;
     };
     // Called by CssLayoutEngine::layout() for this repeater's holder BEFORE it collects children:
     // re-validates runtime eligibility (container, rows, accessibility) and the window, materializing
     // or destroying rows as needed. True = windowed: the holder's flow is exactly our window.
     bool syncVirtual(const VirtualContainer &container);
     const VirtualFlow &virtualFlow() const { return m_flow; }
+    // Variable flow (5v-3), called by the engine right after it laid the window out: `mains[k]` is
+    // window row k's margin-box main size as computed by the layout. Records the settled rows'
+    // measurements, refreshes the estimate and the logical extent (virtualFlow()), and returns how far
+    // the window's first slot moved (estimates above it changed): the engine shifts the window by it.
+    double measureWindow(const double *mains, int count);
+    // ...and once the extent is published: the anchor correction (same pass), then a re-window request
+    // if the viewport is not covered.
+    void commitAnchor();
+    // ...and when the engine's flush has finished (the next frame shows its result): re-base the anchor
+    // on the displayed position.
+    void layoutSettled();
 
 signals:
     void modelChanged();
@@ -108,6 +137,8 @@ private:
         int pos = -1;                   // logical index after the last reconciliation (-1: new row)
         quint32 gen = 0;                // reconciliation that claimed it (m_gen)
         quint32 itemGen = 0;            // m_delegateGen of the delegate that built `item`
+        double measured = -1;           // slot size (margin box + gap) when measured (5v-3)
+        quint32 measuredEpoch = 0;      // valid iff == m_measureEpoch (width/font/theme/delegate)
         bool hasIncoming = false;
     };
     // A row item parked in the recycling pool (5v-2): detached, not materialized, reusable.
@@ -148,9 +179,25 @@ private:
     // Make exactly [a, b] materialized (b < a: none). `sweepAll` scans every logical row for items
     // outside the range (after a reconciliation); otherwise only the previously materialized range.
     bool materialize(int a, int b, bool sweepAll);
-    void targetRange(int *a, int *b) const;
-    void windowRange(int *a, int *b) const;
+    void targetRange(int *a, int *b);
+    void windowRange(int *a, int *b);
     bool measureRows(VirtualFlow *flow) const;
+    // Variable extents (5v-3).
+    bool autoRowsEligible(VirtualFlow *flow) const;
+    bool measuredValid(const Row &r) const { return r.measured >= 0 && r.measuredEpoch == m_measureEpoch; }
+    void setMeasured(int i, Row &r, double v);
+    void dropMeasurement(int treeIndex, Row &r);
+    void invalidateAllMeasurements();
+    void checkMeasureKey(double width);
+    void ensureTree();
+    void fenwickAdd(int i, double ds, int dc);
+    double prefix(int k) const;      // logical slot sizes of rows [0, k), estimates included
+    int indexAt(double off) const;   // the row whose slot contains `off` (from the first slot), clamped
+    double slotTop(int i) const;     // row i's slot top from the first slot: as laid out, else the tree
+    double viewportTop(double *vh) const; // contentY in holder coordinates (and the viewport height)
+    bool userMoving() const;
+    void captureAnchor();
+    void anchorAfterReorder(const int *oldOrder, int oldN);
     bool holderHoldsOnlyOurRows() const;
     void registerWithEngine();
     void watchFlickable(QQuickItem *flick);
@@ -189,6 +236,41 @@ private:
     VirtualFlow m_flow;
     QPointer<QQuickItem> m_registeredHolder;
     QPointer<QQuickItem> m_flick;
+
+    // variable extents (5v-3). Fenwick trees (1-based, m_fwN rows in m_order's order) over the VALID
+    // measurements: their sizes and their count; an unmeasured row counts m_estimate. Rebuilt O(N) only
+    // when the order changed (insert/remove/move — counted as repeater.extentRebuild) or every
+    // measurement was invalidated; a single measurement or data change is a point update.
+    bool m_variable = false;
+    quint32 m_measureEpoch = 1;
+    bool m_measureKeyValid = false;
+    double m_measureWidth = 0;
+    int m_measureFont = 0;
+    quint64 m_measureRules = 0;
+    double m_measSum = 0;     // sum / count of the valid measurements of rows in m_order
+    int m_measCount = 0;
+    double m_estimate = -1;   // their mean (kept across invalidations as a placeholder); <= 0: unknown
+    QVector<double> m_fwSum;
+    QVector<int> m_fwCnt;
+    int m_fwN = -1;
+    int m_fwTop = 0;          // highest power of two <= m_fwN (binary descent)
+    bool m_treeDirty = true;
+    // the window as last laid out: its first row, the first slot's top and each row's slot size
+    bool m_winValid = false;
+    int m_winFirst = 0;
+    double m_winTop = 0;
+    QVector<double> m_winSize;
+    // the anchor: a row (its slot — identity across reconciliations) and the viewport top's offset from
+    // that row's slot top; its index and neighbours when captured tell a shift from a reorder.
+    int m_anchorSlot = -1;
+    int m_anchorIndex = -1;
+    int m_anchorPrev = -1;
+    int m_anchorNext = -1;
+    double m_anchorOffset = 0;
+    bool m_correcting = false; // contentY written by commitAnchor: not a user scroll
+    bool m_wasAtEnd = false;   // the viewport was at the end before this pass (bottom-stick)
+    bool m_rewindow = false;   // the window must be recomputed after this pass
+    bool m_anchorSettle = false; // a pass committed the anchor: re-base it when the flush ends
 
     // recycling pool (5v-2): parked items, LIFO; capacity = the window's row count while windowed, 0
     // otherwise. Its storage keeps its capacity: no allocation per scroll in the steady state.

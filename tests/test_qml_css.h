@@ -271,4 +271,15 @@ private slots:
     void virtualPoolResetsState();
     void virtualPoolDrains();
     void virtualPoolThemeReload();
+
+    // Step 5v-3: rows whose height comes from their own content (auto height, wrapping labels) are
+    // windowed too, over a measured/estimated logical extent (Fenwick prefix sums), and the viewport is
+    // anchored to a row key so estimate corrections, invalidations and removals never move what is on
+    // screen. Fixed-height lists keep the exact 5v-1 path without any estimation.
+    void virtualAutoHeightWindows();
+    void virtualAnchorNoJump();
+    void virtualAutoHeightPixelParity();
+    void virtualMeasurementInvalidation();
+    void virtualAnchorRemoved();
+    void virtualFixedPitchStaysExact();
 };

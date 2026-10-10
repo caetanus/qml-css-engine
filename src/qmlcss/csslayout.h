@@ -71,6 +71,9 @@ public:
     // registration fails (false) while another live one holds it.
     bool registerVirtualRepeater(QQuickItem *holder, CssRepeater *rep);
     void unregisterVirtualRepeater(QQuickItem *holder, CssRepeater *rep);
+    // 5v-3: true while `root` or any item below it still has a layout queued (pending, or in the drain
+    // pass running now and not reached yet) — its size is not final, so it is not measured yet.
+    bool subtreeQueued(const QQuickItem *root) const;
 
     // Transform-keyframe animation. buildAnimStops normalizes `@keyframes` frames into
     // [{offset, rotate, scale, tx, ty}] (identity-filled, 0%/100% synthesised); applyAnim
@@ -127,8 +130,10 @@ private:
     void placeAbsolute(QQuickItem *k, const CssLayoutStyle &ks, double ox, double oy, double cw, double ch) const;
 
     // flex + grid; return the content [width, height] occupied
+    // `mainOut` (optional, one entry per flow item): each item's margin-box main size as placed.
     QPair<double, double> layoutFlex(const QList<QQuickItem *> &flow, const CssLayoutStyle &rootStyle,
-                                     double cw, double ch, double ox, double oy, bool isFlex) const;
+                                     double cw, double ch, double ox, double oy, bool isFlex,
+                                     double *mainOut = nullptr) const;
     QPair<double, double> layoutGrid(const QList<QQuickItem *> &flow, const QVariantMap &rootStyle,
                                      double cw, double ch, double ox, double oy) const;
 
@@ -142,6 +147,7 @@ private:
 
     CssTheme *m_theme;
     QHash<QQuickItem *, QPointer<QQuickItem>> m_pending; // root -> content
+    QHash<QQuickItem *, QPointer<QQuickItem>> *m_inFlight = nullptr; // the drain pass running: not reached yet
     QHash<QQuickItem *, QPointer<QQuickItem>> m_known;   // every root ever laid out (viewport relayout)
     QHash<QQuickItem *, QPointer<CssRepeater>> m_virtualRepeaters; // holder -> its virtual repeater
     QTimer *m_flushTimer;

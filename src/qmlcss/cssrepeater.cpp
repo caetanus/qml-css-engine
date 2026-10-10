@@ -97,6 +97,7 @@ void CssRepeater::setDelegate(QQmlComponent *c)
     // keep living as before, but are destroyed (not parked) when they leave.
     ++m_delegateGen;
     trimRecycle(0);
+    invalidateAllMeasurements(); // its rows may be of any size
     emit delegateChanged();
     if (isComponentComplete())
         rebuild();
@@ -115,6 +116,8 @@ void CssRepeater::setVirtualize(bool v)
         // Back to plain eager: every logical row gets its item.
         watchFlickable(nullptr);
         m_mode = Mode::Eager;
+        m_variable = false;
+        m_anchorSlot = -1;
         const Detail::LayoutBatchGuard batch(m_layout);
         if (materialize(0, int(m_order.size()) - 1, false)) {
             restack();
@@ -152,6 +155,8 @@ void CssRepeater::itemChange(ItemChange change, const ItemChangeData &data)
         // No layout will window us any more (detached, or a holder already taken): eager.
         watchFlickable(nullptr);
         m_mode = Mode::Eager;
+        m_variable = false;
+        m_anchorSlot = -1;
         trimRecycle(0);
     }
 }
@@ -447,12 +452,16 @@ void CssRepeater::finishOrder(bool *changed)
     Row *const pool = m_pool.data();
     const int *const order = m_order.constData();
     const int oldN = int(m_order.size());
+    // Before any row leaves: an anchor row that is leaving hands the anchor to a survivor (5v-3).
+    anchorAfterReorder(order, oldN);
     for (int i = 0; i < oldN; ++i) {
         const int s = order[i];
         Row &r = pool[s];
         if (r.gen == m_gen)
             continue;
         retireRow(r); // parked while windowed and the pool has room (5v-2)
+        dropMeasurement(-1, r);
+        m_treeDirty = true;
         if (m_keyIndexValid && !r.key.isEmpty()) {
             const auto it = m_byKey.constFind(r.key);
             if (it != m_byKey.cend() && *it == s)
@@ -470,7 +479,64 @@ void CssRepeater::finishOrder(bool *changed)
         m_next = QVector<int>();
         m_byKey.clear();
         trimRecycle(0);
+        m_anchorSlot = -1;
+        m_treeDirty = true;
+    } else if (m_anchorSlot >= 0) {
+        // The anchor row survived. Rows inserted/removed around it SHIFT it (a neighbour is still its
+        // neighbour): the viewport follows it. A row MOVED away from both neighbours (a swap, a sort)
+        // would drag the viewport wherever it went: anchor the row now at its old index instead.
+        const int n = int(m_order.size());
+        int ni = m_pool[m_anchorSlot].pos;
+        if (m_anchorPrev != -2 && ni != m_anchorIndex && ni >= 0 && ni < n) {
+            const int np = ni > 0 ? m_order[ni - 1] : -1;
+            const int nn = ni + 1 < n ? m_order[ni + 1] : -1;
+            if (np != m_anchorPrev && nn != m_anchorNext) {
+                ni = std::clamp(m_anchorIndex, 0, n - 1);
+                m_anchorSlot = m_order[ni];
+            }
+        }
+        if (ni >= 0 && ni < n && m_order[ni] == m_anchorSlot) {
+            m_anchorIndex = ni;
+            m_anchorPrev = ni > 0 ? m_order[ni - 1] : -1;
+            m_anchorNext = ni + 1 < n ? m_order[ni + 1] : -1;
+        } else {
+            m_anchorSlot = -1;
+        }
     }
+    m_winValid = false; // the laid-out window describes the old order
+}
+
+void CssRepeater::anchorAfterReorder(const int *oldOrder, int oldN)
+{
+    if (!m_variable || m_anchorSlot < 0 || m_anchorSlot >= m_pool.size()) {
+        m_anchorSlot = -1;
+        return;
+    }
+    const Row *pool = m_pool.constData();
+    const Row &a = pool[m_anchorSlot];
+    if (a.gen == m_gen)
+        return; // it stays: finishOrder checks it after the swap
+    const int ai = a.pos; // an unclaimed row keeps its old index
+    if (ai < 0 || ai >= oldN || oldOrder[ai] != m_anchorSlot) {
+        m_anchorSlot = -1;
+        return;
+    }
+    // Its successor (its predecessor at the end) takes the anchor and keeps ITS place on screen: the
+    // offset becomes relative to that row's slot top, both read from the old layout.
+    int pick = -1;
+    for (int j = ai + 1; j < oldN && pick < 0; ++j)
+        if (pool[oldOrder[j]].gen == m_gen)
+            pick = j;
+    for (int j = ai - 1; j >= 0 && pick < 0; --j)
+        if (pool[oldOrder[j]].gen == m_gen)
+            pick = j;
+    if (pick < 0) {
+        m_anchorSlot = -1;
+        return;
+    }
+    m_anchorOffset -= slotTop(pick) - slotTop(ai);
+    m_anchorSlot = oldOrder[pick];
+    m_anchorPrev = m_anchorNext = -2; // replaced, not moved: no reorder test after the swap
 }
 
 bool CssRepeater::rebuildKeyedJs(const QJSValue &array, bool *changed)
@@ -627,6 +693,7 @@ bool CssRepeater::rebuildKeyedJs(const QJSValue &array, bool *changed)
             r.hasIncoming = false;
             if (r.data != r.incoming) {
                 r.data = std::move(r.incoming);
+                dropMeasurement(r.pos, r); // its size was measured for the previous record (5v-3)
                 if (r.context)
                     r.context->setContextProperty(QStringLiteral("modelData"), r.data);
             }
@@ -641,6 +708,7 @@ bool CssRepeater::rebuildKeyedJs(const QJSValue &array, bool *changed)
                     indexNs += ct.nsecsElapsed();
             }
             r.pos = i;
+            m_treeDirty = true; // the logical order changed: the prefix sums are rebuilt (5v-3)
             *changed = true;
         }
     }
@@ -727,6 +795,7 @@ void CssRepeater::rebuildFromList(const QVariantList &data, bool *changed)
             row.key.clear();
             if (keyed && row.data != data.at(i)) {
                 row.data = data.at(i);
+                dropMeasurement(row.pos, row);
                 if (row.context)
                     row.context->setContextProperty(QStringLiteral("modelData"), row.data);
             }
@@ -741,6 +810,7 @@ void CssRepeater::rebuildFromList(const QVariantList &data, bool *changed)
                         Detail::g_phaseStats.time("repeater.index", t.nsecsElapsed());
                 }
                 row.pos = i;
+                m_treeDirty = true;
                 *changed = true;
             }
             m_next.append(found);
@@ -751,6 +821,7 @@ void CssRepeater::rebuildFromList(const QVariantList &data, bool *changed)
             row.pos = i;
             row.gen = gen;
             m_next.append(s);
+            m_treeDirty = true;
             *changed = true;
         }
     }
@@ -816,7 +887,7 @@ bool CssRepeater::materialize(int a, int b, bool sweepAll)
     return changed;
 }
 
-void CssRepeater::targetRange(int *a, int *b) const
+void CssRepeater::targetRange(int *a, int *b)
 {
     switch (m_mode) {
     case Mode::Eager:
@@ -833,9 +904,36 @@ void CssRepeater::targetRange(int *a, int *b) const
     }
 }
 
-void CssRepeater::windowRange(int *a, int *b) const
+void CssRepeater::windowRange(int *a, int *b)
 {
     const int n = int(m_order.size());
+    if (m_variable) {
+        if (n == 0) {
+            *a = 0;
+            *b = -1;
+            return;
+        }
+        if (!(m_estimate > 0)) {
+            // Nothing measured yet: keep what exists (at least one probe row) until it is measured.
+            *a = std::clamp(m_matFirst, 0, n - 1);
+            *b = m_matLast >= *a ? std::min(m_matLast, n - 1) : *a;
+            m_rewindow = true;
+            return;
+        }
+        ensureTree();
+        double vh = 0;
+        double off = viewportTop(&vh) - m_container.originY;
+        // Where commitAnchor will put the viewport: build the window around it.
+        if (m_anchorSlot >= 0 && !userMoving()) {
+            const int ai = m_pool[m_anchorSlot].pos;
+            if (ai >= 0 && ai < n && m_order[ai] == m_anchorSlot)
+                off = prefix(ai) + m_anchorOffset;
+        }
+        // Rows intersecting [contentY - viewport, contentY + 2 * viewport].
+        *a = indexAt(off - vh);
+        *b = indexAt(off + 2 * vh);
+        return;
+    }
     if (n == 0 || !(m_flow.pitch > 0)) {
         *a = 0;
         *b = -1;
@@ -951,6 +1049,7 @@ bool CssRepeater::syncVirtual(const VirtualContainer &container)
     const bool a11y = Detail::g_virtualA11yOverride >= 0 ? Detail::g_virtualA11yOverride != 0
                                                          : QAccessible::isActive();
     Mode want = Mode::Eager;
+    bool variable = false;
     VirtualFlow flow;
     if (container.eligible && !a11y && holderHoldsOnlyOurRows()) {
         if (m_matCount == 0) {
@@ -965,24 +1064,67 @@ bool CssRepeater::syncVirtual(const VirtualContainer &container)
             flow.pitch += container.gap;
             flow.total = n;
             want = Mode::Windowed;
+        } else if (autoRowsEligible(&flow)) {
+            // 5v-3: rows sized by their own content (or fixed heights that disagree).
+            want = Mode::Windowed;
+            variable = true;
         }
     }
+    const double oldPitch = m_mode == Mode::Windowed && !m_variable ? m_flow.pitch : 0.0;
     m_mode = want;
-    if (want == Mode::Windowed)
+    if (m_variable && !variable) {
+        m_anchorSlot = -1;
+        m_winValid = false;
+    }
+    m_variable = variable;
+    if (want == Mode::Windowed) {
+        if (variable) {
+            checkMeasureKey(container.width);
+            ensureTree();
+            if (!(m_estimate > 0)) {
+                // A first estimate: the fixed pitch this list had until now, else the rows that exist
+                // and have a size (a list turning windowed from eager); none (a fresh probe row): the
+                // window waits for its first measurement.
+                if (oldPitch > 0) {
+                    m_estimate = oldPitch;
+                } else {
+                    double sum = 0;
+                    int cnt = 0;
+                    for (int i = std::max(m_matFirst, 0); i <= m_matLast && i < n; ++i) {
+                        const QQuickItem *item = rowAt(i).item;
+                        if (item && item->height() > 0) {
+                            sum += item->height() + flow.marginTop + flow.marginBottom + container.gap;
+                            ++cnt;
+                        }
+                    }
+                    if (cnt)
+                        m_estimate = sum / cnt;
+                }
+            }
+            flow.variable = true;
+            flow.gap = container.gap;
+            flow.total = n;
+        }
         m_flow = flow;
+    }
     int a, b;
     targetRange(&a, &b);
     changed |= materialize(a, b, false);
     if (changed)
         restack();
     m_flow.first = m_matFirst;
+    if (m_variable)
+        m_flow.firstTop = prefix(m_matFirst);
     return m_mode == Mode::Windowed;
 }
 
 void CssRepeater::viewportMoved()
 {
-    if (m_mode != Mode::Windowed || m_syncing)
+    if (m_mode != Mode::Windowed || m_syncing || m_correcting)
         return;
+    // A user scroll (or a resize) chose a new viewport: anchor it before the window moves (5v-3).
+    if (m_variable)
+        captureAnchor();
     int a, b;
     windowRange(&a, &b);
     if (a == m_matFirst && b == m_matLast)
@@ -992,6 +1134,383 @@ void CssRepeater::viewportMoved()
         restack();
         notifyLayout();
     }
+}
+
+// --- variable extents (5v-3) --------------------------------------------------------------------
+
+bool CssRepeater::autoRowsEligible(VirtualFlow *flow) const
+{
+    if (!m_layout || m_matCount == 0)
+        return false;
+    // A size the row's own content and style decide: auto/px heights and min/max (never % or viewport
+    // units — the container's height), nothing on the main axis from the container (grow/shrink/basis).
+    const auto own = [](const CssLength &l) {
+        return l.kind == CssLength::Absent || l.kind == CssLength::Invalid || l.kind == CssLength::Number;
+    };
+    bool first = true;
+    for (int i = std::max(m_matFirst, 0); i <= m_matLast && i < m_order.size(); ++i) {
+        const QQuickItem *item = rowAt(i).item;
+        const auto *box = qobject_cast<const CssBox *>(item);
+        if (!box || !item->isVisible())
+            return false;
+        const CssLayoutStyle &st = box->layoutStyle();
+        if (st.displayNone || st.positionAbsolute || !own(st.height) || !own(st.minHeight) || !own(st.maxHeight)
+            || st.flexBasis.kind != CssLength::Absent || st.grow != 0 || st.shrink != 0 || st.order != 0)
+            return false;
+        if (first) {
+            // The first and last rows' outer margins bound the extent; unseen rows share this row's.
+            const auto m = m_layout->marginOf(st);
+            flow->marginTop = m[0];
+            flow->marginBottom = m[2];
+            first = false;
+        }
+    }
+    return !first;
+}
+
+void CssRepeater::setMeasured(int i, Row &r, double v)
+{
+    const bool was = measuredValid(r);
+    if (was && r.measured == v)
+        return;
+    if (!m_treeDirty && i < m_fwN)
+        fenwickAdd(i + 1, was ? v - r.measured : v, was ? 0 : 1);
+    if (was) {
+        m_measSum += v - r.measured;
+    } else {
+        m_measSum += v;
+        ++m_measCount;
+    }
+    r.measured = v;
+    r.measuredEpoch = m_measureEpoch;
+    if (Detail::g_phaseStats.enabled)
+        Detail::g_phaseStats.bump("repeater.measure");
+}
+
+void CssRepeater::dropMeasurement(int treeIndex, Row &r)
+{
+    if (measuredValid(r)) {
+        m_measSum -= r.measured;
+        --m_measCount;
+        if (!m_treeDirty && treeIndex >= 0 && treeIndex < m_fwN)
+            fenwickAdd(treeIndex + 1, -r.measured, -1);
+    }
+    r.measured = -1;
+}
+
+void CssRepeater::invalidateAllMeasurements()
+{
+    // O(1): every measurement carries the epoch it was taken under. The estimate stays as a
+    // placeholder until the window is measured again.
+    if (++m_measureEpoch == 0) {
+        for (Row &r : m_pool)
+            r.measured = -1;
+        m_measureEpoch = 1;
+    }
+    m_measSum = 0;
+    m_measCount = 0;
+    m_treeDirty = true;
+}
+
+void CssRepeater::checkMeasureKey(double width)
+{
+    const int font = m_theme ? m_theme->fontRevision() : 0;
+    const quint64 rules = m_theme ? m_theme->ruleGeneration() : 0;
+    if (m_measureKeyValid && width == m_measureWidth && font == m_measureFont && rules == m_measureRules)
+        return;
+    if (m_measureKeyValid)
+        invalidateAllMeasurements(); // another width, font or rule set: every row may wrap differently
+    m_measureKeyValid = true;
+    m_measureWidth = width;
+    m_measureFont = font;
+    m_measureRules = rules;
+}
+
+void CssRepeater::ensureTree()
+{
+    const int n = int(m_order.size());
+    if (!m_treeDirty && m_fwN == n)
+        return;
+    // O(N) (contract 12): a structural change (insert/remove/move) or a bulk invalidation. Linear
+    // Fenwick construction from the per-slot measurements, which survive any reorder.
+    QElapsedTimer t;
+    if (Detail::g_phaseStats.enabled)
+        t.start();
+    m_fwSum.fill(0.0, n + 1);
+    m_fwCnt.fill(0, n + 1);
+    double *const fs = m_fwSum.data();
+    int *const fc = m_fwCnt.data();
+    const Row *const pool = m_pool.constData();
+    const int *const order = m_order.constData();
+    double sum = 0;
+    int cnt = 0;
+    for (int i = 0; i < n; ++i) {
+        const Row &r = pool[order[i]];
+        if (measuredValid(r)) {
+            fs[i + 1] = r.measured;
+            fc[i + 1] = 1;
+            sum += r.measured;
+            ++cnt;
+        }
+    }
+    for (int j = 1; j <= n; ++j) {
+        const int k = j + (j & -j);
+        if (k <= n) {
+            fs[k] += fs[j];
+            fc[k] += fc[j];
+        }
+    }
+    m_measSum = sum; // exact again (point updates accumulate rounding)
+    m_measCount = cnt;
+    if (cnt)
+        m_estimate = sum / cnt;
+    m_fwN = n;
+    m_fwTop = n > 0 ? int(1u << (31 - qCountLeadingZeroBits(quint32(n)))) : 0;
+    m_treeDirty = false;
+    if (Detail::g_phaseStats.enabled)
+        Detail::g_phaseStats.time("repeater.extentRebuild", t.nsecsElapsed());
+}
+
+void CssRepeater::fenwickAdd(int i, double ds, int dc)
+{
+    double *const fs = m_fwSum.data();
+    int *const fc = m_fwCnt.data();
+    for (; i <= m_fwN; i += i & -i) {
+        fs[i] += ds;
+        fc[i] += dc;
+    }
+}
+
+double CssRepeater::prefix(int k) const
+{
+    k = std::clamp(k, 0, std::max(m_fwN, 0));
+    double s = 0;
+    int c = 0;
+    for (int j = k; j > 0; j -= j & -j) {
+        s += m_fwSum[j];
+        c += m_fwCnt[j];
+    }
+    return s + (k - c) * std::max(m_estimate, 0.0);
+}
+
+int CssRepeater::indexAt(double off) const
+{
+    // Binary descent: the largest prefix of rows that ENDS at or before `off` — the next row holds it.
+    const double est = std::max(m_estimate, 0.0);
+    int pos = 0;
+    double acc = 0;
+    for (int step = m_fwTop; step > 0; step >>= 1) {
+        const int nx = pos + step;
+        if (nx > m_fwN)
+            continue;
+        const double v = m_fwSum[nx] + ((nx & -nx) - m_fwCnt[nx]) * est;
+        if (acc + v <= off) {
+            pos = nx;
+            acc += v;
+        }
+    }
+    return std::clamp(pos, 0, std::max(m_fwN - 1, 0));
+}
+
+double CssRepeater::slotTop(int i) const
+{
+    // A row of the window as it was laid out (an unsettled row's real size, not its estimate)...
+    if (m_winValid && i >= m_winFirst && i < m_winFirst + m_winSize.size()) {
+        double t = m_winTop;
+        const double *const sz = m_winSize.constData();
+        for (int k = m_winFirst; k < i; ++k)
+            t += sz[k - m_winFirst];
+        return t;
+    }
+    // ...else the prefix sums.
+    return prefix(i);
+}
+
+double CssRepeater::viewportTop(double *vh) const
+{
+    double cy = 0;
+    *vh = 0;
+    if (m_flick) {
+        cy = m_flick->property("contentY").toReal();
+        *vh = m_flick->height();
+    }
+    if (const QQuickItem *holder = parentItem())
+        cy -= holder->y();
+    return cy;
+}
+
+bool CssRepeater::userMoving() const
+{
+    // A drag or a flick in progress owns contentY: corrections wait (the content may shift under it).
+    // Not `moving` alone: it is also true while the Flickable's own fixup timeline settles a position.
+    return m_flick && (m_flick->property("dragging").toBool() || m_flick->property("flicking").toBool());
+}
+
+void CssRepeater::captureAnchor()
+{
+    const int n = int(m_order.size());
+    if (!m_variable || n == 0 || !m_flick) {
+        m_anchorSlot = -1;
+        return;
+    }
+    double vh = 0;
+    const double off = viewportTop(&vh) - m_container.originY;
+    int idx = -1;
+    double top = 0;
+    if (m_winValid && off >= m_winTop) {
+        // The first laid-out row whose slot ends below the viewport top (O(window)).
+        double t = m_winTop;
+        const int cnt = int(m_winSize.size());
+        for (int k = 0; k < cnt; ++k) {
+            if (off < t + m_winSize[k]) {
+                idx = m_winFirst + k;
+                top = t;
+                break;
+            }
+            t += m_winSize[k];
+        }
+    }
+    double size = 0;
+    if (idx >= 0) {
+        size = m_winSize[idx - m_winFirst];
+    } else {
+        if (!(m_estimate > 0)) {
+            m_anchorSlot = -1;
+            return;
+        }
+        ensureTree();
+        idx = indexAt(off);
+        top = prefix(idx);
+        size = prefix(idx + 1) - top;
+    }
+    // A viewport top in the gap (or bottom margin) after a row anchors on the next row — the first one
+    // actually visible — with a negative offset.
+    if (idx + 1 < n && off >= top + size - m_flow.gap - m_flow.marginBottom) {
+        top += size;
+        ++idx;
+    }
+    m_anchorSlot = m_order[idx];
+    m_anchorIndex = idx;
+    m_anchorOffset = off - top;
+    m_anchorPrev = idx > 0 ? m_order[idx - 1] : -1;
+    m_anchorNext = idx + 1 < n ? m_order[idx + 1] : -1;
+}
+
+double CssRepeater::measureWindow(const double *mains, int count)
+{
+    const int n = int(m_order.size());
+    const int first = m_flow.first;
+    const double gap = m_flow.gap;
+    const double usedTop = m_flow.firstTop;
+    ensureTree();
+    m_winSize.resize(count); // capacity kept: no allocation per pass in the steady state
+    double *const sz = m_winSize.data();
+    for (int k = 0; k < count; ++k)
+        sz[k] = mains[k] + gap;
+    // The flow is exactly the window (syncVirtual made sure), in order. A row whose layout is still
+    // queued has a stale size: it is measured on a later pass, when it settled.
+    const bool aligned = count > 0 && first == m_matFirst && count == m_matLast - m_matFirst + 1;
+    if (aligned) {
+        for (int k = 0; k < count; ++k) {
+            Row &r = rowAt(first + k);
+            if (!r.item || (m_layout && m_layout->subtreeQueued(r.item))) {
+                m_rewindow = true;
+                continue;
+            }
+            setMeasured(first + k, r, sz[k]);
+        }
+        if (m_measCount > 0)
+            m_estimate = m_measSum / m_measCount;
+    }
+    m_winValid = aligned;
+    m_winFirst = first;
+    // The first slot moves when estimates of rows above it changed: the engine shifts the window.
+    const double top = n > 0 ? prefix(first) : 0.0;
+    m_winTop = top;
+    m_flow.firstTop = top;
+    const double total = prefix(n);
+    m_flow.content = n > 0 ? total - gap : 0.0;
+    // The LOGICAL extent, what the eager walk finds: the first row's top, the last row's bottom.
+    m_flow.extentTop = m_container.originY + m_flow.marginTop;
+    m_flow.extentBottom = m_container.originY + total - gap - m_flow.marginBottom;
+    // Bottom-stick: was the viewport at the end before this pass publishes a new extent?
+    m_wasAtEnd = false;
+    if (m_flick) {
+        const double maxY = m_flick->property("contentHeight").toReal() - m_flick->height();
+        m_wasAtEnd = maxY > 0.5 && m_flick->property("contentY").toReal() >= maxY - 0.5;
+    }
+    return top - usedTop;
+}
+
+void CssRepeater::commitAnchor()
+{
+    if (!m_variable || !m_flick)
+        return;
+    const int n = int(m_order.size());
+    // The anchor stays fixed through every pass of the flush (re-taking it from a corrected,
+    // pixel-rounded position would let rounding accumulate pass after pass): each pass rounds once,
+    // relative to the position the flush started from. layoutSettled() re-bases it on what is shown.
+    // Taken afresh here only when there is none, while the user moves, or when the end clamps.
+    bool recapture = m_anchorSlot < 0;
+    // The correction, in the same pass as the geometry and the extent it compensates.
+    if (userMoving()) {
+        recapture = true;
+    } else {
+        const double cy = m_flick->property("contentY").toReal();
+        const double maxY = std::max(0.0, m_flick->property("contentHeight").toReal() - m_flick->height());
+        double want = cy;
+        if (m_wasAtEnd) {
+            want = maxY;
+            recapture = true;
+        } else if (m_anchorSlot >= 0) {
+            const int ai = m_pool[m_anchorSlot].pos;
+            if (ai >= 0 && ai < n && m_order[ai] == m_anchorSlot) {
+                const double holderY = parentItem() ? parentItem()->y() : 0.0;
+                const double at = holderY + m_container.originY + slotTop(ai) + m_anchorOffset;
+                want = std::clamp(at, 0.0, maxY);
+                recapture |= std::abs(want - at) > 0.5;
+            } else {
+                recapture = true;
+            }
+        }
+        // Whole pixels when we move it: the Flickable snaps a fractional position itself, later, through
+        // its fixup timeline (QQuickFlickablePrivate::fixup) — a second, unanchored move. The anchored
+        // row stays within half a pixel.
+        if (std::abs(want - cy) > 1e-6)
+            want = std::round(want);
+        m_anchorSettle = true;
+        if (std::abs(want - cy) > 1e-6) {
+            m_correcting = true;
+            m_flick->setProperty("contentY", want);
+            m_correcting = false;
+            if (Detail::g_phaseStats.enabled)
+                Detail::g_phaseStats.bump("repeater.anchorCorrect");
+        }
+    }
+    m_wasAtEnd = false;
+    if (recapture)
+        captureAnchor();
+    // The viewport must be covered by materialized rows; otherwise (or with rows still unmeasured)
+    // one more pass re-windows — the engine's drain runs it before the frame.
+    bool again = m_rewindow;
+    m_rewindow = false;
+    if (!again && m_estimate > 0 && n > 0) {
+        double vh = 0;
+        const double off = viewportTop(&vh) - m_container.originY;
+        again = indexAt(off) < m_matFirst || indexAt(off + vh) > m_matLast;
+    }
+    if (again)
+        notifyLayout();
+}
+
+void CssRepeater::layoutSettled()
+{
+    // The flush is over and its result is what the next frame shows: anchor exactly that.
+    if (!m_anchorSettle)
+        return;
+    m_anchorSettle = false;
+    if (m_variable && m_mode == Mode::Windowed && !m_correcting)
+        captureAnchor();
 }
 
 void CssRepeater::restack()
