@@ -22,6 +22,10 @@ struct CssContextNode : QSharedData {
     CssAncestorInfo self;
     quint64 generation = 0;
     mutable QHash<QString, QVariantMap> ownResolves;
+    // The custom properties this element passes to its descendants (CssVar): the parent's map overlaid with
+    // what the element declares as an ancestor. Computed on first use; per generation, like the node.
+    mutable QVariantMap vars;
+    mutable bool varsReady = false;
     // A QPointer: a node may outlive its theme (a box destroyed after it) and must not touch freed memory.
     QPointer<const CssTheme> owner;
     QString internKey;

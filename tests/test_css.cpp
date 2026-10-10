@@ -180,6 +180,46 @@ void CssThemeTests::stripsCommentsAndAtRules()
     QCOMPARE(cpu.value(QStringLiteral("graph-width")).toString(), QStringLiteral("22px"));
 }
 
+void CssThemeTests::customPropertiesResolve()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(R"(
+        :root { --accent: #fa2d48; --Accent: #000000; --pad: 6px; --ring: 2px solid var(--accent); }
+        .card { --accent: #00ff00; color: var(--accent); border: var(--ring); }
+        .chip { background-color: var(--accent); padding: var(--pad) calc(var(--pad) * 2); }
+        .miss { color: var(--nope); background-color: var(--nope, var(--also-nope, #123456)); }
+        .cycle { --a: var(--b); --b: var(--a); color: var(--a); margin: 3px; }
+        .case { color: var(--Accent); }
+        .clear { --clear: transparent; background-color: var(--clear); }
+    )"));
+    auto at = [&](const QVariantMap &m, const char *k) { return m.value(QLatin1String(k)).toString(); };
+
+    const QVariantMap chip = theme.resolve(QString(), {QStringLiteral("chip")});
+    QCOMPARE(at(chip, "background-color"), QStringLiteral("#fa2d48"));      // from :root
+    QCOMPARE(at(chip, "padding"), QStringLiteral("6px calc(6px * 2)"));     // several references in one value
+    QVERIFY(!chip.contains(QStringLiteral("--accent")));                   // custom properties never leave
+
+    const QVariantMap card = theme.resolve(QString(), {QStringLiteral("card")});
+    QCOMPARE(at(card, "color"), QStringLiteral("#00ff00"));                 // its own declaration wins
+    QCOMPARE(at(card, "border"), QStringLiteral("2px solid #fa2d48"));      // --ring resolved where declared
+
+    CssAncestorInfo cardAncestor;
+    cardAncestor.classes = {QStringLiteral("card")};
+    const QVariantMap inCard = theme.resolveWithAncestors({cardAncestor}, QString(), {QStringLiteral("chip")});
+    QCOMPARE(at(inCard, "background-color"), QStringLiteral("#00ff00"));    // inherited from the ancestor
+
+    const QVariantMap miss = theme.resolve(QString(), {QStringLiteral("miss")});
+    QVERIFY(!miss.contains(QStringLiteral("color")));                      // unknown, no fallback: dropped
+    QCOMPARE(at(miss, "background-color"), QStringLiteral("#123456"));      // nested fallbacks
+
+    const QVariantMap cycle = theme.resolve(QString(), {QStringLiteral("cycle")});
+    QVERIFY(!cycle.contains(QStringLiteral("color")));
+    QCOMPARE(at(cycle, "margin"), QStringLiteral("3px"));
+
+    QCOMPARE(at(theme.resolve(QString(), {QStringLiteral("case")}), "color"), QStringLiteral("#000000"));
+    QCOMPARE(at(theme.resolve(QString(), {QStringLiteral("clear")}), "background-color"), QStringLiteral("#00000000"));
+}
+
 void CssThemeTests::parsesColors()
 {
     CssTheme theme;

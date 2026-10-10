@@ -297,6 +297,23 @@ private:
     QVariantMap resolveImpl(const QList<CssAncestorInfo> &ancestors, const QString &id,
                             const QStringList &classes, const QString &pseudoElement,
                             const QString &primitive = {}) const;
+    // The raw cascades behind resolveExact/resolvePart (var() not substituted: applyCssTo substitutes once,
+    // with the element's real environment).
+    QVariantMap resolveExactRaw(const QString &id, const QStringList &classes, const QString &pseudoElement,
+                                const QString &requiredClass) const;
+    QVariantMap resolvePartRaw(const QString &id, const QString &part, const QStringList &classes,
+                               const QString &pseudoElement) const;
+
+    // CSS custom properties (cssvar.h). m_rootVars: what `:root` / `html` rules declare; m_usesVars: whether
+    // any rule declares or references one (else every var step is skipped). Both rebuilt with the rules.
+    QVariantMap m_rootVars;
+    bool m_usesVars = false;
+    // The custom properties `n`'s element passes down (memoised on the node); nullptr: the root's.
+    const QVariantMap &varsOf(const CssContextNode *n) const;
+    // The same for an element reached by an ancestor list (foreign targets, the public resolve calls).
+    QVariantMap varsForChain(const QList<CssAncestorInfo> &ancestors) const;
+    // Substitute var() in `style` from `inherited` overlaid with the style's own custom properties.
+    void applyVars(QVariantMap &style, const QVariantMap &inherited) const;
 
     // @import inlining. `base` is the importing sheet's directory OR its http(s) url;
     // remote refs are spliced synchronously from the disk cache when warm, fetched

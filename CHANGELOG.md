@@ -3,6 +3,15 @@
 Consumers: read this before bumping the submodule/subproject — behavioral changes
 and breaking API moves are called out per entry.
 
+## Unreleased
+
+### Added
+- **CSS custom properties**: `--name: value` and `var(--name[, fallback])`, inherited along the
+  selector-context chain (memoised on `CssContextNode`, per rule generation), `:root` / `html` as
+  the root environment, resolved where declared, invalid-at-computed-value declarations dropped.
+  Substituted before the resolved map is memoised/pushed. Custom-property names keep their case
+  (other property names still fold to lower case). See docs/css-support.md.
+
 ## Unreleased (hardening pass, 2026-07-04)
 
 ### Breaking

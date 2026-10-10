@@ -208,6 +208,9 @@ private slots:
     void contextNodesAreSharedByIdenticalSiblings();
     void contextNodeFollowsAncestorIdentityAndReparenting();
     void contextNodesDieWithTheirBoxes();
+    // var(): an ancestor's custom property reaches a descendant, follows the ancestor's identity, and rows
+    // still share one context node.
+    void customPropertiesCascadeThroughContextNodes();
     // 4b-2 Task 2: own resolves are memoised on the node: 100 identical rows resolve each own input once.
     void identicalRowsResolveOnce();
 

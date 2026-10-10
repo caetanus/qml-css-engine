@@ -52,6 +52,9 @@ private slots:
     void exactResolveIgnoresUniversalRules();
     void stripsCommentsAndAtRules();
     void parsesColors();
+    // CSS custom properties: var() with fallbacks, inheritance through ancestors, declared-where resolution,
+    // invalid-at-computed-value-time (unknown / cycle) dropping the declaration, case-sensitive names.
+    void customPropertiesResolve();
 
     // Gradient `transparent` stops inherit the neighbour hue (premultiplied-alpha parity):
     // QGradient interpolates straight, and transparent-BLACK ramps render muddy.

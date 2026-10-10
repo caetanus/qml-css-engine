@@ -4160,6 +4160,39 @@ void QmlCssTests::contextNodeFollowsAncestorIdentityAndReparenting()
     QCOMPARE(bg(), QStringLiteral("#111111"));
 }
 
+void QmlCssTests::customPropertiesCascadeThroughContextNodes()
+{
+    const QString css = QStringLiteral(
+        ":root { --tint: #101010; } .warm { --tint: #ff8800; } .cool { --tint: #0088ff; } "
+        ".row { background-color: var(--tint); }");
+    IdentityFixture f(css, R"(
+        CssRect { objectName: "list"; cssClass: ["warm"]; width: 50; height: 50
+            CssRect { objectName: "r0"; cssClass: ["row"] }
+            CssRect { objectName: "r1"; cssClass: ["row"] } }
+    )");
+    QVERIFY2(f.object, qPrintable(f.error));
+    auto *list = f.object.data();
+    auto *r0 = qobject_cast<CssBox *>(f.object->findChild<QQuickItem *>(QStringLiteral("r0")));
+    auto *r1 = qobject_cast<CssBox *>(f.object->findChild<QQuickItem *>(QStringLiteral("r1")));
+    QVERIFY(r0 && r1);
+    auto bg = [](CssBox *b) { return b->styleMap().value(QStringLiteral("background-color")).toString(); };
+    // (a) the ancestor's --tint reaches the rows
+    QCOMPARE(bg(r0), QStringLiteral("#ff8800"));
+    QVERIFY(!r0->styleMap().contains(QStringLiteral("--tint")));
+    // (c) identical rows still share one node, vars present
+    QCOMPARE(r1->contextNodeForTest(), r0->contextNodeForTest());
+    QCOMPARE(bg(r1), QStringLiteral("#ff8800"));
+    // (b) a change of the ancestor's identity restyles the rows with its new --tint
+    list->setProperty("cssClass", QStringList{QStringLiteral("cool")});
+    QCOMPARE(bg(r0), QStringLiteral("#0088ff"));
+    QCOMPARE(bg(r1), QStringLiteral("#0088ff"));
+    list->setProperty("cssClass", QStringList{});
+    QCOMPARE(bg(r0), QStringLiteral("#101010"));   // back to :root
+    // a theme reload (new generation) recomputes the environment
+    f.theme.loadFromString(QString(css).replace(QStringLiteral("#101010"), QStringLiteral("#202020")));
+    QCOMPARE(bg(r0), QStringLiteral("#202020"));
+}
+
 void QmlCssTests::contextNodesDieWithTheirBoxes()
 {
     const int before = Detail::g_liveContextNodes;

@@ -337,7 +337,9 @@ QVariantMap parseDeclarationBlock(const QString &block, QVariantMap *importantOu
         const QString decl = block.mid(i, end - i).trimmed();
         const int colon = decl.indexOf(QLatin1Char(':'));
         if (colon > 0) {
-            const QString prop = decl.left(colon).trimmed().toLower();
+            // Custom property names are case-sensitive (`--Accent` and `--accent` differ); the rest folds.
+            const QString rawProp = decl.left(colon).trimmed();
+            const QString prop = rawProp.startsWith(QLatin1String("--")) ? rawProp : rawProp.toLower();
             QString val = decl.mid(colon + 1).trimmed();
             // CSS `!important`: strip a trailing `!important` (optional space) and flag it,
             // so the cascade can let it win over higher-specificity non-important rules.

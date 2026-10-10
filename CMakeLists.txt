@@ -19,6 +19,7 @@ set(QML_CSS_ENGINE_SOURCES
     src/qmlcss/cssthemeparser.cpp
     src/qmlcss/cssthemeloader.cpp
     src/qmlcss/cssthemevalues.cpp
+    src/qmlcss/cssvar.cpp
     src/qmlcss/csstheme_census.cpp
     src/qmlcss/componentcache.cpp
     src/qmlcss/cssincubator.cpp

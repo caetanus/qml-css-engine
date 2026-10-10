@@ -30,6 +30,7 @@ through into the `style` map as raw strings but have no built-in renderer.
 | `@import "file.css";` | Recursive; relative to the importing file; `file://` and absolute paths; cycle-guarded |
 | `@import "https://…";` | Remote sheets: cached on disk (sha1 key, offline after first fetch); a cold URL downloads asynchronously and the theme reloads itself when the last fetch lands; relative refs inside a remote sheet resolve against its URL; failed URLs are not retried within the session |
 | `@import url("file.css");` | Same |
+| `--name: value` / `var()` | Custom properties: inherited through ancestors, fallbacks, cycles dropped |
 | `@define-color name value;` | GTK-style; cross-references resolved (up to 5 passes); stripped before parsing |
 | `@media (min-width: Npx)` | Live; re-evaluated on `CssTheme::setViewport()` |
 | `@media (max-width: Npx)` | " |
@@ -41,10 +42,34 @@ through into the `style` map as raw strings but have no built-in renderer.
 | `@keyframes name { … }` | Stored by name; `from`/`to`/`%` offsets; comma-separated offsets |
 | `@supports`, `@container` | Recognised and dropped |
 
+### Custom properties (`--name` / `var()`)
+
+Standard CSS custom properties. Declare `--name: value` in any rule; reference it with
+`var(--name)` or `var(--name, fallback)` in any value, several per value and nested in fallbacks.
+
+```css
+:root  { --bg: #141416; --accent: #fa2d48; --ring: 2px solid var(--accent); }
+.dark  { --bg: #000000; }
+.card  { background-color: var(--bg); border: var(--ring); }
+.chip  { padding: var(--pad, 4px) calc(var(--pad, 4px) * 2); }
+```
+
+- **Inheritance** follows the selector-context chain (the element's CSS ancestry, `cssAncestor`
+  re-anchoring included): an element sees its ancestors' declarations, nearest first, then
+  `:root` / `html`. Changing an ancestor's class re-resolves its descendants.
+- **Resolved where declared**: `--ring` above keeps the `:root` accent even under an element that
+  redefines `--accent`.
+- **Invalid at computed-value time**: an unknown name with no fallback, or a reference cycle, drops
+  that declaration (as if it was never written).
+- Names are case-sensitive. Custom properties themselves never appear in the resolved style map.
+- Substitution happens before a style is memoised or pushed, so every consumer sees final values;
+  a stylesheet with no custom properties pays nothing.
+- Not substituted inside `@keyframes` frames.
+
 ### GTK-style colour variables (`@define-color`)
 
-The engine adopts GTK's CSS colour-variable extension as its main theming primitive — there are no
-standard `var(--x)` custom properties; use `@define-color` instead. Declare named colours, reference
+GTK's CSS colour-variable extension is supported too (a global, textual substitution done before
+parsing — custom properties above are usually the better fit). Declare named colours, reference
 them anywhere with `@name`, and chain definitions together: the parser collects the declarations,
 resolves cross-references between them (up to 5 passes), substitutes every `@name` throughout the
 sheet, then strips the declarations before the cascade runs.

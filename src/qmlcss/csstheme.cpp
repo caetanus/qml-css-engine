@@ -4,6 +4,7 @@
 #include "csslayout.h"
 #include "qmlcss/cssbox.h"
 #include "qmlcss/csscontextnode.h"
+#include "cssvar.h"
 #include "valueparser.h"
 
 #include <QCryptographicHash>
@@ -296,8 +297,8 @@ void CssTheme::applyCssTo(QObject *target) const
     // the keyboard tab ring's `::tab-stop`). Pseudo-element wins on conflict — it names the
     // decoration itself, not a container alias.
     auto resolvePartMerged = [&](const QStringList &cls) {
-        QVariantMap r = resolvePart(cssId, cssPart, cls);
-        const QVariantMap pseudo = resolveExact(cssId, cls, cssPart);
+        QVariantMap r = resolvePartRaw(cssId, cssPart, cls, QString());
+        const QVariantMap pseudo = resolveExactRaw(cssId, cls, cssPart, QString());
         for (auto it = pseudo.constBegin(); it != pseudo.constEnd(); ++it)
             r.insert(it.key(), it.value());
         return r;
@@ -340,6 +341,8 @@ void CssTheme::applyCssTo(QObject *target) const
                 const QList<CssAncestorInfo> ancestors = ancestorChainOf(node->parent.data());
                 r = resolveMerged(ancestors, cssId, alternateIds, cls, cssPrimitive);
             }
+            // var() substituted before the map is memoised or pushed: downstream caches see final values.
+            applyVars(r, varsOf(node->parent.data()));
             node->ownResolves.insert(key, r);
             return r;
         };
@@ -355,6 +358,8 @@ void CssTheme::applyCssTo(QObject *target) const
         }
     } else if (!cssPart.isEmpty()) {
         style = resolvePartMerged(classes);
+        if (m_usesVars)
+            applyVars(style, varsForChain(collectCssAncestors(target)));
     } else {
         const QStringList alternateIds = cssVariantToStringList(target->property("cssAlternateId"));
         const qint64 t0 = g_applyStats.enabled ? t.nsecsElapsed() : 0;
@@ -365,6 +370,7 @@ void CssTheme::applyCssTo(QObject *target) const
         probeHover(style, [&](const QStringList &cls) {
             return resolveMerged(ancestors, cssId, alternateIds, cls, cssPrimitive);
         });
+        applyVars(style, varsForChain(ancestors));   // after the probe: it compares raw cascades
         if (g_applyStats.enabled) {
             const qint64 t3 = t.nsecsElapsed();
             g_applyStats.chainNs += t1 - t0;
@@ -534,7 +540,9 @@ void CssTheme::reapplyAll()
 QVariantMap CssTheme::resolve(const QString &id, const QStringList &classes, const QString &pseudoElement,
                               const QString &primitive) const
 {
-    return resolveImpl({}, id, classes, pseudoElement, primitive);
+    QVariantMap r = resolveImpl({}, id, classes, pseudoElement, primitive);
+    applyVars(r, m_rootVars);
+    return r;
 }
 
 QVariantMap CssTheme::resolveWith(const QString &contextId, const QString &id, const QStringList &classes,
@@ -545,14 +553,18 @@ QVariantMap CssTheme::resolveWith(const QString &contextId, const QString &id, c
     // match `#workspaces button` (a type selector) as well as `#workspaces #button`.
     CssAncestorInfo context;
     context.id = contextId;
-    return resolveImpl({context}, id, classes, pseudoElement, id);
+    QVariantMap r = resolveImpl({context}, id, classes, pseudoElement, id);
+    applyVars(r, varsForChain({context}));
+    return r;
 }
 
 QVariantMap CssTheme::resolveWithAncestors(const QList<CssAncestorInfo> &ancestors, const QString &id,
                                            const QStringList &classes, const QString &pseudoElement,
                                            const QString &primitive) const
 {
-    return resolveImpl(ancestors, id, classes, pseudoElement, primitive);
+    QVariantMap r = resolveImpl(ancestors, id, classes, pseudoElement, primitive);
+    applyVars(r, varsForChain(ancestors));
+    return r;
 }
 
 QVariantMap CssTheme::resolveImpl(const QList<CssAncestorInfo> &ancestors, const QString &id,
@@ -616,6 +628,14 @@ QVariantMap CssTheme::resolveImpl(const QList<CssAncestorInfo> &ancestors, const
 QVariantMap CssTheme::resolveExact(const QString &id, const QStringList &classes, const QString &pseudoElement,
                                    const QString &requiredClass) const
 {
+    QVariantMap r = resolveExactRaw(id, classes, pseudoElement, requiredClass);
+    applyVars(r, m_rootVars);   // no ancestry here: the root environment
+    return r;
+}
+
+QVariantMap CssTheme::resolveExactRaw(const QString &id, const QStringList &classes, const QString &pseudoElement,
+                                      const QString &requiredClass) const
+{
     struct Match {
         int specificity;
         int sourceOrder;
@@ -664,6 +684,48 @@ QVariantMap CssTheme::resolvePart(const QString &id, const QString &part, const 
 {
     // A "part" is an exact-match query that REQUIRES the part class — see resolveExact.
     return resolveExact(id, classes, pseudoElement, part);
+}
+
+QVariantMap CssTheme::resolvePartRaw(const QString &id, const QString &part, const QStringList &classes,
+                                     const QString &pseudoElement) const
+{
+    return resolveExactRaw(id, classes, pseudoElement, part);
+}
+
+// --- custom properties -------------------------------------------------------------------------------------
+
+const QVariantMap &CssTheme::varsOf(const CssContextNode *n) const
+{
+    if (!n)
+        return m_rootVars;
+    if (n->varsReady)
+        return n->vars;
+    // What the element declares as an ANCESTOR (its identity with cssState, no hover — the same inputs the
+    // node is interned by), over what its parent passes down. Memoised on the node: same inputs, same map.
+    const QVariantMap own = resolveImpl(ancestorChainOf(n->parent.data()), n->self.id, n->self.classes,
+                                        QString(), n->self.primitive);
+    n->vars = CssVar::overlay(varsOf(n->parent.data()), own);
+    n->varsReady = true;
+    return n->vars;
+}
+
+QVariantMap CssTheme::varsForChain(const QList<CssAncestorInfo> &ancestors) const
+{
+    QVariantMap env = m_rootVars;
+    if (!m_usesVars)
+        return env;
+    for (int k = 0; k < ancestors.size(); ++k) {
+        const CssAncestorInfo &a = ancestors.at(k);
+        env = CssVar::overlay(env, resolveImpl(ancestors.mid(0, k), a.id, a.classes, QString(), a.primitive));
+    }
+    return env;
+}
+
+void CssTheme::applyVars(QVariantMap &style, const QVariantMap &inherited) const
+{
+    if (!m_usesVars)
+        return;
+    CssVar::substitute(style, CssVar::overlay(inherited, style));
 }
 
 } // namespace QmlCss

@@ -1,5 +1,6 @@
 // CssTheme loading: files/layers/strings, @import inlining (incl. remote fetch + cache),
 #include "csstheme.h"
+#include "cssvar.h"
 #include "csstheme_p.h"
 
 #include "csslayout.h"
@@ -304,6 +305,24 @@ void CssTheme::rebuildRules()
     m_rulesByElement.clear();
     m_rulesById.clear();
     m_rulesUnkeyed.clear();
+    // Custom properties: the root environment (`:root` / `html`, in cascade order; important ones last) and
+    // whether any rule uses them at all.
+    m_rootVars.clear();
+    m_usesVars = false;
+    QVariantMap rootImportant;
+    for (const CssRule &rule : std::as_const(m_rules)) {
+        for (auto it = rule.properties.constBegin(); it != rule.properties.constEnd() && !m_usesVars; ++it)
+            m_usesVars = CssVar::isCustomProperty(it.key()) || CssVar::hasReference(it.value().toString());
+        const CssSimpleSelector &sel = rule.selector;
+        const bool root = rule.ancestors.isEmpty() && sel.id.isEmpty() && sel.pseudoElement.isEmpty()
+            && ((sel.element.isEmpty() && sel.classes == QStringList{QStringLiteral("root")})
+                || (sel.element == QLatin1String("html") && sel.classes.isEmpty()));
+        if (!root)
+            continue;
+        m_rootVars = CssVar::overlay(m_rootVars, rule.properties);
+        rootImportant = CssVar::overlay(rootImportant, rule.importantProperties);
+    }
+    m_rootVars = CssVar::overlay(m_rootVars, rootImportant);
     for (int i = 0; i < m_rules.size(); ++i) {
         const CssSimpleSelector &sel = m_rules.at(i).selector;
         if (!sel.classes.isEmpty())
