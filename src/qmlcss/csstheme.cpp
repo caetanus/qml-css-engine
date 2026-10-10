@@ -342,7 +342,9 @@ void CssTheme::applyCssTo(QObject *target) const
                 r = resolveMerged(ancestors, cssId, alternateIds, cls, cssPrimitive);
             }
             // var() substituted before the map is memoised or pushed: downstream caches see final values.
-            applyVars(r, varsOf(node->parent.data()));
+            // Guarded HERE, not only inside applyVars: varsOf() resolves every ancestor node's own vars.
+            if (m_usesVars)
+                applyVars(r, varsOf(node->parent.data()));
             node->ownResolves.insert(key, r);
             return r;
         };
