@@ -52,6 +52,15 @@ QExplicitlySharedDataPointer<CssContextNode> CssBox::contextNode(const CssTheme 
     return m_contextNode;
 }
 
+bool CssBox::resolvedUnderCurrentAncestry(const CssTheme *theme) const
+{
+    if (!m_contextNode || m_contextDirty)
+        return false;
+    // Interned nodes: the same ancestry (every identity up the chain, the rule generation) is the same
+    // node, so a pointer compare decides.
+    return m_contextNode->parent == theme->contextNodeFor(theme->nearestCssElementOf(const_cast<CssBox *>(this)));
+}
+
 CssInheritedText CssBox::inheritedText() const
 {
     CssInheritedText r;

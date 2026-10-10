@@ -285,4 +285,8 @@ private slots:
     void virtualMeasurementInvalidation();
     void virtualAnchorRemoved();
     void virtualFixedPitchStaysExact();
+
+    // Correctness round after the scrolling-list gate: (A) a row parked while an ANCESTOR's identity
+    // changed comes back styled for the new ancestry.
+    void virtualPoolAncestorChangeWhileParked();
 };

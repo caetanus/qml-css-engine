@@ -6048,3 +6048,65 @@ void QmlCssTests::virtualFixedPitchStaysExact()
     QVERIFY2(qAbs(s.contentHeight() - eager.contentHeight()) < 0.01,
              qPrintable(QStringLiteral("%1 vs %2").arg(s.contentHeight()).arg(eager.contentHeight())));
 }
+
+// ---- Correctness round after the scrolling-list gate (A, B, C) ----------------------------------
+
+namespace {
+
+void setClasses(QQuickItem *box, const QStringList &classes)
+{
+    box->setProperty("cssClass", QVariant::fromValue(classes));
+}
+
+} // namespace
+
+void QmlCssTests::virtualPoolAncestorChangeWhileParked()
+{
+    // Every record has the SAME row class: a rebind changes no class of the row itself, so nothing but
+    // the ancestry can tell the row its style is stale.
+    const QString green = QStringLiteral("#00aa00"), red = QStringLiteral("#dd2222");
+    VirtualScene s(QString::fromLatin1(kPoolCss) + QStringLiteral(" .list.hot .a { background-color: #00aa00; }"));
+    QVariantList model = makePoolRows(2000);
+    for (QVariant &v : model) {
+        QVariantMap m = v.toMap();
+        m.insert(QStringLiteral("status"), QStringLiteral("a"));
+        v = m;
+    }
+    QVERIFY2(s.mount(true, model, kPoolDelegate).isEmpty(), "mount");
+    for (QQuickItem *row : s.rows())
+        QCOMPARE(bgOf(row), red);
+    // See virtualPoolDrains: back at the top, the third viewport's rows stay parked.
+    s.setContentY(kViewH);
+    s.setContentY(0);
+    {
+        // Bounded work (5v-2): with the ancestry unchanged, a park/rebind round trip restyles nothing.
+        const PhaseStatsOn stats;
+        s.setContentY(kViewH);
+        s.setContentY(0);
+        QVERIFY(bucketCount("repeater.rebind") > 0);
+        QCOMPARE(bucketCount("css.apply"), qint64(0));
+    }
+    flushDeletes();
+    const QList<QPointer<QQuickItem>> parked = parkedRows(s.rep);
+    QVERIFY2(!parked.isEmpty(), "nothing parked");
+    // The ANCESTOR's identity changes; no stylesheet reload (no reapply epoch).
+    setClasses(s.list, { QStringLiteral("list"), QStringLiteral("hot") });
+    for (QQuickItem *row : s.rows())
+        QCOMPARE(bgOf(row), green); // the visible rows were restyled through the visual subtree
+    s.setContentY(kViewH);
+    int reused = 0;
+    for (QQuickItem *row : s.rows()) {
+        QCOMPARE(row->property("cssEngineHover").toBool(), false);
+        bool wasParked = false;
+        for (const auto &p : parked)
+            wasParked |= p.data() == row;
+        if (!wasParked)
+            continue;
+        ++reused;
+        QVERIFY2(bgOf(row) == green, qPrintable(QStringLiteral("reused row %1 background '%2', want '%3'")
+                                                     .arg(VirtualScene::indexOf(row)).arg(bgOf(row), green)));
+    }
+    QVERIFY2(reused > 0, "no parked row was reused");
+    for (QQuickItem *row : s.rows())
+        QVERIFY2(bgOf(row) == green, qPrintable(QStringLiteral("row %1 background '%2'").arg(VirtualScene::indexOf(row)).arg(bgOf(row))));
+}

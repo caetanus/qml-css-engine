@@ -83,6 +83,10 @@ public:
     // valid before this box or any ancestor completes.
     QExplicitlySharedDataPointer<CssContextNode> contextNode(const CssTheme *theme);
     const CssContextNode *contextNodeForTest() const { return m_contextNode.data(); }
+    // Whether the ancestry this box was last resolved under (its node's parent) is still the one above it:
+    // false after an ancestor's identity changed, a reparent or a rule rebuild while the box was out of
+    // the visual tree (a row parked in a CssRepeater's recycling pool — 5v-2). O(depth), no resolve.
+    bool resolvedUnderCurrentAncestry(const CssTheme *theme) const;
 
     // 4b-4: all eight inherited text values in ONE walk — own style value wins, else the inheriting
     // ancestor's, read typed through CssBox (by name only for a foreign ancestor). Computed live on every

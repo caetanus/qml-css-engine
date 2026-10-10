@@ -301,10 +301,14 @@ bool CssRepeater::rebindRow(int i, Row &row)
         // next frame — no frame shows the row half old, half new:
         // (1) back under its real ancestors FIRST: every restyle below resolves against them.
         p.item->setParentItem(parentItem() ? parentItem() : this);
-        // A theme reapply while it was parked resolved it without those ancestors: once, again, now.
-        if (m_theme && p.reapplyEpoch != m_theme->reapplyEpoch()) {
-            if (auto *box = qobject_cast<CssBox *>(p.item.data()))
-                m_theme->restyle(box);
+        // A theme reapply while it was parked resolved it without those ancestors, and an ancestor whose
+        // identity changed meanwhile restyled only its VISUAL subtree (ancestor-scoped rules): once,
+        // again, now. The ancestry check is a pointer compare of interned context nodes, O(depth).
+        if (m_theme) {
+            if (auto *box = qobject_cast<CssBox *>(p.item.data())) {
+                if (p.reapplyEpoch != m_theme->reapplyEpoch() || !box->resolvedUnderCurrentAncestry(m_theme))
+                    m_theme->restyle(box);
+            }
         }
         row.item = p.item;
         row.context = p.context;
