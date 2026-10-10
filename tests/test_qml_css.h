@@ -131,4 +131,8 @@ private slots:
     // A box holding ONLY a foreign (non-Css) component behaves like a web REPLACED element:
     // intrinsic size, no cross-axis stretch, capped at the container with the ratio kept.
     void layoutReplacedForeignBoxKeepsIntrinsicSize();
+
+    // Complexity probes (step 1 of the native-beats-web roadmap): layout work is counted in child
+    // visits, so O(N) vs O(N^2) is asserted without timing.
+    void layoutCountsChildVisits();
 };

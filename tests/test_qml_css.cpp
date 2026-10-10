@@ -2680,3 +2680,32 @@ void QmlCssTests::cssRepeaterKeysObjectsById()
     const QList<QQuickItem *> order = one->parentItem()->childItems();
     QVERIFY(order.indexOf(two.data()) < order.indexOf(one.data()));
 }
+
+void QmlCssTests::layoutCountsChildVisits()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(".row { height: 10px; }"));
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect {
+            cssPrimitive: ""
+            width: 200; height: 200
+            style: ({ "display": "flex", "flex-direction": "column" })
+            CssRect { cssClass: ["row"]; cssPrimitive: "div" }
+            CssRect { cssClass: ["row"]; cssPrimitive: "div" }
+        }
+    )", QUrl());
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+
+    // One relayout of a settled two-child box visits exactly its two children.
+    const quint64 before = layoutEngine.childVisits();
+    QVERIFY(QMetaObject::invokeMethod(root.get(), "requestRelayout"));
+    QCOMPARE(layoutEngine.childVisits() - before, quint64(2));
+}

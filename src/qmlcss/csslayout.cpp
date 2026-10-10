@@ -544,6 +544,7 @@ void CssLayoutEngine::layout(QQuickItem *root, QQuickItem *content)
 
     QList<QQuickItem *> flow, abs, foreign;
     const auto kids = content->childItems();
+    m_childVisits += quint64(kids.size());
     for (QQuickItem *k : kids) {
         if (!isLayoutChild(k)) {
             // A non-Css child — a hand-written/foreign QML component (the escape hatch), or an

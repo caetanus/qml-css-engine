@@ -48,6 +48,10 @@ public:
     // length; NaN when absent/non-numeric. Exposed for any QML that still needs it.
     Q_INVOKABLE qreal length(const QString &value, qreal avail) const;
 
+    // Test/bench probe: children visited across every layout() call. One integer add per call —
+    // lets tests assert O(N) vs O(N^2) layout work without timing.
+    quint64 childVisits() const { return m_childVisits; }
+
     // Transform-keyframe animation. buildAnimStops normalizes `@keyframes` frames into
     // [{offset, rotate, scale, tx, ty}] (identity-filled, 0%/100% synthesised); applyAnim
     // writes the interpolated transform at `progress` onto root's _animRotate/Scale/Tx/Ty.
@@ -109,6 +113,7 @@ private:
     QTimer *m_flushTimer;
     int m_batchDepth = 0;
     bool m_flushing = false;
+    quint64 m_childVisits = 0;
 };
 
 } // namespace QmlCss
