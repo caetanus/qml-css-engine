@@ -251,20 +251,44 @@ void CssTheme::reapplyForSender()
     auto *item = qobject_cast<QQuickItem *>(target);
     if (!item)
         return;
-    for (const QPointer<QObject> &p : std::as_const(m_bindings)) {
-        if (!p || p == target)
-            continue;
-        auto *child = qobject_cast<QQuickItem *>(p.data());
-        if (child && item->isAncestorOf(child)) {
+    // Walk the target's VISUAL subtree: exactly the set the old `isAncestorOf()` test selected out of
+    // EVERY registered object (O(registered x depth) per class/state change — i.e. per hover), now
+    // O(subtree). isAncestorOf never followed `cssAncestor` re-anchoring, and neither does this.
+    // childItems() returns the implicitly shared list (no allocation).
+    QVarLengthArray<QQuickItem *, 64> stack;
+    for (QQuickItem *k : item->childItems())
+        stack.append(k);
+    while (!stack.isEmpty()) {
+        QQuickItem *k = stack.last();
+        stack.removeLast();
+        if (m_registered.contains(k)) {
             if (g_applyStats.enabled) ++g_applyStats.fromDescendant;
-            applyCssTo(child);
+            applyCssTo(k);
         }
+        for (QQuickItem *c : k->childItems())
+            stack.append(c);
     }
 }
 
 void CssTheme::reapplyAll()
 {
     const LayoutBatchGuard batch(m_layoutEngine); // N applies, ONE layout flush
+    // Re-entrant call (applyCssTo() below triggers another reapplyAll(), e.g. a reload mid-apply):
+    // the OUTER call already has m_walkingBindings set and is range-for'ing over m_bindings, so this
+    // prune must not run (it would resize the list the outer loop is iterating) and this walk must
+    // not touch m_bindings' iterators either — copy it. QList is implicitly shared, so the copy is
+    // O(1) until the first mutation (the outer loop never mutates it, so this stays cheap); the
+    // common, non-nested path below is unchanged and allocation-free.
+    if (m_walkingBindings) {
+        const QList<QPointer<QObject>> snapshot = m_bindings;
+        for (const QPointer<QObject> &p : snapshot) {
+            if (p) {
+                if (g_applyStats.enabled) ++g_applyStats.fromAll;
+                applyCssTo(p);
+            }
+        }
+        return;
+    }
     m_bindings.removeIf([](const QPointer<QObject> &p) { return p.isNull(); });
     m_deadBindings = 0;
     // Guard the walk below: a destroyed-object lambda firing mid-loop (applyCssTo() destroying a

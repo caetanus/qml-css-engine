@@ -149,4 +149,6 @@ private slots:
 
     // Step 2 (native beats web): registry and model bookkeeping stay O(1) per element.
     void themeRegistryForgetsDestroyedItems();
+    // Step 2 Task 2: a class/state change restyles its subtree only, not every registered object.
+    void stateChangeRestylesOnlyTheSubtree();
 };

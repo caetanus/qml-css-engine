@@ -315,10 +315,13 @@ private:
     QList<QPointer<QObject>> m_bindings;
     QSet<QObject *> m_registered;
     int m_deadBindings = 0;
-    // Set while reapplyAll() range-for's over m_bindings: applyCssTo() could, in principle, destroy
-    // a registered object synchronously (today everything uses deleteLater, so this is a guard against
-    // a future caller, not an observed bug) — the destroyed-object lambda must not resize the list
-    // it's being walked over, so compaction is deferred to the next death or to reapplyAll's own prune.
+    // Set while reapplyAll() range-for's over m_bindings. Two things must not resize that list out
+    // from under the range-for while this is true: (1) the destroyed-object lambda — compaction is
+    // deferred to the next death or to reapplyAll's own prune (applyCssTo() could, in principle,
+    // destroy a registered object synchronously; today everything uses deleteLater, so this is a
+    // guard against a future caller, not an observed bug); (2) a RE-ENTRANT reapplyAll() call (e.g.
+    // a reload triggered from inside an apply) — its leading prune is skipped and it walks a local
+    // copy of m_bindings instead of the member.
     bool m_walkingBindings = false;
     bool m_loaded = false;
     QStringList m_requestedLayer;  // the paths last passed to loadLayered (for reloads)

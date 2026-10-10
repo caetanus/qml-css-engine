@@ -2,6 +2,7 @@
 
 #include "qmlcss/QMLCss.h"
 #include "qmlcss/csscontentholder.h"
+#include "qmlcss/csstheme_p.h"
 
 #include <QtQml/qqml.h>
 
@@ -3094,4 +3095,55 @@ void QmlCssTests::themeRegistryForgetsDestroyedItems()
     // private; reload through the PUBLIC path — loadFromString() unconditionally calls
     // rebuildRules() then reapplyAll() (cssthemeloader.cpp) — rather than reach around it.
     theme.loadFromString(QStringLiteral(".row { height: 10px; }"));
+}
+
+void QmlCssTests::stateChangeRestylesOnlyTheSubtree()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(R"(
+        .row { height: 10px; }
+        .row.hot .cell { background-color: #ff0000; }
+    )"));
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect {
+            cssPrimitive: ""
+            width: 200; height: 400
+            style: ({ "display": "flex", "flex-direction": "column" })
+            CssRepeater {
+                model: 300
+                delegate: Component {
+                    CssRect {
+                        objectName: "row" + index
+                        cssClass: ["row"]; cssPrimitive: "div"
+                        CssRect { objectName: "cell" + index; cssClass: ["cell"]; cssPrimitive: "div" }
+                    }
+                }
+            }
+        }
+    )", QUrl());
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+    auto *row = root->findChild<QQuickItem *>(QStringLiteral("row7"));
+    auto *cell = root->findChild<QQuickItem *>(QStringLiteral("cell7"));
+    QVERIFY(row && cell);
+
+    // Behaviour: the ancestor-scoped rule reaches the descendant.
+    row->setProperty("cssClass", QVariant(QStringList{QStringLiteral("row"), QStringLiteral("hot")}));
+    QTRY_COMPARE_WITH_TIMEOUT(cell->property("style").toMap().value(QStringLiteral("background-color")).toString(),
+                              QStringLiteral("#ff0000"), 1000);
+
+    // Cost: one state change re-applies the row and its ONE descendant — not the 600 registered boxes.
+    Detail::g_applyStats.enabled = true;
+    const auto before = Detail::g_applyStats.fromDescendant;
+    row->setProperty("cssClass", QVariant(QStringList{QStringLiteral("row")}));
+    const auto applied = Detail::g_applyStats.fromDescendant - before;
+    Detail::g_applyStats.enabled = false;
+    QVERIFY2(applied <= 2, qPrintable(QStringLiteral("descendant applies %1").arg(applied)));
 }
