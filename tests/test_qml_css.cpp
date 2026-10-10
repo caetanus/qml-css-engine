@@ -3709,6 +3709,61 @@ void QmlCssTests::layoutReadsStyleTyped()
     QVERIFY2(std::abs(c->x() - 28.0) < 0.5, qPrintable(QString::number(c->x())));
 }
 
+// 4b-3 Task 2: the flex path reads a pre-parsed typed style per box. The first pass parses every
+// distinct style once; a second full relayout (the container AND every row) must not touch a single
+// style string again — the counter probe counts each length/box/`flex`-shorthand string parse.
+void QmlCssTests::layoutParsesOncePerStyle()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(
+        ".list { display: flex; flex-direction: column; gap: 2px; padding: 4px; } "
+        ".row { display: flex; gap: 4px; padding: 2px 4px; margin: 1px; height: 20px; "
+        "border: 1px solid #000; align-items: center; } "
+        ".cell { width: 30%; min-width: 10px; max-width: 50vw; flex: 1 1; margin-left: 2px; }"));
+    CssLayoutEngine layoutEngine(&theme);
+    theme.setViewport(800, 600);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent comp(&engine);
+    comp.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect { cssClass: ["list"]; width: 400; height: 3000
+            CssRepeater {
+                model: 100
+                delegate: Component {
+                    CssRect { objectName: "row"; cssClass: ["row"]
+                        CssRect { objectName: "cell"; cssClass: ["cell"] }
+                        CssRect { cssClass: ["cell"] } }
+                }
+            }
+        }
+    )", QUrl());
+    QScopedPointer<QObject> object(comp.create());
+    QVERIFY2(object, qPrintable(comp.errorString()));
+    auto *root = qobject_cast<QQuickItem *>(object.data());
+    QVERIFY(root);
+    QQuickWindow window;
+    root->setParentItem(window.contentItem());
+
+    const QList<QQuickItem *> rows = root->findChildren<QQuickItem *>(QStringLiteral("row"));
+    QCOMPARE(rows.size(), 100);
+    const auto fullPass = [&]() {
+        layoutEngine.layout(root, contentHolderOf(rows.first()));
+        for (QQuickItem *row : rows)
+            layoutEngine.layout(row, contentHolderOf(row->findChild<QQuickItem *>(QStringLiteral("cell"))));
+    };
+    fullPass();
+    const int before = Detail::g_layoutStringParses;
+    fullPass();
+    QCOMPARE(Detail::g_layoutStringParses - before, 0);
+
+    // The rows were really laid out: stacked, each at its own y.
+    QVERIFY2(std::abs(rows[0]->y() - rows[1]->y()) > 20.0,
+             qPrintable(QStringLiteral("%1 %2").arg(rows[0]->y()).arg(rows[1]->y())));
+}
+
 // 4b-1 Task 4 shared fixture: one window-hosted element built from `qml`, under `css`.
 namespace {
 struct IdentityFixture {

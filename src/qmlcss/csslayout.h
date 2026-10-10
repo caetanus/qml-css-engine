@@ -9,12 +9,17 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QVector>
+#include <QExplicitlySharedDataPointer>
+
+#include <array>
 
 class QQuickItem;
 class QTimer;
 
 namespace QmlCss {
 class CssTheme;
+struct CssLength;
+struct CssLayoutStyle;
 
 // The CSS box-model layout engine, in C++ (the QML/V4 implementation it replaces was a
 // prototype). Given a styled element (a CssRect) and its content holder, it lays the content
@@ -77,26 +82,38 @@ private:
     double evalExpr(const QString &value, double avail) const;
     double calcUnit(const QString &tok, double avail) const;
 
+    // A parsed length of `st` evaluated against `avail` (percentages) and the CURRENT viewport —
+    // exactly what evalExpr/calcUnit return for its source string. NaN when absent/invalid.
+    double eval(const CssLayoutStyle &st, const CssLength &l, double avail) const;
+    double evalSlow(const CssLayoutStyle &st, const CssLength &l, double avail) const;
+
     // box-model helpers (public: containers read padding-bottom for scroll breathing)
 public:
+    // Box sides [top, right, bottom, left] of a parsed style.
+    using Sides = std::array<double, 4>;
+    Sides paddingOf(const CssLayoutStyle &st) const;
+    Sides borderOf(const CssLayoutStyle &st) const;
+    Sides marginOf(const CssLayoutStyle &st) const;
+    // Clamp a resolved width/height by the item's min-/max- of that axis.
+    double clampSize(const CssLayoutStyle &st, const CssLength &mn, const CssLength &mx, double v, double avail) const;
+    // String path, kept for the grid.
     double sizeOf(const QVariantMap &style, const QString &key, double avail) const;
-    // Clamp a resolved width/height by the item's min-/max-<axis> (axis = "width" | "height").
-    double clampSize(const QVariantMap &style, const QString &axis, double v, double avail) const;
-    QVector<double> box(const QString &value) const;
-    QVector<double> paddingOf(const QVariantMap &style) const;
-    QVector<double> borderOf(const QVariantMap &style) const;
-    QVector<double> marginOf(const QVariantMap &style) const;
     double aspectOf(const QVariantMap &style) const;
 
 private:
+    // The typed style of a layout child: the cached one of every CssBox (a reference held for the
+    // pass, as the old by-value map copy was); a foreign item that exposes a `style` property is read
+    // by name and parsed afresh (rare, counted by g_namedStyleReads).
+    using StyleRef = QExplicitlySharedDataPointer<CssLayoutStyle>;
+    static StyleRef layoutStyleOf(const QQuickItem *k);
 
-    // geometry assignment. `style` is the child's own resolved style, already held by every
+    // geometry assignment. `style` is the child's own parsed style, already held by every
     // caller (read once per child per pass, never re-read here).
-    void place(QQuickItem *k, const QVariantMap &style, double x, double y, double w, double h) const;
-    void placeAbsolute(QQuickItem *k, double ox, double oy, double cw, double ch) const;
+    void place(QQuickItem *k, const CssLayoutStyle &style, double x, double y, double w, double h) const;
+    void placeAbsolute(QQuickItem *k, const CssLayoutStyle &ks, double ox, double oy, double cw, double ch) const;
 
     // flex + grid; return the content [width, height] occupied
-    QPair<double, double> layoutFlex(const QList<QQuickItem *> &flow, const QVariantMap &rootStyle,
+    QPair<double, double> layoutFlex(const QList<QQuickItem *> &flow, const CssLayoutStyle &rootStyle,
                                      double cw, double ch, double ox, double oy, bool isFlex) const;
     QPair<double, double> layoutGrid(const QList<QQuickItem *> &flow, const QVariantMap &rootStyle,
                                      double cw, double ch, double ox, double oy) const;

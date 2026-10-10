@@ -1,6 +1,7 @@
 #pragma once
 
 #include "qmlcss/csscontextnode.h"
+#include "qmlcss/csslength.h"
 
 #include <QPointer>
 #include <QQuickItem>
@@ -57,6 +58,19 @@ public:
     const QStringList &alternateIdList() const { return m_alternateIdList; }
     // The resolved style, read without QVariant boxing or a map copy.
     const QVariantMap &styleMap() const { return m_style; }
+    // 4b-3: the layout's typed view of that style, parsed lazily and kept while m_style still holds
+    // the SAME shared map data it was parsed from (O(1) check; any write to m_style detaches from the
+    // copy held here, so no setStyle body needs a hook). Lengths stay unevaluated (%/vw at layout).
+    // The layout holds the returned reference for its pass (a restyle mid-pass must not free it).
+    const QExplicitlySharedDataPointer<CssLayoutStyle> &layoutStyleRef() const
+    {
+        if (!m_layoutStyle || !m_style.isSharedWith(m_layoutParsedFrom)) {
+            m_layoutStyle = cssSharedLayoutStyle(m_style);
+            m_layoutParsedFrom = m_style;
+        }
+        return m_layoutStyle;
+    }
+    const CssLayoutStyle &layoutStyle() const { return *layoutStyleRef(); }
     // Push a newly-resolved style into the box. Each class forwards to its own (non-virtual,
     // differently-bodied) setStyle — this is the one virtual seam the theme calls through so it
     // never needs a per-class qobject_cast.
@@ -118,6 +132,8 @@ private:
     QStringList m_classList;
     QStringList m_stateList;
     QStringList m_alternateIdList;
+    mutable QVariantMap m_layoutParsedFrom;
+    mutable QExplicitlySharedDataPointer<CssLayoutStyle> m_layoutStyle;
 };
 
 } // namespace QmlCss

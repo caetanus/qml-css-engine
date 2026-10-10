@@ -219,4 +219,8 @@ private slots:
     // 4b-4 Task 2: applyToText diffs a typed payload against the last one applied — a re-apply with
     // nothing changed writes nothing to the composed label; one changed value writes one property.
     void textPayloadWritesOnlyChanges();
+
+    // 4b-3 Task 2: a box's flex style is parsed ONCE per resolved style — a second full relayout of
+    // 100 identical rows parses no length/box/shorthand string at all.
+    void layoutParsesOncePerStyle();
 };

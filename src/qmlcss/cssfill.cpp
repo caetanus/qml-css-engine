@@ -167,7 +167,7 @@ void CssFill::ensureScrollable()
 
 void CssFill::syncScrollContent()
 {
-    const qreal pb = m_layout ? m_layout->paddingOf(m_style).value(2) : 0.0;
+    const qreal pb = m_layout ? m_layout->paddingOf(layoutStyle())[2] : 0.0;
     // The Flickable viewport is the padding box (layoutChildren), so the extents must match it.
     syncScrollExtent(m_flickable, m_contentHolder, m_extentTop, m_extentBottom,
                      std::max<qreal>(0.0, height() - m_borderInsets[0] - m_borderInsets[2]),
@@ -438,7 +438,8 @@ void CssFill::updateBorderInsets()
 {
     if (!m_layout)
         return;
-    QVector<double> b = m_layout->borderOf(m_style);
+    const auto sides = m_layout->borderOf(layoutStyle());
+    QVector<double> b{ sides[0], sides[1], sides[2], sides[3] };
     if (b == m_borderInsets)
         return;
     m_borderInsets = std::move(b);
