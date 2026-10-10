@@ -553,6 +553,7 @@ QQuickItem *CssFill::composeLayer(const char *qml, QQuickItem *above, void (*con
         o->deleteLater();
         return nullptr;
     }
+    item->setParent(this); // C++ ownership, mirrors CssRect's composed scene
     item->setParentItem(this);
     if (above)
         item->stackBefore(above); // declared children (the content holder) stay on top

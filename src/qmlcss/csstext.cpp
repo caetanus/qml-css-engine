@@ -442,6 +442,7 @@ void CssText::componentComplete()
                 "import QtQuick\nText {}");
             if (QObject *o = comp->beginCreate(qmlContext(this))) {
                 if (QQuickItem *label = qobject_cast<QQuickItem *>(o)) {
+                    label->setParent(this); // C++ ownership: beginCreate() means C++ owns it
                     label->setParentItem(this);
                     m_label = label;
                     applyToText();

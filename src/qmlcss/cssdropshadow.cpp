@@ -103,6 +103,7 @@ void CssDropShadow::componentComplete()
             "MultiEffect { autoPaddingEnabled: true }\n");
         if (QObject *o = comp->create(qmlContext(this))) {
             if (QQuickItem *fx = qobject_cast<QQuickItem *>(o)) {
+                fx->setParent(this); // C++ ownership, mirrors CssRect's composed scene
                 fx->setParentItem(this);
                 m_effect = fx;
             } else {

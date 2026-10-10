@@ -165,4 +165,10 @@ private slots:
     // positive branch of `found != i` — the companion to ...WhenChanged above, which only
     // covers the negative/skip branch).
     void cssRepeaterMovedRowGetsNewIndex();
+
+    // Step 3 Task 1 (C21): every item an engine type composes via QQmlComponent::create/
+    // beginCreate must be a QObject CHILD of its composing owner too, not just a visual
+    // (setParentItem) child — ~QQuickItem only detaches visual children on destruction, it
+    // never deletes them, so a composed part with no QObject parent leaks.
+    void composedItemsDieWithTheirOwner();
 };

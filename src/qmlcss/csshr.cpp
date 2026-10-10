@@ -226,6 +226,7 @@ void CssHr::componentComplete()
             "}\n");
         if (QObject *o = comp->create(qmlContext(this))) {
             if (QQuickItem *shape = qobject_cast<QQuickItem *>(o)) {
+                shape->setParent(this); // C++ ownership, mirrors CssRect's composed scene
                 shape->setParentItem(this);
                 m_shape = shape;
             } else {

@@ -237,6 +237,7 @@ void CssImage::componentComplete()
                 "import QtQuick\nImage { asynchronous: true; cache: true }");
             if (QObject *o = comp->create(qmlContext(this))) {
                 if (QQuickItem *img = qobject_cast<QQuickItem *>(o)) {
+                    img->setParent(this); // C++ ownership, mirrors CssRect's composed scene
                     img->setParentItem(this);
                     m_image = img;
                 } else {
@@ -267,6 +268,7 @@ void CssImage::componentComplete()
                 "}\n");
             if (QObject *o = comp->create(qmlContext(this))) {
                 if (QQuickItem *mask = qobject_cast<QQuickItem *>(o)) {
+                    mask->setParent(this); // C++ ownership, mirrors CssRect's composed scene
                     mask->setParentItem(this);
                     m_mask = mask;
                 } else {
@@ -281,6 +283,7 @@ void CssImage::componentComplete()
                 "import QtQuick.Effects\nMultiEffect {}");
             if (QObject *o = comp->create(qmlContext(this))) {
                 if (QQuickItem *effect = qobject_cast<QQuickItem *>(o)) {
+                    effect->setParent(this); // C++ ownership, mirrors CssRect's composed scene
                     effect->setParentItem(this);
                     if (m_image)
                         effect->setProperty("source", QVariant::fromValue(m_image.data()));

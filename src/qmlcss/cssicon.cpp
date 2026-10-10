@@ -242,6 +242,7 @@ void CssIcon::componentComplete()
                 "}\n");
             if (QObject *o = comp->create(qmlContext(this))) {
                 if (QQuickItem *img = qobject_cast<QQuickItem *>(o)) {
+                    img->setParent(this); // C++ ownership, mirrors CssRect's composed scene
                     img->setParentItem(this);
                     m_image = img;
                 } else {
@@ -258,6 +259,7 @@ void CssIcon::componentComplete()
                 "import QtQuick.Effects\nMultiEffect {}\n");
             if (QObject *o = comp->create(qmlContext(this))) {
                 if (QQuickItem *fx = qobject_cast<QQuickItem *>(o)) {
+                    fx->setParent(this); // C++ ownership, mirrors CssRect's composed scene
                     fx->setParentItem(this);
                     // QML: source: iconImage
                     fx->setProperty("source", QVariant::fromValue(m_image.data()));

@@ -8,6 +8,8 @@
 
 #include <QColor>
 #include <QImage>
+#include <QPair>
+#include <QPointer>
 #include <QTemporaryDir>
 #include <QElapsedTimer>
 #include <QFont>
@@ -45,6 +47,18 @@ QQuickItem *composedText(QObject *cssText)
             return k;
     }
     return nullptr;
+}
+
+// Walk the VISUAL tree (childItems(), recursively) rather than the QObject tree: a part an
+// engine type composes via QQmlComponent::create/beginCreate is always a visual (setParentItem)
+// child, but — before the Step 3 Task 1 fix — some of them were NOT also a QObject child, so
+// findChildren() alone would miss exactly the ones this test exists to catch.
+void collectComposedDescendants(QQuickItem *item, QList<QPair<QByteArray, QPointer<QObject>>> &out)
+{
+    for (QQuickItem *k : item->childItems()) {
+        out.append({ QByteArray(k->metaObject()->className()), QPointer<QObject>(k) });
+        collectComposedDescendants(k, out);
+    }
 }
 
 } // namespace
@@ -3357,4 +3371,112 @@ void QmlCssTests::cssRepeaterMovedRowGetsNewIndex()
     QCOMPARE(b->property("idx").toInt(), 1);
     QCOMPARE(c->property("idx").toInt(), 2);
     QCOMPARE(a->property("idx").toInt(), 3);
+}
+
+// --- Step 3 Task 1 (C21): composed parts must die with their owner --------------------------
+//
+// `~QQuickItem` only calls setParentItem(nullptr) on its visual children (qquickitem.cpp
+// ~2406 in Qt 6.11.1) — it never deletes them. A part composed via QQmlComponent::create or
+// beginCreate from C++ has C++ ownership and, unless given a QObject parent too
+// (setParent(this)), nothing ever deletes it: the visual-only unparenting leaves it alive and
+// unreachable. This instantiates one of every engine type that composes children this way,
+// collects every visual descendant BEFORE destroying the owning root, destroys the root, and
+// requires every descendant to actually be gone afterwards.
+void QmlCssTests::composedItemsDieWithTheirOwner()
+{
+    QQmlEngine engine;
+
+    // A real (if tiny) PNG so CssFill's url() background resolves to an actual image source —
+    // not required for composition (ensureImageLayers triggers on the url() syntax alone), but
+    // keeps the scenario realistic.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString png = dir.filePath(QStringLiteral("bg.png"));
+    QImage bgImg(4, 4, QImage::Format_ARGB32);
+    bgImg.fill(Qt::red);
+    QVERIFY(bgImg.save(png));
+    const QString pngUrl = QUrl::fromLocalFile(png).toString();
+
+    struct Scenario {
+        const char *name;
+        QString qml;
+    };
+    const QList<Scenario> scenarios = {
+        // csstext.cpp:443 — the composed Text label (measured leak).
+        { "CssText", QStringLiteral(R"(
+            import QtQuick
+            import qmlcss
+            CssText { text: "hi"; width: 80; height: 20 }
+        )") },
+        // cssimage.cpp:238/268/282 — Image + Shape mask + MultiEffect, always composed.
+        { "CssImage", QStringLiteral(R"(
+            import QtQuick
+            import qmlcss
+            CssImage { width: 40; height: 40 }
+        )") },
+        // cssicon.cpp:243/259 — Image + MultiEffect, always composed.
+        { "CssIcon", QStringLiteral(R"(
+            import QtQuick
+            import qmlcss
+            CssIcon { width: 32; height: 32 }
+        )") },
+        // csshr.cpp:227 — the composed Shape rule.
+        { "CssHr", QStringLiteral(R"(
+            import QtQuick
+            import qmlcss
+            CssHr { width: 100 }
+        )") },
+        // cssfilllayer.cpp:216 — the composed Shape (used standalone here; CssRect's render
+        // shell also declares CssFillLayer instances, but those are ordinary QML-declared
+        // children, not the comp->create() site under test).
+        { "CssFillLayer", QStringLiteral(R"(
+            import QtQuick
+            import qmlcss
+            CssFillLayer {
+                width: 50; height: 50
+                spec: ({ type: "color", color: Qt.rgba(1, 0, 0, 0.5) })
+                radii: [0, 0, 0, 0]
+            }
+        )") },
+        // cssdropshadow.cpp:104 — the composed MultiEffect, always composed.
+        { "CssDropShadow", QStringLiteral(R"(
+            import QtQuick
+            import qmlcss
+            CssDropShadow { width: 100; height: 40 }
+        )") },
+        // cssfill.cpp:545 (CssFill::composeLayer, shared by all 3 call sites) — m_rect composes
+        // unconditionally; the url() background additionally composes the image + solid layers.
+        { "CssFill", QStringLiteral(R"CSSFILL(
+            import QtQuick
+            import qmlcss
+            CssFill { width: 80; height: 40; style: ({ "background": "url('%1')" }) }
+        )CSSFILL").arg(pngUrl) },
+    };
+
+    for (const Scenario &s : scenarios) {
+        QQmlComponent component(&engine);
+        component.setData(s.qml.toUtf8(), QUrl());
+        QScopedPointer<QObject> root(component.create());
+        QVERIFY2(root, qPrintable(QStringLiteral("%1: %2").arg(QString::fromLatin1(s.name), component.errorString())));
+        auto *item = qobject_cast<QQuickItem *>(root.data());
+        QVERIFY2(item, s.name);
+
+        QList<QPair<QByteArray, QPointer<QObject>>> descendants;
+        collectComposedDescendants(item, descendants);
+        QVERIFY2(!descendants.isEmpty(),
+                 qPrintable(QStringLiteral("%1: composed nothing — scenario does not exercise the composing path")
+                                .arg(QString::fromLatin1(s.name))));
+
+        root.reset(); // synchronously destroys the owner (and anything it truly owns)
+
+        // Flush any deleteLater() fallbacks (failed-cast cleanup paths) before judging survival.
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QCoreApplication::processEvents();
+
+        for (const auto &d : descendants) {
+            QTRY_VERIFY2(d.second.isNull(),
+                         qPrintable(QStringLiteral("%1: composed %2 survived its owner's destruction")
+                                        .arg(QString::fromLatin1(s.name), QString::fromLatin1(d.first))));
+        }
+    }
 }
