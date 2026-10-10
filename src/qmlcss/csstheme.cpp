@@ -255,6 +255,9 @@ void CssTheme::reapplyForSender()
     // EVERY registered object (O(registered x depth) per class/state change — i.e. per hover), now
     // O(subtree). isAncestorOf never followed `cssAncestor` re-anchoring, and neither does this.
     // childItems() returns the implicitly shared list (no allocation).
+    // Order does not matter: collectCssAncestors() reads each ancestor's identity live off the item,
+    // never off a previous applyCssTo(). Raw pointers on the stack rely on the same convention as
+    // m_bindings (csstheme.h): composed items are destroyed with deleteLater(), never synchronously.
     QVarLengthArray<QQuickItem *, 64> stack;
     for (QQuickItem *k : item->childItems())
         stack.append(k);

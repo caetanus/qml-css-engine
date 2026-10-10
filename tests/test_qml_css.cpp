@@ -3145,5 +3145,5 @@ void QmlCssTests::stateChangeRestylesOnlyTheSubtree()
     row->setProperty("cssClass", QVariant(QStringList{QStringLiteral("row")}));
     const auto applied = Detail::g_applyStats.fromDescendant - before;
     Detail::g_applyStats.enabled = false;
-    QVERIFY2(applied <= 2, qPrintable(QStringLiteral("descendant applies %1").arg(applied)));
+    QCOMPARE(applied, quint64(1)); // exactly the one registered descendant (cell7)
 }
