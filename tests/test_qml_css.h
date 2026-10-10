@@ -227,4 +227,10 @@ private slots:
     // Step 5a Task 1: the opt-in phase timers (SQ_PHASE_STATS) cost nothing when disabled — a
     // 100-row mount leaves every bucket at count 0 — and count exactly what they're told to when on.
     void phaseStatsAreFreeWhenDisabled();
+
+    // Step 5b Task 2: identical classes resolve to the SAME shared map (the context node's own-resolve
+    // memo, 4b-2), but alternating creation order used to defeat the one-entry cssSharedLayoutStyle
+    // memo — every box got its OWN parsed CssLayoutStyle. The bounded cache shares across the whole
+    // rotation: 300 boxes of 3 distinct classes hold only 3 distinct CssLayoutStyle pointers.
+    void typedStylesSharedAcrossAlternatingClasses();
 };

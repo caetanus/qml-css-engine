@@ -5,6 +5,7 @@
 #include <QRegularExpression>
 #include <QVarLengthArray>
 
+#include <algorithm>
 #include <cmath>
 
 namespace QmlCss {
@@ -238,16 +239,40 @@ CssLayoutStyle CssLayoutStyle::parse(const QVariantMap &style)
 
 QExplicitlySharedDataPointer<CssLayoutStyle> cssSharedLayoutStyle(const QVariantMap &style)
 {
-    // One-entry memo (GUI thread only): consecutive boxes holding the same shared map — a list of
-    // identical rows — get the same parsed style. Holding `lastFrom` keeps that map's data alive, so
-    // its identity cannot be reused by another map while compared.
-    static QVariantMap lastFrom;
-    static QExplicitlySharedDataPointer<CssLayoutStyle> last;
-    if (last && style.isSharedWith(lastFrom))
-        return last;
-    last = new CssLayoutStyle(CssLayoutStyle::parse(style));
-    lastFrom = style;
-    return last;
+    // Bounded LRU cache (GUI thread only), step 5b: the one-entry memo this replaces only shared two
+    // CONSECUTIVE boxes of the same resolved style — an ALTERNATING sequence (`.row > .id, .label`:
+    // row, id, label, row, id, label, …) evicted the match before it came back around, so every box
+    // got its own freshly-parsed CssLayoutStyle even though the underlying map is the SAME shared
+    // identity for every box of a given class (the context node's own-resolve memo, 4b-2). 16 entries
+    // is enough slack for a few distinct classes in rotation; each hit is a linear scan of IDENTITY
+    // compares only (isSharedWith, O(1) each — at most 16 pointer compares). Holding every entry's map
+    // keeps its data alive, so identity cannot be reused by an unrelated map while compared.
+    struct Entry {
+        QVariantMap from;
+        QExplicitlySharedDataPointer<CssLayoutStyle> style;
+    };
+    static constexpr int kCapacity = 16;
+    static Entry cache[kCapacity];
+    static int count = 0;
+
+    for (int i = 0; i < count; ++i) {
+        if (style.isSharedWith(cache[i].from)) {
+            // LRU: bubble the hit to the front so a class still in rotation never ages out behind
+            // ones used less recently.
+            Entry hit = cache[i];
+            for (int j = i; j > 0; --j)
+                cache[j] = cache[j - 1];
+            cache[0] = hit;
+            return cache[0].style;
+        }
+    }
+    Entry fresh{ style, QExplicitlySharedDataPointer<CssLayoutStyle>(new CssLayoutStyle(CssLayoutStyle::parse(style))) };
+    const int n = std::min(count + 1, kCapacity);
+    for (int j = n - 1; j > 0; --j)
+        cache[j] = cache[j - 1];
+    cache[0] = fresh;
+    count = n;
+    return cache[0].style;
 }
 
 } // namespace QmlCss

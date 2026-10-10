@@ -4268,3 +4268,66 @@ void QmlCssTests::phaseStatsAreFreeWhenDisabled()
     QVERIFY(Detail::g_phaseStats.buckets.value("text.metrics").count >= 200);
     Detail::g_phaseStats.buckets.clear();
 }
+
+// Step 5b Task 2: csslength.cpp's cssSharedLayoutStyle used to be a ONE-entry memo — only two
+// CONSECUTIVE boxes of the same resolved style shared a parsed CssLayoutStyle. 100 rows of
+// `.row > .id, .label` create in alternating order (row, id, label, row, id, label, …): every
+// class's underlying style map is the SAME shared QVariantMap (the context node's own-resolve memo,
+// 4b-2 — identical siblings share one node, whose ownResolves caches by the own-input key), but the
+// one-entry memo was defeated by the alternation and reparsed almost every box.
+void QmlCssTests::typedStylesSharedAcrossAlternatingClasses()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(
+        ".list { display: flex; flex-direction: column; } "
+        ".row { display: flex; height: 20px; } "
+        ".id { width: 10px; } "
+        ".label { flex: 1; }"));
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect { cssClass: ["list"]; width: 400; height: 3000
+            CssRepeater {
+                model: 100
+                delegate: Component {
+                    CssRect { objectName: "row"; cssClass: ["row"]
+                        CssRect { objectName: "id"; cssClass: ["id"] }
+                        CssRect { objectName: "label"; cssClass: ["label"] }
+                    }
+                }
+            }
+        }
+    )", QUrl());
+    QScopedPointer<QObject> object(component.create());
+    QVERIFY2(object, qPrintable(component.errorString()));
+    auto *root = qobject_cast<QQuickItem *>(object.data());
+    QVERIFY(root);
+    QQuickWindow window;
+    root->setParentItem(window.contentItem());
+
+    const QList<QQuickItem *> rows = root->findChildren<QQuickItem *>(QStringLiteral("row"));
+    QCOMPARE(rows.size(), 100);
+
+    // Access each box's cached layout style exactly as the layout engine's child scan does
+    // (CssBox::layoutStyleRef), one full pass over the container and every row's content.
+    layoutEngine.layout(root, contentHolderOf(rows.first()));
+    for (QQuickItem *row : rows)
+        layoutEngine.layout(row, contentHolderOf(row->findChild<QQuickItem *>(QStringLiteral("id"))));
+
+    QSet<const void *> distinct;
+    for (QQuickItem *row : rows) {
+        distinct.insert(qobject_cast<CssBox *>(row)->layoutStyleRef().data());
+        for (const QLatin1String &name : { QLatin1String("id"), QLatin1String("label") }) {
+            auto *child = row->findChild<QQuickItem *>(name);
+            QVERIFY(child);
+            distinct.insert(qobject_cast<CssBox *>(child)->layoutStyleRef().data());
+        }
+    }
+    // Today (the one-entry memo): ~300, one per box. After the bounded cache: 3 — one per class.
+    QCOMPARE(distinct.size(), 3);
+}
