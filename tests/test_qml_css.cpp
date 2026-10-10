@@ -2096,8 +2096,10 @@ void QmlCssTests::viewportChangeIsOneFlush()
     const quint64 before = layoutEngine.childVisits();
     theme.setViewport(800, 600);
     const quint64 visits = layoutEngine.childVisits() - before;
-    // Every known root once: the container (101 children incl. the repeater) + 100 rows (1 child)
-    // + 100 leaves (0) ≈ 201; a cascade re-laying boxes would show up as a multiple of that.
+    // Measured baseline: 301 visits (the container's 101 children + each row visited TWICE — its own
+    // pending entry and the parent's cascade, which must first fix the row's cross size — + leaves).
+    // Batching the viewport loop removed R-1 flush calls, not visits; 402 still catches a regression
+    // that re-lays the boxes once more.
     QVERIFY2(visits <= 2 * 201, qPrintable(QStringLiteral("viewport visits %1").arg(visits)));
 }
 

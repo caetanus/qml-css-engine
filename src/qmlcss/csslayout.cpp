@@ -1,4 +1,5 @@
 #include "csslayout.h"
+#include "csstheme_p.h" // LayoutBatchGuard
 
 #include "cssfill.h"
 #include "cssrect.h"
@@ -122,12 +123,11 @@ void CssLayoutEngine::relayoutKnownRoots()
 {
     // One flush for the whole viewport invalidation: each requestLayout() outside a batch flushed on
     // its own — R synchronous flushes per resize, with cascades re-laying boxes already done.
-    beginBatch();
+    const Detail::LayoutBatchGuard batch(this); // exception-safe, like every other batch site
     for (auto it = m_known.cbegin(); it != m_known.cend(); ++it) {
         if (it.value())
             requestLayout(it.key(), it.value());
     }
-    endBatch();
 }
 
 void CssLayoutEngine::endBatch()
