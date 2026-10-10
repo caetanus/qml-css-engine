@@ -142,7 +142,9 @@ void CssRepeater::rebuild()
         return;
     // One reconciliation = ONE layout flush. Without the batch every created/destroyed row fired the
     // holder's childrenChanged -> a synchronous full relayout of the container: O(N^2) per append/clear.
-    // The guard flushes on scope exit, so geometry is settled when rebuild() returns (same contract).
+    // The guard flushes on scope exit, so geometry is settled when rebuild() returns (same contract) —
+    // when this is the OUTERMOST batch. Nested inside another one (a <For> in a delegate being created,
+    // a theme reapply, the loader's mount), settling happens where that outer batch closes.
     const Detail::LayoutBatchGuard batch(m_layout);
     const QVariantList data = toList(m_model);
 
