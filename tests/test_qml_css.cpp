@@ -3423,6 +3423,52 @@ void QmlCssTests::cssRepeaterRowsResolveOnceInsideTheScene()
                  QStringLiteral("#123456"));
 }
 
+void QmlCssTests::cssIncubatorPageResolvesOnceInsideTheScene()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(".list .page { background-color: #123456; }"));
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine; // no incubation controller: incubation runs synchronously (qqmlincubator.cpp)
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect {
+            cssPrimitive: "div"; cssClass: ["list"]
+            width: 200; height: 200
+            CssIncubator {
+                objectName: "inc"
+                active: false
+                sourceComponent: Component {
+                    CssRect { objectName: "page"; cssPrimitive: "div"; cssClass: ["page"] }
+                }
+            }
+        }
+    )", QUrl());
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+    QQuickWindow window;
+    qobject_cast<QQuickItem *>(root.data())->setParentItem(window.contentItem());
+    QObject *inc = root->findChild<QObject *>(QStringLiteral("inc"));
+    QVERIFY(inc);
+
+    const bool statsWereOn = Detail::g_applyStats.enabled;
+    Detail::g_applyStats.enabled = true;
+    const int before = Detail::g_applyStats.fromLoad;
+    inc->setProperty("active", true);
+    QTRY_VERIFY(root->findChild<QQuickItem *>(QStringLiteral("page")));
+    const int applies = Detail::g_applyStats.fromLoad - before;
+    Detail::g_applyStats.enabled = statsWereOn;
+
+    QCOMPARE(applies, 1); // 2 = resolved parentless, healed on scene join
+    auto *page = root->findChild<QQuickItem *>(QStringLiteral("page"));
+    QCOMPARE(page->property("style").toMap().value(QStringLiteral("background-color")).toString(),
+             QStringLiteral("#123456"));
+    QCOMPARE(page->opacity(), 0.0); // the atomic-reveal hold is in place from the first frame
+}
+
 // --- Step 3 Task 1 (C21): composed parts must die with their owner --------------------------
 //
 // `~QQuickItem` only calls setParentItem(nullptr) on its visual children (qquickitem.cpp

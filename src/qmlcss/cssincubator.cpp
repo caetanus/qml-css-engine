@@ -31,6 +31,24 @@ void CssIncubator::Incubator::statusChanged(Status s)
     }
 }
 
+// The gap between beginCreate() and completeCreate() (Qt's own wording): parent the page HERE so its
+// componentComplete() resolves CSS against its real ancestors, once — not parentless and healed later.
+void CssIncubator::Incubator::setInitialState(QObject *o)
+{
+    m_owner->adopt(o);
+}
+
+void CssIncubator::adopt(QObject *o)
+{
+    o->setParent(this);
+    auto *item = qobject_cast<QQuickItem *>(o);
+    if (!item)
+        return;
+    // The Repeater trick: the item becomes a DIRECT child of our parent (the content
+    // holder), so the layout engine treats it exactly like a declared child.
+    item->setParentItem(parentItem() ? parentItem() : this);
+}
+
 void CssIncubator::setActive(bool v)
 {
     if (m_active == v)
@@ -89,17 +107,14 @@ void CssIncubator::ready()
     if (!item)
         return;
     if (!m_active) { // deactivated while incubating
+        item->setParentItem(nullptr);
         item->deleteLater();
         return;
     }
-    item->setParent(this);
-    // The Repeater trick: the item becomes a DIRECT child of our parent (the content
-    // holder), so the layout engine treats it exactly like a declared child.
-    item->setParentItem(parentItem() ? parentItem() : this);
     m_item = item;
-    // ATOMIC reveal: incubation streams the subtree in over several frames — visible,
-    // that reads as slow, glitchy rendering. Hold the item transparent until the layout
-    // settles (one event-loop turn after mount), then fade it in as ONE finished page.
+    // ATOMIC reveal: componentComplete() just resolved CSS and set the style's own opacity
+    // (default 1.0) — snap it back to transparent now that creation is finished, then fade
+    // the held page in once the layout settled (one event-loop turn after mount).
     item->setOpacity(0.0);
     QTimer::singleShot(60, item, [item] {
         auto *fade = new QVariantAnimation(item);

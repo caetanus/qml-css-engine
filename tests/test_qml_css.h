@@ -170,6 +170,9 @@ private slots:
     // ancestor-scoped rules already applied by it — no truncated resolve healed on scene join.
     void cssRepeaterRowsResolveOnceInsideTheScene();
 
+    // An incubated page is parented in setInitialState (between beginCreate and completeCreate): one resolve.
+    void cssIncubatorPageResolvesOnceInsideTheScene();
+
     // Step 3 Task 1 (C21): every item an engine type composes via QQmlComponent::create/
     // beginCreate must be a QObject CHILD of its composing owner too, not just a visual
     // (setParentItem) child — ~QQuickItem only detaches visual children on destruction, it

@@ -50,13 +50,15 @@ private:
 
     protected:
         void statusChanged(Status s) override;
+        void setInitialState(QObject *o) override;
 
     private:
         CssIncubator *m_owner;
     };
 
     void sync();     // reconcile active/component with the incubation/item state
-    void ready();    // incubation finished: adopt + reparent the item
+    void adopt(QObject *o); // parent + reparent the page BEFORE it completes (the setInitialState gap)
+    void ready();    // incubation finished: finish adopting the item
     void teardown(); // cancel incubation and destroy the item
 
     bool m_active = false;
