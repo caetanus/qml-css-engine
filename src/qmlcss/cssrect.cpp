@@ -1334,7 +1334,7 @@ void CssRect::componentComplete()
     });
     connect(this, &QQuickItem::visibleChanged, this, [this]() {
         if (m_layout)
-            m_layout->notifyParentLayout(this);
+            m_layout->notifyVisibilityChanged(this);
     });
     // `:focus` is a live item state (see CssTheme: the class list reads activeFocus directly), so a
     // focus change must re-run the cascade on this box. ONE restyle through identityChanged() —

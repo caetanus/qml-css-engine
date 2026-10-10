@@ -2835,6 +2835,86 @@ void QmlCssTests::cssRepeaterAppendAndClearAreLinear()
     QVERIFY2(clearVisits < quint64(8 * 2 * n), qPrintable(QStringLiteral("clear visits %1").arg(clearVisits)));
 }
 
+// Tearing a list down — app exit, a <Show> dropping its page, any ancestor deleted — must cost
+// O(N) layout work. Each destroyed row used to leave its container's content holder, which
+// re-laid the remaining rows synchronously: 2000 rows cost ~8M child visits on exit.
+void QmlCssTests::listTeardownIsLinear()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(".row { height: 10px; }"));
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQuickWindow window;
+
+    // Returns the child visits spent tearing down a list of n rows: the whole tree when
+    // `repeaterOnly` is false, else just the CssRepeater (the container survives and must end up
+    // laid out for zero rows).
+    const auto teardownVisits = [&](int n, bool repeaterOnly) -> quint64 {
+        QQmlComponent component(&engine);
+        component.setData(R"(
+            import QtQuick
+            import qmlcss
+            CssRect {
+                cssPrimitive: ""
+                width: 200; height: 900
+                style: ({ "display": "flex", "flex-direction": "column" })
+                property alias list: list
+                CssRect {
+                    id: list
+                    cssPrimitive: "div"
+                    property int count: 0
+                    style: ({ "display": "flex", "flex-direction": "column" })
+                    CssRepeater {
+                        model: list.count
+                        delegate: Component {
+                            CssRect { cssClass: ["row"]; cssPrimitive: "div"
+                                CssText { text: "a" }
+                                CssText { text: "b" }
+                            }
+                        }
+                    }
+                }
+            }
+        )", QUrl());
+        QScopedPointer<QObject> root(component.create());
+        if (!root) {
+            qWarning() << component.errorString();
+            return ~quint64(0);
+        }
+        qobject_cast<QQuickItem *>(root.data())->setParentItem(window.contentItem());
+        auto *list = root->property("list").value<QQuickItem *>();
+        list->setProperty("count", n);
+        if (!qFuzzyCompare(list->implicitHeight(), qreal(10 * n))) {
+            qWarning() << "mounted list height" << list->implicitHeight();
+            return ~quint64(0);
+        }
+        const quint64 before = layoutEngine.childVisits();
+        if (repeaterOnly) {
+            delete list->findChild<CssRepeater *>();
+            const quint64 visits = layoutEngine.childVisits() - before;
+            if (!qFuzzyIsNull(list->implicitHeight())) {
+                qWarning() << "emptied list height" << list->implicitHeight();
+                return ~quint64(0);
+            }
+            return visits;
+        }
+        root.reset();
+        return layoutEngine.childVisits() - before;
+    };
+
+    for (const bool repeaterOnly : { false, true }) {
+        const quint64 small = teardownVisits(200, repeaterOnly);
+        const quint64 large = teardownVisits(400, repeaterOnly);
+        const QString msg = QStringLiteral("%1: visits(200) %2, visits(400) %3")
+            .arg(repeaterOnly ? QStringLiteral("repeater only") : QStringLiteral("whole tree"))
+            .arg(small).arg(large);
+        QVERIFY2(large <= 3 * small + 50, qPrintable(msg));
+        QVERIFY2(large < quint64(400 * 10), qPrintable(msg));
+    }
+}
+
 void QmlCssTests::contentHolderReportsLateForeignChild()
 {
     CssTheme theme;

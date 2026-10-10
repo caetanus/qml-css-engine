@@ -154,7 +154,7 @@ void CssHr::componentComplete()
     });
     connect(this, &QQuickItem::visibleChanged, this, [this]() {
         if (m_layout)
-            m_layout->notifyParentLayout(this);
+            m_layout->notifyVisibilityChanged(this);
     });
 
     // QML Component.onCompleted.

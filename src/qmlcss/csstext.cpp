@@ -480,7 +480,7 @@ void CssText::componentComplete()
     });
     connect(this, &QQuickItem::visibleChanged, this, [this]() {
         if (m_layout)
-            m_layout->notifyParentLayout(this);
+            m_layout->notifyVisibilityChanged(this);
     });
     // font.family re-resolves once a downloaded @font-face registers (QML leading fontRevision dep).
     if (m_theme)

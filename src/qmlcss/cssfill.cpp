@@ -523,7 +523,7 @@ void CssFill::componentComplete()
     });
     connect(this, &QQuickItem::visibleChanged, this, [this]() {
         if (m_layout)
-            m_layout->notifyParentLayout(this);
+            m_layout->notifyVisibilityChanged(this);
     });
     // An ancestor's inherited text props re-propagate to us (CSS inheritance).
     if (QObject *anc = cssInheritingAncestor(this))

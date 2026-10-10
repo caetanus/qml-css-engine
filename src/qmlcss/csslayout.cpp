@@ -170,6 +170,18 @@ void CssLayoutEngine::notifyParentLayout(QQuickItem *item)
     }
 }
 
+void CssLayoutEngine::notifyVisibilityChanged(QQuickItem *item)
+{
+    if (!item)
+        return;
+    // Hidden while the parent is hidden too: the parent's own change cascaded down (a visible
+    // item cannot be the one hidden under a hidden parent). Only the top of the cascade notifies.
+    const QQuickItem *parent = item->parentItem();
+    if (!item->isVisible() && parent && !parent->isVisible())
+        return;
+    notifyParentLayout(item);
+}
+
 void CssLayoutEngine::flush()
 {
     if (m_flushing)

@@ -55,6 +55,12 @@ CssRepeater::CssRepeater(QQuickItem *parent)
 
 CssRepeater::~CssRepeater()
 {
+    // Each row leaving the holder requests a relayout of the container; unbatched, every one
+    // re-laid the remaining rows synchronously (O(N^2) per destroyed list). One flush at the end
+    // settles a surviving container; a dying one no longer receives the requests (its
+    // connections are gone by the time ~QObject deletes us), so nothing touches it. m_layout is a
+    // QPointer: the guard is a no-op if the engine already died.
+    const Detail::LayoutBatchGuard batch(m_layout);
     for (Row &row : m_rows)
         destroyRow(row);
     m_rows.clear();

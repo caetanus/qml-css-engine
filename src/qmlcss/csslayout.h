@@ -39,6 +39,11 @@ public:
     // Queue a (re)layout of `root`'s content (held by `content`); coalesced.
     Q_INVOKABLE void requestLayout(QQuickItem *root, QQuickItem *content);
     Q_INVOKABLE void notifyParentLayout(QQuickItem *item);
+    // notifyParentLayout for an item's (effective) visibility change — except when it merely
+    // followed a hidden or detached parent. Hiding or unparenting a subtree flips every
+    // descendant, deepest first; each one re-laying its already hidden box made tearing down a
+    // list O(N^2). Showing again flips them back with the parent visible, which notifies.
+    void notifyVisibilityChanged(QQuickItem *item);
 
     // Layout hibernation (owner's batch gate): while a batch is open, requestLayout only
     // RECORDS work; endBatch runs ONE flush for everything. Brackets bulk style passes
