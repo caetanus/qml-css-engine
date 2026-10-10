@@ -12,6 +12,7 @@
 #include <QVariantMap>
 
 class QNetworkAccessManager;
+class QmlCssTests;
 
 namespace QmlCss {
 class CssLayoutEngine;
@@ -74,6 +75,9 @@ struct CssFontFace {
 
 class CssTheme : public QObject {
     Q_OBJECT
+    // The registry-stress test calls the private reapplyAll() directly (mass-destruction + full
+    // reapply), instead of going through a whole reload/setViewport cycle just to reach it.
+    friend class ::QmlCssTests;
     Q_PROPERTY(bool loaded READ isLoaded NOTIFY loadedChanged)
     // Current viewport (window) size — exposed so QML can resolve `vw`/`vh` units.
     Q_PROPERTY(qreal viewportWidth READ viewportWidth NOTIFY viewportChanged)
@@ -236,6 +240,9 @@ public:
     // descendant sweeps) hibernate the layout and flush once (see beginBatch/endBatch).
     void setLayoutEngine(CssLayoutEngine *engine) { m_layoutEngine = engine; }
 
+    // Test/bench probe: live registered (styled) objects.
+    int registeredCount() const { return int(m_registered.size()); }
+
 signals:
     void loadedChanged();
     void viewportChanged();
@@ -305,9 +312,13 @@ private:
     qreal m_viewportHeight = 0;
     // Parsed @keyframes by name (each a list of { offset, properties }).
     QHash<QString, QVariantList> m_keyframes;
-    // Registered loadCss targets. Identity is re-read off each object at apply time, so
-    // a target's cssClass change is picked up on the next apply (reload or loadCss(this)).
+    // Styled objects in registration order (reapplyAll walks it). A destroyed object leaves a null
+    // QPointer behind, skipped by every walk and compacted once dead entries outnumber live ones;
+    // m_registered answers "already registered?" — both O(1) per element (they were linear scans:
+    // registering N rows and destroying them was O(N^2), 34% of the step-1 bench profile).
     QList<QPointer<QObject>> m_bindings;
+    QSet<QObject *> m_registered;
+    int m_deadBindings = 0;
     bool m_loaded = false;
     QStringList m_requestedLayer;  // the paths last passed to loadLayered (for reloads)
     QString m_stylePrelude;        // config-derived CSS prepended (lowest priority) on load

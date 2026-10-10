@@ -202,11 +202,17 @@ void CssTheme::loadCss(QObject *target)
 
     if (g_applyStats.enabled) ++g_applyStats.fromLoad;
     // Register once; the reverse slot re-reads the object's identity on every (re)load.
-    if (!m_bindings.contains(QPointer<QObject>(target))) {
+    if (!m_registered.contains(target)) {
+        m_registered.insert(target);
         m_bindings.append(QPointer<QObject>(target));
-        // The reverse slot must never dangle: drop the registration when the object dies.
+        // The reverse slot must never dangle: forget the object when it dies — O(1). Its QPointer in
+        // m_bindings is already null; compact once the dead outnumber the live (amortised O(1)).
         connect(target, &QObject::destroyed, this, [this](QObject *obj) {
-            m_bindings.removeIf([obj](const QPointer<QObject> &p) { return p.isNull() || p == obj; });
+            m_registered.remove(obj);
+            if (++m_deadBindings > m_bindings.size() / 2) {
+                m_bindings.removeIf([](const QPointer<QObject> &p) { return p.isNull(); });
+                m_deadBindings = 0;
+            }
         });
         // Observe the registered cssClass AND cssState: a state change (focused/urgent/
         // hover/active) must re-style automatically, so the applet registers once and never
@@ -254,6 +260,7 @@ void CssTheme::reapplyAll()
 {
     const LayoutBatchGuard batch(m_layoutEngine); // N applies, ONE layout flush
     m_bindings.removeIf([](const QPointer<QObject> &p) { return p.isNull(); });
+    m_deadBindings = 0;
     for (const QPointer<QObject> &p : m_bindings) {
         if (p) {
             if (g_applyStats.enabled) ++g_applyStats.fromAll;

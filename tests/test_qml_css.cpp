@@ -3047,3 +3047,49 @@ void QmlCssTests::scrollExtentFollowsForeignChildSetHeight()
     foreign->setHeight(500); // explicit height, NOT implicit
     QTRY_VERIFY_WITH_TIMEOUT(flick->property("contentHeight").toReal() >= 499.0, 2000);
 }
+
+void QmlCssTests::themeRegistryForgetsDestroyedItems()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(".row { height: 10px; }"));
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect {
+            id: box
+            cssPrimitive: ""
+            width: 200; height: 200
+            property int count: 300
+            style: ({ "display": "flex", "flex-direction": "column" })
+            CssRepeater {
+                model: box.count
+                delegate: Component { CssRect { cssClass: ["row"]; cssPrimitive: "div" } }
+            }
+        }
+    )", QUrl());
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+    // `box` itself has no cssId/cssClass/cssPrimitive (hasCssIdentity() is false), so the component
+    // tree never auto-registers it — register it explicitly so it OUTLIVES the mass destruction of
+    // rows below and the "same object twice" check further down is a genuine re-registration, not
+    // box's first one.
+    theme.loadCss(root.get());
+    const int withRows = theme.registeredCount();
+    QVERIFY2(withRows >= 301, qPrintable(QString::number(withRows)));
+
+    root->setProperty("count", 0);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete); // rows are deleteLater'd
+    QTRY_VERIFY_WITH_TIMEOUT(theme.registeredCount() <= withRows - 300, 2000);
+
+    // Registering the same object (box) twice keeps one entry.
+    const int before = theme.registeredCount();
+    theme.loadCss(root.get());
+    QCOMPARE(theme.registeredCount(), before);
+    // A full reapply after mass destruction still works (no dangling entries).
+    theme.reapplyAll();
+}

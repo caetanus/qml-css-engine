@@ -146,4 +146,7 @@ private slots:
     void scrollExtentUsesTransitionTarget();
     void scrollExtentKeepsPaddingTopBreathing();
     void scrollExtentFollowsForeignChildSetHeight();
+
+    // Step 2 (native beats web): registry and model bookkeeping stay O(1) per element.
+    void themeRegistryForgetsDestroyedItems();
 };
