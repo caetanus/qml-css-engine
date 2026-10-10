@@ -637,7 +637,7 @@ void CssRect::setDefaultBorderWidth(qreal v)
     recompute();
 }
 
-static QObject *cssInheritingAncestor(const QQuickItem *self)
+static QQuickItem *cssInheritingAncestor(const QQuickItem *self)
 {
     QQuickItem *holder = self->parentItem();
     QQuickItem *box = holder ? holder->parentItem() : nullptr;
@@ -654,26 +654,25 @@ CssRect *CssRect::cssParent() const
     return qobject_cast<CssRect *>(cssInheritingAncestor(this));
 }
 
-#define CSSRECT_INHERIT(Getter, Key)                                                                \
-    QString CssRect::Getter() const                                                                \
-    {                                                                                              \
-        const QString own = m_style.value(QStringLiteral(Key)).toString();                        \
-        if (!own.isEmpty())                                                                        \
-            return own;                                                                            \
-        QObject *anc = cssInheritingAncestor(this);                                                \
-        return anc ? anc->property(#Getter).toString() : QString();                                \
-    }
+// One typed walk (CssBox::inheritedText) yields all eight; each getter picks its field.
+#define CSSRECT_INHERIT(Getter, Field) \
+    QString CssRect::Getter() const { return inheritedText().Field; }
 
-CSSRECT_INHERIT(inheritedColor, "color")
-CSSRECT_INHERIT(inheritedFontFamily, "font-family")
-CSSRECT_INHERIT(inheritedFontSize, "font-size")
-CSSRECT_INHERIT(inheritedFontWeight, "font-weight")
-CSSRECT_INHERIT(inheritedLineHeight, "line-height")
-CSSRECT_INHERIT(inheritedLetterSpacing, "letter-spacing")
-CSSRECT_INHERIT(inheritedTextTransform, "text-transform")
-CSSRECT_INHERIT(inheritedTextAlign, "text-align")
+CSSRECT_INHERIT(inheritedColor, color)
+CSSRECT_INHERIT(inheritedFontFamily, fontFamily)
+CSSRECT_INHERIT(inheritedFontSize, fontSize)
+CSSRECT_INHERIT(inheritedFontWeight, fontWeight)
+CSSRECT_INHERIT(inheritedLineHeight, lineHeight)
+CSSRECT_INHERIT(inheritedLetterSpacing, letterSpacing)
+CSSRECT_INHERIT(inheritedTextTransform, textTransform)
+CSSRECT_INHERIT(inheritedTextAlign, textAlign)
 
 #undef CSSRECT_INHERIT
+
+QQuickItem *CssRect::inheritanceParent() const
+{
+    return cssInheritingAncestor(this);
+}
 
 void CssRect::setAnimRotate(qreal v)
 {

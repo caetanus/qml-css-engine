@@ -255,7 +255,7 @@ void CssFill::setTransitionEasingType(int v)
 
 // --- inherited text properties (CSS inheritance), same chain as CssRect ----------------------
 
-static QObject *cssInheritingAncestor(const QQuickItem *self)
+static QQuickItem *cssInheritingAncestor(const QQuickItem *self)
 {
     QQuickItem *holder = self->parentItem();
     QQuickItem *box = holder ? holder->parentItem() : nullptr;
@@ -267,26 +267,25 @@ static QObject *cssInheritingAncestor(const QQuickItem *self)
     return nullptr;
 }
 
-#define CSSFILL_INHERIT(Getter, Key)                                                                \
-    QString CssFill::Getter() const                                                                \
-    {                                                                                              \
-        const QString own = m_style.value(QStringLiteral(Key)).toString();                        \
-        if (!own.isEmpty())                                                                        \
-            return own;                                                                            \
-        QObject *anc = cssInheritingAncestor(this);                                                \
-        return anc ? anc->property(#Getter).toString() : QString();                                \
-    }
+// One typed walk (CssBox::inheritedText) yields all eight; each getter picks its field.
+#define CSSFILL_INHERIT(Getter, Field) \
+    QString CssFill::Getter() const { return inheritedText().Field; }
 
-CSSFILL_INHERIT(inheritedColor, "color")
-CSSFILL_INHERIT(inheritedFontFamily, "font-family")
-CSSFILL_INHERIT(inheritedFontSize, "font-size")
-CSSFILL_INHERIT(inheritedFontWeight, "font-weight")
-CSSFILL_INHERIT(inheritedLineHeight, "line-height")
-CSSFILL_INHERIT(inheritedLetterSpacing, "letter-spacing")
-CSSFILL_INHERIT(inheritedTextTransform, "text-transform")
-CSSFILL_INHERIT(inheritedTextAlign, "text-align")
+CSSFILL_INHERIT(inheritedColor, color)
+CSSFILL_INHERIT(inheritedFontFamily, fontFamily)
+CSSFILL_INHERIT(inheritedFontSize, fontSize)
+CSSFILL_INHERIT(inheritedFontWeight, fontWeight)
+CSSFILL_INHERIT(inheritedLineHeight, lineHeight)
+CSSFILL_INHERIT(inheritedLetterSpacing, letterSpacing)
+CSSFILL_INHERIT(inheritedTextTransform, textTransform)
+CSSFILL_INHERIT(inheritedTextAlign, textAlign)
 
 #undef CSSFILL_INHERIT
+
+QQuickItem *CssFill::inheritanceParent() const
+{
+    return cssInheritingAncestor(this);
+}
 
 // --- content default property (forwards to the contentHolder's `data`, the QML alias) --------
 

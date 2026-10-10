@@ -208,4 +208,11 @@ private slots:
     void contextNodesDieWithTheirBoxes();
     // 4b-2 Task 2: own resolves are memoised on the node: 100 identical rows resolve each own input once.
     void identicalRowsResolveOnce();
+
+    // 4b-4 Task 1: a CssText computes its inherited text values through ONE typed walk (CssBox::
+    // inheritedText), never by QObject::property("inherited*") on a CssBox ancestor.
+    void inheritanceWalkIsTyped();
+    // ...and every inherited* getter returns exactly what it returned before, on a nested tree with
+    // own/inherited values, a level that sets nothing and the CssText grandparent rule.
+    void inheritanceGettersUnchanged();
 };

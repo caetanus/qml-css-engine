@@ -53,6 +53,7 @@ inline int g_namedIdentityReads = 0; // test probe: by-name identity reads (fore
 inline int g_namedStyleReads = 0; // test probe: by-name style reads in the layout (foreign items only)
 inline int g_liveContextNodes = 0; // test probe: live CssContextNode instances (4b-2)
 inline int g_ownResolveMisses = 0; // test probe: own resolves a CssBox apply actually computed (4b-2)
+inline int g_namedInheritReads = 0; // test probe: by-name inherited* reads (foreign ancestors only, 4b-4)
 
 // Exception-safe layout hibernation: open the batch on construction, single flush on scope
 // exit. Null-safe so callers work before any CssLayoutEngine registered.

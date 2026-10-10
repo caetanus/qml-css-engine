@@ -108,12 +108,19 @@ void CssText::setDefaultFontSize(qreal v)
 QQuickItem *CssText::cssParentItem() const
 {
     // QML: a directly-styled parent (inheritedColor non-empty) wins; else the container at
-    // parent.parent (whichever exposes inheritedColor).
+    // parent.parent (whichever exposes inheritedColor). A CssBox parent answers through the typed walk
+    // (same value its inheritedColor getter returns); anything else by name, as before.
     QQuickItem *p = parentItem();
     if (p) {
-        const QVariant ic = p->property("inheritedColor");
-        if (ic.isValid() && !ic.toString().isEmpty())
-            return p;
+        auto *b = qobject_cast<const CssBox *>(p);
+        if (b && b->takesPartInInheritance()) {
+            if (!b->inheritedText().color.isEmpty())
+                return p;
+        } else {
+            const QVariant ic = p->property("inheritedColor");
+            if (ic.isValid() && !ic.toString().isEmpty())
+                return p;
+        }
     }
     QQuickItem *pp = p ? p->parentItem() : nullptr;
     if (pp && pp->metaObject()->indexOfProperty("inheritedColor") >= 0) // existence, not the getter
@@ -121,23 +128,14 @@ QQuickItem *CssText::cssParentItem() const
     return nullptr;
 }
 
-QString CssText::inheritedValue(const char *styleKey, const char *getterName) const
-{
-    const QString own = m_style.value(QLatin1String(styleKey)).toString();
-    if (!own.isEmpty())
-        return own;
-    QQuickItem *anc = cssParentItem();
-    return anc ? anc->property(getterName).toString() : QString();
-}
-
-QString CssText::inheritedColor() const { return inheritedValue("color", "inheritedColor"); }
-QString CssText::inheritedFontFamily() const { return inheritedValue("font-family", "inheritedFontFamily"); }
-QString CssText::inheritedFontSize() const { return inheritedValue("font-size", "inheritedFontSize"); }
-QString CssText::inheritedFontWeight() const { return inheritedValue("font-weight", "inheritedFontWeight"); }
-QString CssText::inheritedLineHeight() const { return inheritedValue("line-height", "inheritedLineHeight"); }
-QString CssText::inheritedLetterSpacing() const { return inheritedValue("letter-spacing", "inheritedLetterSpacing"); }
-QString CssText::inheritedTextTransform() const { return inheritedValue("text-transform", "inheritedTextTransform"); }
-QString CssText::inheritedTextAlign() const { return inheritedValue("text-align", "inheritedTextAlign"); }
+QString CssText::inheritedColor() const { return inheritedText().color; }
+QString CssText::inheritedFontFamily() const { return inheritedText().fontFamily; }
+QString CssText::inheritedFontSize() const { return inheritedText().fontSize; }
+QString CssText::inheritedFontWeight() const { return inheritedText().fontWeight; }
+QString CssText::inheritedLineHeight() const { return inheritedText().lineHeight; }
+QString CssText::inheritedLetterSpacing() const { return inheritedText().letterSpacing; }
+QString CssText::inheritedTextTransform() const { return inheritedText().textTransform; }
+QString CssText::inheritedTextAlign() const { return inheritedText().textAlign; }
 
 // --- apply resolved CSS onto the composed Text -----------------------------------------------
 
@@ -152,34 +150,37 @@ void CssText::applyToText()
     // text
     t->setProperty("text", m_text);
 
+    // One typed walk for all eight inherited values (own style value, else the inheriting ancestor's).
+    const CssInheritedText inh = inheritedText();
+
     // color <- inheritedColor, else default.
-    const QString ic = inheritedColor();
+    const QString &ic = inh.color;
     const QColor color = (!ic.isEmpty() && m_theme) ? m_theme->parseColor(ic) : m_defaultColor;
     t->setProperty("color", color);
 
     // --- font (family/pointSize/weight/letterSpacing/wordSpacing/capitalization/underline/strike) ---
     QFont font;
-    const QString fam = inheritedFontFamily();
+    const QString &fam = inh.fontFamily;
     font.setFamily(m_theme ? m_theme->resolveFontFamily(fam, m_defaultFontFamily)
                            : (fam.isEmpty() ? m_defaultFontFamily : fam));
-    const QString fs = inheritedFontSize();
+    const QString &fs = inh.fontSize;
     const qreal pointSize = (!fs.isEmpty() && m_theme) ? m_theme->parseFontSize(fs, m_defaultFontSize)
                                                        : m_defaultFontSize;
     font.setPointSizeF(pointSize);
     if (m_theme)
-        font.setWeight(static_cast<QFont::Weight>(m_theme->fontWeight(inheritedFontWeight())));
-    const QString ls = inheritedLetterSpacing();
+        font.setWeight(static_cast<QFont::Weight>(m_theme->fontWeight(inh.fontWeight)));
+    const QString &ls = inh.letterSpacing;
     font.setLetterSpacing(QFont::AbsoluteSpacing, (!ls.isEmpty() && m_theme) ? m_theme->parseLength(ls, 0) : 0);
     const QString ws = styleStr("word-spacing");
     font.setWordSpacing((!ws.isEmpty() && m_theme) ? m_theme->parseLength(ws, 0) : 0);
-    font.setCapitalization(capitalizationFor(inheritedTextTransform()));
+    font.setCapitalization(capitalizationFor(inh.textTransform));
     const QString decoration = styleStr("text-decoration");
     font.setUnderline(decoration.contains(QLatin1String("underline")));
     font.setStrikeOut(decoration.contains(QLatin1String("line-through")));
     t->setProperty("font", QVariant::fromValue(font));
 
     // line-height: mode + value (px). QML fallback px = font pixel size (or pointSize*96/72).
-    const QString lh = inheritedLineHeight();
+    const QString &lh = inh.lineHeight;
     const bool proportional = m_theme ? m_theme->isProportionalLineHeight(lh) : true;
     t->setProperty("lineHeightMode", proportional ? 0 : 1); // Text.ProportionalHeight : Text.FixedHeight
     const qreal fallbackPx = pointSize * 96.0 / 72.0;
@@ -208,7 +209,7 @@ void CssText::applyToText()
                                                   : Qt::ElideNone));
 
     // text-align -> horizontalAlignment.
-    const QString align = inheritedTextAlign();
+    const QString &align = inh.textAlign;
     const Qt::Alignment halign = align == QLatin1String("center")
         ? Qt::AlignHCenter
         : (align == QLatin1String("right") ? Qt::AlignRight : Qt::AlignLeft);

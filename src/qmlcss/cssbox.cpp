@@ -45,6 +45,41 @@ QExplicitlySharedDataPointer<CssContextNode> CssBox::contextNode(const CssTheme 
     return m_contextNode;
 }
 
+CssInheritedText CssBox::inheritedText() const
+{
+    CssInheritedText r;
+    if (QQuickItem *anc = inheritanceParent()) {
+        auto *b = qobject_cast<const CssBox *>(anc);
+        if (b && b->takesPartInInheritance()) {
+            r = b->inheritedText();
+        } else { // a foreign element declaring the inherited* getters
+            ++Detail::g_namedInheritReads;
+            r.color = anc->property("inheritedColor").toString();
+            r.fontFamily = anc->property("inheritedFontFamily").toString();
+            r.fontSize = anc->property("inheritedFontSize").toString();
+            r.fontWeight = anc->property("inheritedFontWeight").toString();
+            r.lineHeight = anc->property("inheritedLineHeight").toString();
+            r.letterSpacing = anc->property("inheritedLetterSpacing").toString();
+            r.textTransform = anc->property("inheritedTextTransform").toString();
+            r.textAlign = anc->property("inheritedTextAlign").toString();
+        }
+    }
+    auto own = [this](const char *k, QString &slot) {
+        QString v = m_style.value(QLatin1String(k)).toString();
+        if (!v.isEmpty())
+            slot = std::move(v);
+    };
+    own("color", r.color);
+    own("font-family", r.fontFamily);
+    own("font-size", r.fontSize);
+    own("font-weight", r.fontWeight);
+    own("line-height", r.lineHeight);
+    own("letter-spacing", r.letterSpacing);
+    own("text-transform", r.textTransform);
+    own("text-align", r.textAlign);
+    return r;
+}
+
 bool CssBox::hasCssIdentity() const
 {
     if (!m_cssId.isEmpty() || !m_cssPart.isEmpty() || !m_cssPrimitive.isEmpty())

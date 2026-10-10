@@ -104,6 +104,7 @@ public:
     QString inheritedLetterSpacing() const;
     QString inheritedTextTransform() const;
     QString inheritedTextAlign() const;
+    bool takesPartInInheritance() const override { return true; }
 
 signals:
     void styleChanged();
@@ -139,6 +140,7 @@ private:
     // Re-style through the reverse-slot engine path when identity changes (QML onCss*Changed).
     void maybeLoadCss() override;
     void applyResolvedStyle(const QVariantMap &style) override { setStyle(style); }
+    QQuickItem *inheritanceParent() const override { return cssParentItem(); }
 
 protected:
     // Protected so C++ widget subclasses (the widgets-to-cpp port) can chain their own
@@ -148,8 +150,6 @@ protected:
 private:
     // The CSS-inheriting ancestor (QML `_cssParent`): a directly-styled parent, else parent.parent.
     QQuickItem *cssParentItem() const;
-    // Own style value, else the ancestor's same inherited getter (the QML inherited* chain).
-    QString inheritedValue(const char *styleKey, const char *getterName) const;
 
     QString m_text;
     bool m_styledText = false;

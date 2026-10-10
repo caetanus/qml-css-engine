@@ -3948,3 +3948,129 @@ void QmlCssTests::identicalRowsResolveOnce()
     // list, row, text, plus the hover on/off probes of the boxes that compute cssHoverStyled.
     QVERIFY2(Detail::g_ownResolveMisses <= 8, qPrintable(QString::number(Detail::g_ownResolveMisses)));
 }
+
+// 4b-4 Task 1: rect(.outer) > rect(.mid, no text props) > text. The label gets the outer's color, font
+// size and alignment, and re-resolving the text reads no inherited value by name (all ancestors are CssBoxes).
+void QmlCssTests::inheritanceWalkIsTyped()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(
+        ".outer { color: #123456; font-size: 20px; text-align: center; } .mid { width: 10px; }"
+        ".outer.hot { color: #abcdef; }"));
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent c(&engine);
+    c.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect { cssPrimitive: "div"; cssClass: ["outer"]; width: 100; height: 50
+            CssRect { cssPrimitive: "div"; cssClass: ["mid"]
+                CssText { objectName: "t"; text: "x" } } }
+    )", QUrl());
+    QScopedPointer<QObject> root(c.create());
+    QVERIFY2(root, qPrintable(c.errorString()));
+    QQuickWindow window;
+    qobject_cast<QQuickItem *>(root.data())->setParentItem(window.contentItem());
+    auto *text = root->findChild<QQuickItem *>(QStringLiteral("t"));
+    QVERIFY(text);
+    QQuickItem *label = nullptr;
+    for (QQuickItem *k : text->findChildren<QQuickItem *>())
+        if (QByteArray(k->metaObject()->className()).contains("QQuickText")) {
+            label = k;
+            break;
+        }
+    QVERIFY(label);
+    QCOMPARE(label->property("color").value<QColor>(), QColor(QStringLiteral("#123456")));
+    QCOMPARE(label->property("font").value<QFont>().pointSizeF(), theme.parseFontSize(QStringLiteral("20px"), 11));
+    QCOMPARE(label->property("horizontalAlignment").toInt(), int(Qt::AlignHCenter));
+
+    // A re-resolve with an unchanged style is a no-op, so also force a full applyToText (a default changes):
+    // all eight inherited values are re-read through the ancestors.
+    const int before = Detail::g_namedInheritReads;
+    theme.loadCss(text);
+    text->setProperty("defaultFontSize", 12.0);
+    QCOMPARE(Detail::g_namedInheritReads - before, 0);
+    QCOMPARE(label->property("color").value<QColor>(), QColor(QStringLiteral("#123456")));
+    QCOMPARE(label->property("font").value<QFont>().pointSizeF(), theme.parseFontSize(QStringLiteral("20px"), 12));
+
+    // Live propagation still works: the outer's color change reaches the label through the inheritedChanged
+    // chain (outer -> mid -> text, each connected once at componentComplete).
+    root->setProperty("cssClass", QStringList{QStringLiteral("outer"), QStringLiteral("hot")});
+    QCOMPARE(label->property("color").value<QColor>(), QColor(QStringLiteral("#abcdef")));
+    QCOMPARE(text->property("inheritedColor").toString(), QStringLiteral("#abcdef"));
+}
+
+// 4b-4 Task 1: the eight inherited* getters on every node of a nested tree, against literals captured on the
+// by-name implementation (the typed walk must answer the same). Covers own-wins, a level that sets nothing,
+// CssFill in the chain, a CssText whose direct parent is a CssText WITH a color (direct parent wins) and one
+// whose direct parent has an EMPTY inheritedColor (grandparent rule: it skips its parent's own values).
+void QmlCssTests::inheritanceGettersUnchanged()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(
+        ".a { color: #111111; font-family: Foo; font-size: 20px; text-align: center; }"
+        ".b { color: #222222; font-weight: bold; }"
+        ".d { line-height: 2; letter-spacing: 1px; }"
+        ".t1 { text-transform: uppercase; }"
+        ".t2 { color: #333333; font-size: 9px; }"
+        ".p { font-size: 30px; }"
+        ".m { font-weight: 300; text-align: right; }"));
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent c(&engine);
+    c.setData(R"(
+        import QtQuick
+        import qmlcss
+        Item { width: 400; height: 400
+          CssRect { objectName: "a"; cssPrimitive: "div"; cssClass: ["a"]; width: 200; height: 200
+            CssFill { objectName: "b"; cssPrimitive: "div"; cssClass: ["b"]
+              CssRect { objectName: "c"; cssPrimitive: "div"
+                CssRect { objectName: "d"; cssPrimitive: "div"; cssClass: ["d"]
+                  CssText { objectName: "t1"; cssClass: ["t1"]; text: "1"
+                    CssText { objectName: "t1c"; text: "1c" } }
+                  CssText { objectName: "t2"; cssClass: ["t2"]; text: "2" } } } } }
+          CssRect { objectName: "p"; cssPrimitive: "div"; cssClass: ["p"]; y: 200; width: 200; height: 200
+            CssText { objectName: "o"; text: "o"
+              CssText { objectName: "m"; cssClass: ["m"]; text: "m"
+                CssText { objectName: "i"; text: "i" } } } } }
+    )", QUrl());
+    QScopedPointer<QObject> root(c.create());
+    QVERIFY2(root, qPrintable(c.errorString()));
+    QQuickWindow window;
+    qobject_cast<QQuickItem *>(root.data())->setParentItem(window.contentItem());
+
+    static const char *getters[] = {"inheritedColor", "inheritedFontFamily", "inheritedFontSize",
+                                    "inheritedFontWeight", "inheritedLineHeight", "inheritedLetterSpacing",
+                                    "inheritedTextTransform", "inheritedTextAlign"};
+    struct Row { const char *name; QStringList values; };
+    const QList<Row> expected = {
+        {"a", {"#111111", "Foo", "20px", "", "", "", "", "center"}},
+        {"b", {"#222222", "Foo", "20px", "bold", "", "", "", "center"}},
+        {"c", {"#222222", "Foo", "20px", "bold", "", "", "", "center"}},
+        {"d", {"#222222", "Foo", "20px", "bold", "2", "1px", "", "center"}},
+        {"t1", {"#222222", "Foo", "20px", "bold", "2", "1px", "uppercase", "center"}},
+        // direct parent t1 has a non-empty inheritedColor -> inherits from t1
+        {"t1c", {"#222222", "Foo", "20px", "bold", "2", "1px", "uppercase", "center"}},
+        {"t2", {"#333333", "Foo", "9px", "bold", "2", "1px", "", "center"}},
+        {"p", {"", "", "30px", "", "", "", "", ""}},
+        {"o", {"", "", "30px", "", "", "", "", ""}},
+        // o's direct parent is a content holder (no inheritedColor), grandparent p declares it -> p
+        // m: direct parent o has an EMPTY inheritedColor; grandparent is p's content holder -> nothing
+        {"m", {"", "", "", "300", "", "", "", "right"}},
+        // i: direct parent m has an EMPTY inheritedColor; grandparent o declares it -> o (skips m's own)
+        {"i", {"", "", "30px", "", "", "", "", ""}},
+    };
+    for (const Row &row : expected) {
+        auto *node = root->findChild<QQuickItem *>(QLatin1String(row.name));
+        QVERIFY2(node, row.name);
+        for (int g = 0; g < 8; ++g)
+            QVERIFY2(node->property(getters[g]).toString() == row.values.at(g),
+                     qPrintable(QStringLiteral("%1.%2 = '%3', expected '%4'")
+                                    .arg(QLatin1String(row.name), QLatin1String(getters[g]),
+                                         node->property(getters[g]).toString(), row.values.at(g))));
+    }
+}

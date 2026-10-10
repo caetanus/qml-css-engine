@@ -12,6 +12,12 @@ namespace QmlCss {
 
 class CssTheme;
 
+// The eight CSS-inherited text values an element exposes to its descendants (own style value, else its
+// inheriting ancestor's). Strings exactly as the inherited* Q_PROPERTY getters return them.
+struct CssInheritedText {
+    QString color, fontFamily, fontSize, fontWeight, lineHeight, letterSpacing, textTransform, textAlign;
+};
+
 // The typed home of a CSS element's identity and resolved style. Every engine type that can be
 // matched by selectors derives from it (CssRect, CssText, CssFill, CssHr, CssImage, CssItem), so the
 // theme and the layout engine read identity/style through one qobject_cast + plain member access
@@ -63,6 +69,15 @@ public:
     QExplicitlySharedDataPointer<CssContextNode> contextNode(const CssTheme *theme);
     const CssContextNode *contextNodeForTest() const { return m_contextNode.data(); }
 
+    // 4b-4: all eight inherited text values in ONE walk — own style value wins, else the inheriting
+    // ancestor's, read typed through CssBox (by name only for a foreign ancestor). Computed live on every
+    // call, deliberately NOT memoised: no signal fires when a grandparent changes under a reparent, and a
+    // stale memo would break the live reads the inherited* getters give today.
+    CssInheritedText inheritedText() const;
+    // Whether this box declares the inherited* getters (CssRect, CssFill, CssText — the only ones that
+    // take part in CSS text inheritance). Answers what a `inheritedColor` metaobject probe answers.
+    virtual bool takesPartInInheritance() const { return false; }
+
 signals:
     void cssIdChanged();
     void cssAlternateIdChanged();
@@ -82,6 +97,8 @@ protected:
     // with a theme tells the theme once (self + registered descendants, one layout batch); before
     // that — creation-time writes, no theme yet — it is the old single-shot maybeLoadCss().
     void identityChanged();
+    // The ancestor this box inherits text values from (each class keeps its own rule), or null.
+    virtual QQuickItem *inheritanceParent() const { return nullptr; }
 
     QString m_cssId;
     QVariant m_cssAlternateId = QVariant::fromValue(QVariantList());

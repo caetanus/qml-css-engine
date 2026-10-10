@@ -168,6 +168,7 @@ public:
     QString inheritedLetterSpacing() const;
     QString inheritedTextTransform() const;
     QString inheritedTextAlign() const;
+    bool takesPartInInheritance() const override { return true; }
 
     qreal animRotate() const { return m_animRotate; }
     void setAnimRotate(qreal v);
@@ -228,6 +229,7 @@ private:
     // Re-style through the reverse-slot engine path when identity changes (QML onCss*Changed).
     void maybeLoadCss() override;
     void applyResolvedStyle(const QVariantMap &style) override { setStyle(style); }
+    QQuickItem *inheritanceParent() const override;
 
 protected:
     // Protected so C++ widget subclasses (the widgets-to-cpp port) can chain their own
