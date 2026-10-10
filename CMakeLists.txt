@@ -22,6 +22,7 @@ set(QML_CSS_ENGINE_SOURCES
     src/qmlcss/csscontentholder.cpp
     src/qmlcss/csslayout.cpp
     src/qmlcss/csslength.cpp
+    src/qmlcss/cssbox.cpp
     src/qmlcss/csshr.cpp
     src/qmlcss/cssimage.cpp
     src/qmlcss/cssfill.cpp
