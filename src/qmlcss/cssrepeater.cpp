@@ -217,10 +217,12 @@ void CssRepeater::rebuild()
             // lands it after the footer. Stack it after its model predecessor right away (or after US
             // for the very first row), so restack()'s fast path finds everything already in place and
             // never falls back to the O(n^2) loop just because we create/append next to a static
-            // sibling. This stackAfter call is itself cheap here: the new item and the anchor both sit
-            // at/near the end of the sibling list, so its two lastIndexOf() scans (which run from the
-            // BACK) and the siblingOrderChanged bookkeeping only touch the handful of items after the
-            // anchor (e.g. the footer), not the whole list — O(1) amortized per row, not O(n).
+            // sibling. When creating/appending (no concurrent reorder) this stackAfter is cheap: the new
+            // item and its anchor both sit at/near the END of the sibling list, so its two lastIndexOf()
+            // scans (which run from the back) and the siblingOrderChanged bookkeeping only touch the
+            // few items after the anchor (e.g. the footer). If the same rebuild also reorders, the
+            // anchor may still be at its old position — that one call is then O(n), as before, and
+            // restack() fixes the final order regardless.
             QQuickItem *anchor = next.isEmpty() ? this : next.constLast().item.data();
             if (anchor && row.item && anchor->parentItem() == row.item->parentItem())
                 row.item->stackAfter(anchor);
