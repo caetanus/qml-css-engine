@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QAccessible>
 #include <QHash>
 #include <QList>
 #include <QObject>
@@ -31,11 +32,16 @@ struct CssLayoutStyle;
 //
 // QML side is a thin shim: CssRect's size/style/children triggers call requestLayout(); the
 // engine coalesces to one pass per event-loop turn.
-class CssLayoutEngine : public QObject {
+// Also an accessibility ACTIVATION OBSERVER: a virtual list decides between its window and eager (every
+// row, what an assistive technology walks) at layout time, so a screen reader that arrives or leaves while
+// nothing relayouts would never be seen — on activation/deactivation every registered virtual repeater
+// re-syncs (one deferred, batched pass).
+class CssLayoutEngine : public QObject, private QAccessible::ActivationObserver {
     Q_OBJECT
 
 public:
     explicit CssLayoutEngine(CssTheme *theme, QObject *parent = nullptr);
+    ~CssLayoutEngine() override;
 
     // Queue a (re)layout of `root`'s content (held by `content`); coalesced.
     Q_INVOKABLE void requestLayout(QQuickItem *root, QQuickItem *content);
@@ -90,6 +96,12 @@ private slots:
     void flush();
 
 private:
+    // QAccessible::ActivationObserver: queue syncVirtualRepeaters() (deferred: Qt is iterating its
+    // observer list, and rows created now would install observers of their own).
+    void accessibilityActiveChanged(bool active) override;
+    // Every registered virtual repeater re-validates (window <-> eager) in one batched flush.
+    void syncVirtualRepeaters();
+
     struct Track {
         enum Kind { Px, Fr, Auto } kind = Auto;
         double value = 0;
@@ -153,6 +165,7 @@ private:
     QTimer *m_flushTimer;
     int m_batchDepth = 0;
     bool m_flushing = false;
+    bool m_a11ySyncQueued = false;
     quint64 m_childVisits = 0;
 };
 

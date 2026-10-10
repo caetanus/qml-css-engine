@@ -288,7 +288,10 @@ private slots:
 
     // Correctness round after the scrolling-list gate: (A) a row parked while an ANCESTOR's identity
     // changed comes back styled for the new ancestry; (B) a container gap change re-prices every
-    // measured row (offscreen ones included) — extent and positions equal eager at once.
+    // measured row (offscreen ones included) — extent and positions equal eager at once; (C) a screen
+    // reader activating late (no relayout of its own) turns virtual lists eager, and windowed again
+    // when it leaves.
     void virtualPoolAncestorChangeWhileParked();
     void virtualGapChangeRepricesMeasuredRows();
+    void virtualLateAccessibilityActivation();
 };

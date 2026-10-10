@@ -117,6 +117,13 @@ public:
     // ...and when the engine's flush has finished (the next frame shows its result): re-base the anchor
     // on the displayed position.
     void layoutSettled();
+    // Accessibility turned on or off (CssLayoutEngine's activation observer): relayout the holder so the
+    // next sync re-decides between the window and eager.
+    void requestSync()
+    {
+        if (m_virtualize)
+            notifyLayout();
+    }
 
 signals:
     void modelChanged();

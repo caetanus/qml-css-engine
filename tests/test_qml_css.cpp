@@ -7,6 +7,8 @@
 
 #include <QtQml/qqml.h>
 
+#include <QAccessible>
+#include <QScopeGuard>
 #include <QColor>
 #include <QImage>
 #include <QPair>
@@ -6058,6 +6060,17 @@ void setClasses(QQuickItem *box, const QStringList &classes)
     box->setProperty("cssClass", QVariant::fromValue(classes));
 }
 
+// Every accessible name under `iface` (depth first).
+void collectAccessibleNames(QAccessibleInterface *iface, QStringList *out, int depth = 0)
+{
+    if (!iface || depth > 64)
+        return;
+    if (iface->role() == QAccessible::StaticText)
+        out->append(iface->text(QAccessible::Name));
+    for (int i = 0; i < iface->childCount(); ++i)
+        collectAccessibleNames(iface->child(i), out, depth + 1);
+}
+
 } // namespace
 
 void QmlCssTests::virtualPoolAncestorChangeWhileParked()
@@ -6147,5 +6160,50 @@ void QmlCssTests::virtualGapChangeRepricesMeasuredRows()
                  qPrintable(QStringLiteral("row %1 at y %2, eager %3").arg(i).arg(row->y()).arg(eagerY.value(i))));
     }
     const QString bad = checkAutoRows(s, model);
+    QVERIFY2(bad.isEmpty(), qPrintable(bad));
+}
+
+void QmlCssTests::virtualLateAccessibilityActivation()
+{
+    const int n = 300;
+    const int previous = Detail::g_virtualA11yOverride;
+    const auto restore = qScopeGuard([previous] {
+        Detail::g_virtualA11yOverride = previous;
+        QAccessible::setActive(false);
+    });
+    Detail::g_virtualA11yOverride = 0; // mounted with no assistive technology
+    VirtualScene s(QString::fromLatin1(kVirtualCss));
+    const QVariantList model = makeVirtualRows(n);
+    QVERIFY2(s.mount(true, model, R"(
+                        CssRect { cssClass: ["row"]; cssPrimitive: "div"
+                            CssText { cssClass: ["id"]; text: "" + modelData.id }
+                            CssText { objectName: "label"; cssClass: ["label"]; text: "" + modelData.label
+                                      Accessible.role: Accessible.StaticText; Accessible.name: text }
+                        })").isEmpty(), "mount");
+    s.window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&s.window));
+    QVERIFY(s.rows().size() < n);
+
+    // A screen reader arrives: Qt notifies its activation observers. Nothing else happens — no resize,
+    // no scroll, no model change, no relayout request.
+    Detail::g_virtualA11yOverride = 1;
+    QAccessible::setActive(true);
+    QCoreApplication::processEvents();
+    QCoreApplication::processEvents();
+    QVERIFY2(s.rows().size() == n, qPrintable(QStringLiteral("%1 of %2 rows after activation").arg(s.rows().size()).arg(n)));
+    QCOMPARE(s.rep->materializedCount(), n);
+    QStringList names;
+    collectAccessibleNames(QAccessible::queryAccessibleInterface(&s.window), &names);
+    for (int i = 0; i < n; ++i)
+        QVERIFY2(names.contains(QStringLiteral("row %1").arg(i)),
+                 qPrintable(QStringLiteral("'row %1' not reachable through QAccessible (%2 names)").arg(i).arg(names.size())));
+
+    // It leaves: windowed again.
+    Detail::g_virtualA11yOverride = 0;
+    QAccessible::setActive(false);
+    QCoreApplication::processEvents();
+    QCoreApplication::processEvents();
+    QVERIFY2(s.rows().size() < n, qPrintable(QString::number(s.rows().size())));
+    const QString bad = checkVirtualRows(s, model);
     QVERIFY2(bad.isEmpty(), qPrintable(bad));
 }

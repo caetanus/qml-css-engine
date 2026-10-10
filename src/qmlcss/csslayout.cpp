@@ -107,6 +107,8 @@ CssLayoutEngine::CssLayoutEngine(CssTheme *theme, QObject *parent)
     // because its event stream makes the next relayout read a nearly-final viewport).
     if (m_theme)
         connect(m_theme, &CssTheme::viewportChanged, this, &CssLayoutEngine::relayoutKnownRoots);
+    // A screen reader arriving or leaving re-decides every virtual list (window <-> eager).
+    QAccessible::installActivationObserver(this);
 }
 
 void CssLayoutEngine::relayoutKnownRoots()
@@ -124,6 +126,35 @@ void CssLayoutEngine::endBatch()
 {
     if (--m_batchDepth == 0 && !m_pending.isEmpty() && !m_flushing)
         flush();
+}
+
+CssLayoutEngine::~CssLayoutEngine()
+{
+    QAccessible::removeActivationObserver(this);
+}
+
+void CssLayoutEngine::accessibilityActiveChanged(bool)
+{
+    if (m_virtualRepeaters.isEmpty() || m_a11ySyncQueued)
+        return;
+    m_a11ySyncQueued = true;
+    // `this` as the context: dropped if we die first. isActive() reads the new state by then.
+    QMetaObject::invokeMethod(this, [this] { syncVirtualRepeaters(); }, Qt::QueuedConnection);
+}
+
+void CssLayoutEngine::syncVirtualRepeaters()
+{
+    m_a11ySyncQueued = false;
+    // A copy: the flush below creates/destroys rows, whose nested virtual repeaters (un)register.
+    QVarLengthArray<QPointer<CssRepeater>, 16> reps;
+    for (auto it = m_virtualRepeaters.cbegin(); it != m_virtualRepeaters.cend(); ++it)
+        reps.append(it.value());
+    beginBatch(); // each request only records; ONE flush at the end
+    for (const QPointer<CssRepeater> &rep : std::as_const(reps)) {
+        if (rep)
+            rep->requestSync();
+    }
+    endBatch();
 }
 
 bool CssLayoutEngine::registerVirtualRepeater(QQuickItem *holder, CssRepeater *rep)
