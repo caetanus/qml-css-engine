@@ -4,6 +4,7 @@
 #include "csstheme_p.h" // LayoutBatchGuard
 
 #include <QDebug>
+#include <QElapsedTimer>
 #include <QHash>
 #include <QSet>
 #include <QJSValue>
@@ -87,12 +88,17 @@ void CssRepeater::componentComplete()
 
 void CssRepeater::destroyRow(Row &row)
 {
+    QElapsedTimer t;
+    if (Detail::g_phaseStats.enabled)
+        t.start();
     if (row.item) {
         row.item->setParentItem(nullptr);
         row.item->deleteLater();
     }
     if (row.context)
         row.context->deleteLater();
+    if (Detail::g_phaseStats.enabled)
+        Detail::g_phaseStats.time("repeater.destroyRow", t.nsecsElapsed());
 }
 
 namespace {
@@ -118,20 +124,33 @@ bool CssRepeater::createRow(int i, const QVariant &data, Row &row)
     QQmlContext *creation = m_delegate->creationContext();
     if (!creation)
         creation = qmlContext(this);
+    QElapsedTimer t;
+    if (Detail::g_phaseStats.enabled)
+        t.start();
     auto *ctx = new QQmlContext(creation, this);
     ctx->setBaseUrl(creation->baseUrl());
     ctx->setContextProperty(QStringLiteral("modelData"), data);
     ctx->setContextProperty(QStringLiteral("index"), i);
+    if (Detail::g_phaseStats.enabled)
+        Detail::g_phaseStats.time("repeater.contextCreate", t.nsecsElapsed());
     // STAGED creation (C22): parent the row BEFORE it completes. create() would run componentComplete()
     // on a parentless row — every styled element resolves its CSS against a truncated ancestor chain,
     // then resolves all over again when the row joins the window (the scene-join heal): 2x per element.
+    if (Detail::g_phaseStats.enabled)
+        t.start();
     QObject *o = m_delegate->beginCreate(ctx);
+    if (Detail::g_phaseStats.enabled)
+        Detail::g_phaseStats.time("repeater.beginCreate", t.nsecsElapsed());
     auto *item = qobject_cast<QQuickItem *>(o);
     if (item) {
         item->setParent(this);
         item->setParentItem(parentItem() ? parentItem() : this);
     }
+    if (Detail::g_phaseStats.enabled)
+        t.start();
     m_delegate->completeCreate(); // also required after a null beginCreate() (Qt's own create() does it)
+    if (Detail::g_phaseStats.enabled)
+        Detail::g_phaseStats.time("repeater.completeCreate", t.nsecsElapsed());
     if (!item) {
         if (o)
             o->deleteLater();
@@ -154,7 +173,14 @@ void CssRepeater::rebuild()
     // when this is the OUTERMOST batch. Nested inside another one (a <For> in a delegate being created,
     // a theme reapply, the loader's mount), settling happens where that outer batch closes.
     const Detail::LayoutBatchGuard batch(m_layout);
+    QElapsedTimer t;
+    if (Detail::g_phaseStats.enabled)
+        t.start();
     const QVariantList data = toList(m_model);
+    if (Detail::g_phaseStats.enabled) {
+        Detail::g_phaseStats.time("repeater.toList", t.nsecsElapsed());
+        t.start();
+    }
 
     // KEYED when every entry is an object with a distinct "id": rows match by id in O(n), and a
     // surviving row whose content changed gets the new value as its modelData IN PLACE. A model
@@ -186,7 +212,14 @@ void CssRepeater::rebuild()
                     byKey.insert(k, j);
             }
     }
+    if (Detail::g_phaseStats.enabled) {
+        // Key building + byKey: one sample for the whole up-front pass (the survivor scan below
+        // adds its own, per data entry).
+        Detail::g_phaseStats.time("repeater.match", t.nsecsElapsed());
+    }
     for (int i = 0; i < data.size(); ++i) {
+        if (Detail::g_phaseStats.enabled)
+            t.start();
         int found = -1;
         if (keyed) {
             const auto it = byKey.constFind(keys.at(i));
@@ -201,6 +234,8 @@ void CssRepeater::rebuild()
                 }
             }
         }
+        if (Detail::g_phaseStats.enabled)
+            Detail::g_phaseStats.time("repeater.match", t.nsecsElapsed());
         if (found >= 0) {
             used[found] = true;
             Row row = m_rows[found];
@@ -211,8 +246,13 @@ void CssRepeater::rebuild()
             }
             // Only a row that MOVED gets a new index (its old index is its old position `found`):
             // re-setting an unchanged value still notifies every binding that reads `index`.
-            if (row.context && found != i)
+            if (row.context && found != i) {
+                if (Detail::g_phaseStats.enabled)
+                    t.start();
                 row.context->setContextProperty(QStringLiteral("index"), i);
+                if (Detail::g_phaseStats.enabled)
+                    Detail::g_phaseStats.time("repeater.index", t.nsecsElapsed());
+            }
             if (found != i)
                 changed = true;
             next.append(row);
@@ -246,7 +286,11 @@ void CssRepeater::rebuild()
     }
     m_rows = next;
     if (changed) {
+        if (Detail::g_phaseStats.enabled)
+            t.start();
         restack();
+        if (Detail::g_phaseStats.enabled)
+            Detail::g_phaseStats.time("repeater.restack", t.nsecsElapsed());
         notifyLayout();
     }
 }

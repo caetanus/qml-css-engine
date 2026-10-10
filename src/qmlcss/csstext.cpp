@@ -6,6 +6,7 @@
 #include "qmlcss/csstheme_p.h"
 #include "qmlcss/valueparser.h"
 
+#include <QElapsedTimer>
 #include <QFont>
 #include <QMatrix4x4>
 #include <QMetaProperty>
@@ -215,6 +216,9 @@ QString CssText::inheritedTextAlign() const { return inheritedText().textAlign; 
 
 CssTextPayload CssText::resolvePayload() const
 {
+    QElapsedTimer t;
+    if (Detail::g_phaseStats.enabled)
+        t.start();
     auto styleStr = [&](const char *k) { return m_style.value(QLatin1String(k)).toString(); };
     CssTextPayload p;
 
@@ -286,6 +290,8 @@ CssTextPayload CssText::resolvePayload() const
         ? Qt::AlignHCenter
         : (align == QLatin1String("right") ? Qt::AlignRight : Qt::AlignLeft);
     p.horizontalAlignment = static_cast<int>(halign);
+    if (Detail::g_phaseStats.enabled)
+        Detail::g_phaseStats.time("text.resolvePayload", t.nsecsElapsed());
     return p;
 }
 
@@ -735,8 +741,13 @@ void CssText::leanRelayout()
     m_layoutBox = m_box;
     ++Detail::g_textGuiLayouts;
     // Scalars only; the render thread lays out again from this value state in updatePaintNode.
+    QElapsedTimer t;
+    if (Detail::g_phaseStats.enabled)
+        t.start();
     m_metrics = m_layoutMount ? CssTextLayout::mountMetrics(m_applied, m_mirrored)
                               : CssTextLayout::metrics(m_applied, m_box.width(), m_box.height(), m_mirrored);
+    if (Detail::g_phaseStats.enabled)
+        Detail::g_phaseStats.time("text.metrics", t.nsecsElapsed());
     markNodeDirty();
 }
 
@@ -809,6 +820,9 @@ QSGNode *CssText::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)
     }
 
     // Lay out here, from value state (the render thread never keeps a GUI-shaped layout around).
+    QElapsedTimer renderBuildTimer;
+    if (Detail::g_phaseStats.enabled)
+        renderBuildTimer.start();
     const CssTextPayload payload = m_applied;
     CssTextBuiltLayout built = m_layoutMount
         ? CssTextLayout::buildMountLayout(payload, m_mirrored)
@@ -833,6 +847,8 @@ QSGNode *CssText::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)
         node->addTextLayout(origin, layout.get(), -1, -1, 0, m_metrics.unelidedLineCount);
     if (m_metrics.elided && elideLayout)
         node->addTextLayout(origin, elideLayout.get());
+    if (Detail::g_phaseStats.enabled)
+        Detail::g_phaseStats.time("text.renderBuild", renderBuildTimer.nsecsElapsed());
     // The glyph nodes hold their own glyph runs: the layouts die here (contract 6/7).
     layout.reset();
     elideLayout.reset();

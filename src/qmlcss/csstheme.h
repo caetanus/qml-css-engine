@@ -88,6 +88,7 @@ class CssTheme : public QObject {
 
 public:
     explicit CssTheme(QObject *parent = nullptr);
+    ~CssTheme() override;
 
     bool isLoaded() const { return m_loaded; }
     qreal viewportWidth() const { return m_viewportWidth; }
@@ -260,6 +261,14 @@ public:
     QQuickItem *nearestCssElementOf(QQuickItem *item) const;
     // Bumped by every rule rebuild; a node of an older generation is stale.
     quint64 ruleGeneration() const { return m_generation; }
+
+    // Step 5a sharing census: walks every window reachable from a registered box and counts, OUTSIDE
+    // any timed section: live CssRect/CssFill/CssText (lean vs composed), composed QQuickText labels,
+    // CssRect/CssFill paint shells (Shape / fast Rectangle) and composed HoverHandlers, live CssRepeater
+    // row contexts, live CssContextNodes, and DISTINCT CssLayoutStyle pointers grouped by the box's
+    // first css class — printed to stderr. Callable on demand (a bench's "MEM census" hook) and run
+    // automatically at theme teardown when SQ_PHASE_STATS=1 (the same opt-in as the phase timers).
+    Q_INVOKABLE void dumpCensus() const;
 
 signals:
     void loadedChanged();

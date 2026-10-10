@@ -43,6 +43,15 @@ CssTheme::CssTheme(QObject *parent)
     connect(m_watcher, &QFileSystemWatcher::fileChanged, this, &CssTheme::onCssFileChanged);
 }
 
+CssTheme::~CssTheme()
+{
+    // Same opt-in as the phase timers' own exit print (SQ_PHASE_STATS=1): dump the sharing census
+    // once, right before this theme's registered boxes go away, so a bench needs nothing beyond the
+    // env var to see both phase timings and the census at exit.
+    if (g_phaseStats.enabled)
+        dumpCensus();
+}
+
 QVariantMap CssTheme::resolveMerged(const QList<CssAncestorInfo> &ancestors, const QString &cssId,
                                     const QStringList &alternateIds, const QStringList &classes,
                                     const QString &primitive) const
@@ -222,9 +231,9 @@ QExplicitlySharedDataPointer<CssContextNode> CssTheme::contextNodeFor(QQuickItem
 void CssTheme::applyCssTo(QObject *target) const
 {
     QElapsedTimer t;
-    if (g_applyStats.enabled) {
+    if (g_applyStats.enabled || g_phaseStats.enabled) {
         t.start();
-        if (target)
+        if (target && g_applyStats.enabled)
             ++g_applyStats.byClass[QByteArray(target->metaObject()->className())];
     }
     if (!target)
@@ -377,6 +386,8 @@ void CssTheme::applyCssTo(QObject *target) const
         g_applyStats.pushNs += t.nsecsElapsed() - tp;
         ++g_applyStats.count;
     }
+    if (g_phaseStats.enabled)
+        g_phaseStats.time("css.apply", t.nsecsElapsed());
 }
 
 void CssTheme::loadCss(QObject *target)

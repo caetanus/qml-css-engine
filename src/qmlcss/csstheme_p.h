@@ -6,13 +6,17 @@
 #include "csstheme.h"
 #include "csslayout.h"
 
+#include <QByteArray>
 #include <QHash>
+#include <QMutex>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 
@@ -76,6 +80,54 @@ inline bool leanTextEnabled()
     static const bool enabled = qEnvironmentVariable("SQ_LEAN_TEXT") != QLatin1String("0");
     return enabled;
 }
+
+// Step 5a: opt-in phase timers (SQ_PHASE_STATS=1), same shape as ApplyStats above — a plain
+// bool checked once per instrumented site, so every call site costs one predictable branch and
+// nothing else when disabled (no QElapsedTimer::start()/nsecsElapsed(), no allocation). A bucket
+// is either TIMED (time(): accumulates ns + bumps count) or COUNT-ONLY (bump(): no timing at all —
+// layout.drains/layout.childVisits are plain counters, not wall-clock samples). Printed once, from
+// the destructor at clean exit, one line per bucket (count, total ms); a bucket whose time
+// deliberately INCLUDES nested buckets (repeater.completeCreate runs the whole delegate's
+// componentComplete cascade, layout.flush runs every layout() of the drain, css.apply runs the
+// whole chain/resolve/hover/push apply) is marked "(incl)" in the printed line.
+struct PhaseBucket {
+    qint64 ns = 0;
+    qint64 count = 0;
+};
+struct PhaseStats {
+    bool enabled = qEnvironmentVariableIntValue("SQ_PHASE_STATS") != 0;
+    QHash<QByteArray, PhaseBucket> buckets;
+    // text.renderBuild samples from updatePaintNode, which a threaded render loop runs off the
+    // GUI thread — guard the shared map so that bucket does not race every GUI-thread one. Only
+    // taken on the enabled path (a diagnostic build), never while disabled.
+    QMutex mutex;
+    void time(const char *name, qint64 elapsedNs)
+    {
+        QMutexLocker locker(&mutex);
+        PhaseBucket &b = buckets[QByteArray(name)];
+        b.ns += elapsedNs;
+        ++b.count;
+    }
+    void bump(const char *name, qint64 n = 1)
+    {
+        QMutexLocker locker(&mutex);
+        buckets[QByteArray(name)].count += n;
+    }
+    ~PhaseStats()
+    {
+        if (!enabled || buckets.isEmpty())
+            return;
+        static const QSet<QByteArray> incl = { "repeater.completeCreate", "layout.flush", "css.apply" };
+        QList<QByteArray> keys = buckets.keys();
+        std::sort(keys.begin(), keys.end());
+        for (const QByteArray &k : keys) {
+            const PhaseBucket &b = buckets.value(k);
+            fprintf(stderr, "[phase] %s%s x%lld | %.3fms\n", k.constData(),
+                    incl.contains(k) ? " (incl)" : "", static_cast<long long>(b.count), b.ns / 1e6);
+        }
+    }
+};
+inline PhaseStats g_phaseStats;
 
 // Exception-safe layout hibernation: open the batch on construction, single flush on scope
 // exit. Null-safe so callers work before any CssLayoutEngine registered.

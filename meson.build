@@ -21,6 +21,7 @@ qml_css_engine_sources = files(
   'src/qmlcss/cssthemeparser.cpp',
   'src/qmlcss/cssthemeloader.cpp',
   'src/qmlcss/cssthemevalues.cpp',
+  'src/qmlcss/csstheme_census.cpp',
   'src/qmlcss/componentcache.cpp',
   'src/qmlcss/cssincubator.cpp',
   'src/qmlcss/cssrepeater.cpp',

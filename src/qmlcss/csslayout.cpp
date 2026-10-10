@@ -7,6 +7,7 @@
 #include "cssrect.h"
 #include "csstheme.h"
 
+#include <QElapsedTimer>
 #include <QMetaMethod>
 #include <QQuickItem>
 #include <QRegularExpression>
@@ -174,6 +175,10 @@ void CssLayoutEngine::flush()
     if (m_flushing)
         return;
 
+    QElapsedTimer t;
+    if (Detail::g_phaseStats.enabled)
+        t.start();
+
     // Drain to a FIXED POINT within this one synchronous call. A layout pass resizes children,
     // whose geometry change re-queues DEEPER boxes (and their parents). Previously each such nested
     // batch was deferred to the next event-loop turn, so an N-deep subtree took N turns — and N
@@ -188,6 +193,8 @@ void CssLayoutEngine::flush()
     int guard = 0;
     const int maxPasses = 64;
     while (!m_pending.isEmpty() && guard++ < maxPasses) {
+        if (Detail::g_phaseStats.enabled)
+            Detail::g_phaseStats.bump("layout.drains");
         const auto batch = m_pending;
         m_pending.clear();
         for (auto it = batch.constBegin(); it != batch.constEnd(); ++it) {
@@ -196,6 +203,9 @@ void CssLayoutEngine::flush()
         }
     }
     m_flushing = false;
+
+    if (Detail::g_phaseStats.enabled)
+        Detail::g_phaseStats.time("layout.flush", t.nsecsElapsed());
 
     // Only reached if the guard tripped (non-convergent): finish the remainder next turn.
     if (!m_pending.isEmpty() && !m_flushTimer->isActive())
@@ -520,6 +530,8 @@ void CssLayoutEngine::layout(QQuickItem *root, QQuickItem *content)
     QList<QQuickItem *> flow, abs, foreign;
     const auto kids = content->childItems();
     m_childVisits += quint64(kids.size());
+    if (Detail::g_phaseStats.enabled)
+        Detail::g_phaseStats.bump("layout.childVisits", qint64(kids.size()));
     for (QQuickItem *k : kids) {
         if (!isLayoutChild(k)) {
             // A non-Css child — a hand-written/foreign QML component (the escape hatch), or an

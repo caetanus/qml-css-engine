@@ -34,6 +34,9 @@ public:
     QQmlComponent *delegate() const { return m_delegate; }
     void setDelegate(QQmlComponent *c);
 
+    // Census probe (5a): live row contexts held by this repeater instance.
+    int rowCount() const { return m_rows.size(); }
+
 signals:
     void modelChanged();
     void delegateChanged();

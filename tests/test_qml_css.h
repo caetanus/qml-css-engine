@@ -223,4 +223,8 @@ private slots:
     // 4b-3 Task 2: a box's flex style is parsed ONCE per resolved style — a second full relayout of
     // 100 identical rows parses no length/box/shorthand string at all.
     void layoutParsesOncePerStyle();
+
+    // Step 5a Task 1: the opt-in phase timers (SQ_PHASE_STATS) cost nothing when disabled — a
+    // 100-row mount leaves every bucket at count 0 — and count exactly what they're told to when on.
+    void phaseStatsAreFreeWhenDisabled();
 };

@@ -4210,3 +4210,61 @@ void QmlCssTests::textPayloadWritesOnlyChanges()
     QVERIFY(QMetaObject::invokeMethod(row.data(), "inheritedChanged"));
     QCOMPARE(delta(), 0);
 }
+
+// Step 5a Task 1: SQ_PHASE_STATS opt-in phase timers must cost nothing when disabled (no site ever
+// touches the buckets map) and must count exactly what a 100-row mount creates when enabled.
+void QmlCssTests::phaseStatsAreFreeWhenDisabled()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(".row { height: 10px; }"));
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect {
+            id: box
+            cssPrimitive: ""
+            width: 200; height: 2000
+            property int count: 0
+            style: ({ "display": "flex", "flex-direction": "column" })
+            CssRepeater {
+                model: box.count
+                delegate: Component {
+                    CssRect { cssClass: ["row"]
+                        CssText { text: "a" }
+                        CssText { text: "b" }
+                    }
+                }
+            }
+        }
+    )", QUrl());
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+    QQuickWindow window;
+    qobject_cast<QQuickItem *>(root.data())->setParentItem(window.contentItem());
+
+    const bool wasOn = Detail::g_phaseStats.enabled;
+
+    // Stats OFF: a 100-row mount (200 CssText, 100 delegates) leaves every bucket's count at 0 — in
+    // practice no bucket is even created, since the disabled branch never calls time()/bump().
+    Detail::g_phaseStats.enabled = false;
+    Detail::g_phaseStats.buckets.clear();
+    root->setProperty("count", 100);
+    for (auto it = Detail::g_phaseStats.buckets.constBegin(); it != Detail::g_phaseStats.buckets.constEnd(); ++it)
+        QCOMPARE(it->count, qint64(0));
+
+    // Stats ON: tear down and remount fresh so the counts below are exactly this mount's.
+    root->setProperty("count", 0);
+    Detail::g_phaseStats.enabled = true;
+    Detail::g_phaseStats.buckets.clear();
+    root->setProperty("count", 100);
+    Detail::g_phaseStats.enabled = wasOn;
+
+    QCOMPARE(Detail::g_phaseStats.buckets.value("repeater.beginCreate").count, qint64(100));
+    QVERIFY(Detail::g_phaseStats.buckets.value("text.metrics").count >= 200);
+    Detail::g_phaseStats.buckets.clear();
+}
