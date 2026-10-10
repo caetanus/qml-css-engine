@@ -2059,6 +2059,48 @@ void QmlCssTests::viewportChangeRelayoutsVhHeights()
     QTRY_COMPARE(page->property("height").toReal(), 560.0); // 600 - 40
 }
 
+// A viewport change re-queues EVERY known root (vh resolves at layout time). Without a
+// batch, each requestLayout() outside a batch flushes synchronously on its own — R
+// separate flush() calls for R known roots, and any cascade that bubbles back up to an
+// ancestor WITHIN one root's own flush can re-lay that ancestor again when relayoutKnownRoots
+// reaches it explicitly later. Wrapping the whole loop in one batch collapses the redundant
+// entries (m_pending is keyed by root) into a single flush.
+void QmlCssTests::viewportChangeIsOneFlush()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(".row { height: 10vh; }"));
+    CssLayoutEngine layoutEngine(&theme);
+    theme.setViewport(800, 400);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect {
+            cssPrimitive: ""
+            width: 200; height: 400
+            style: ({ "display": "flex", "flex-direction": "column" })
+            CssRepeater {
+                model: 100
+                delegate: Component {
+                    CssRect { cssClass: ["row"]; cssPrimitive: "div"
+                        CssRect { cssPrimitive: "div" } }
+                }
+            }
+        }
+    )", QUrl());
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+    const quint64 before = layoutEngine.childVisits();
+    theme.setViewport(800, 600);
+    const quint64 visits = layoutEngine.childVisits() - before;
+    // Every known root once: the container (101 children incl. the repeater) + 100 rows (1 child)
+    // + 100 leaves (0) ≈ 201; a cascade re-laying boxes would show up as a multiple of that.
+    QVERIFY2(visits <= 2 * 201, qPrintable(QStringLiteral("viewport visits %1").arg(visits)));
+}
+
 // Popup/Menu contents are reparented by Qt to the window Overlay, severing the visual
 // parent chain that descendant selectors are matched against. The declared
 // `property Item cssAncestor: owner` must re-anchor the walk at the logical owner so
@@ -3256,4 +3298,61 @@ void QmlCssTests::cssRepeaterWritesIndexOnlyWhenChanged()
     root->setProperty("order", QVariant(QStringList{QStringLiteral("a"), QStringLiteral("b"),
                                                     QStringLiteral("c"), QStringLiteral("d"), QStringLiteral("e")}));
     QCOMPARE(root->property("evalLog").toList().size() - base, 1); // only the new row's probe
+}
+
+// Companion to cssRepeaterWritesIndexOnlyWhenChanged: that test proves a SURVIVOR that did
+// NOT move keeps its index untouched. This proves the other half of `found != i` — a row
+// that DID move (swap the two ends) gets its `index` context property updated to the new
+// position, with instances reused (not re-created).
+void QmlCssTests::cssRepeaterMovedRowGetsNewIndex()
+{
+    CssTheme theme;
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect {
+            id: box
+            cssPrimitive: ""
+            width: 200; height: 200
+            property var order: ["a", "b", "c", "d"]
+            CssRepeater {
+                model: box.order
+                delegate: Component {
+                    CssRect {
+                        cssPrimitive: "div"
+                        objectName: "r" + modelData
+                        property int idx: index
+                    }
+                }
+            }
+        }
+    )", QUrl());
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+
+    QObject *a = root->findChild<QObject *>(QStringLiteral("ra"));
+    QObject *b = root->findChild<QObject *>(QStringLiteral("rb"));
+    QObject *c = root->findChild<QObject *>(QStringLiteral("rc"));
+    QObject *d = root->findChild<QObject *>(QStringLiteral("rd"));
+    QVERIFY(a && b && c && d);
+
+    // Swap the two ends.
+    root->setProperty("order", QVariant(QStringList{QStringLiteral("d"), QStringLiteral("b"),
+                                                    QStringLiteral("c"), QStringLiteral("a")}));
+
+    // Same instances found again by objectName (reused, not recreated) — and re-indexed.
+    QObject *a2 = root->findChild<QObject *>(QStringLiteral("ra"));
+    QObject *d2 = root->findChild<QObject *>(QStringLiteral("rd"));
+    QCOMPARE(a2, a);
+    QCOMPARE(d2, d);
+
+    QCOMPARE(d->property("idx").toInt(), 0);
+    QCOMPARE(b->property("idx").toInt(), 1);
+    QCOMPARE(c->property("idx").toInt(), 2);
+    QCOMPARE(a->property("idx").toInt(), 3);
 }

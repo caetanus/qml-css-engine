@@ -83,6 +83,10 @@ private slots:
     // A viewport height change alone must re-run layout: vh lengths resolve at layout
     // time, and a tiling WM resizes in ONE event (no second event to converge on).
     void viewportChangeRelayoutsVhHeights();
+    // A viewport change must flush once per batch, not once per registered root: R known
+    // roots previously meant R synchronous flush() calls (and any cascade re-doing boxes
+    // already laid out in an earlier flush within the same resize).
+    void viewportChangeIsOneFlush();
 
     // Ancestor-scoped rules end-to-end: `.nav button` styles only buttons under `.nav`,
     // and a class/state change on an ANCESTOR restyles the scoped descendants too.
@@ -157,4 +161,8 @@ private slots:
     // Step 2 Task 4: a surviving row that did not move must not have `index` re-set — re-setting
     // an unchanged context property still notifies every binding that reads it.
     void cssRepeaterWritesIndexOnlyWhenChanged();
+    // Task 4 review: a row that DID move must still get the new index written (the
+    // positive branch of `found != i` — the companion to ...WhenChanged above, which only
+    // covers the negative/skip branch).
+    void cssRepeaterMovedRowGetsNewIndex();
 };

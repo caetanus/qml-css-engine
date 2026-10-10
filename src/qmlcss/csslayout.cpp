@@ -120,10 +120,14 @@ CssLayoutEngine::CssLayoutEngine(CssTheme *theme, QObject *parent)
 
 void CssLayoutEngine::relayoutKnownRoots()
 {
+    // One flush for the whole viewport invalidation: each requestLayout() outside a batch flushed on
+    // its own — R synchronous flushes per resize, with cascades re-laying boxes already done.
+    beginBatch();
     for (auto it = m_known.cbegin(); it != m_known.cend(); ++it) {
         if (it.value())
             requestLayout(it.key(), it.value());
     }
+    endBatch();
 }
 
 void CssLayoutEngine::endBatch()
