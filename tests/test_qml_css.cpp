@@ -3453,6 +3453,7 @@ void QmlCssTests::composedItemsDieWithTheirOwner()
         )CSSFILL").arg(pngUrl) },
     };
 
+    QStringList survivors;
     for (const Scenario &s : scenarios) {
         QQmlComponent component(&engine);
         component.setData(s.qml.toUtf8(), QUrl());
@@ -3473,10 +3474,13 @@ void QmlCssTests::composedItemsDieWithTheirOwner()
         QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
         QCoreApplication::processEvents();
 
+        // Collect survivors per type instead of aborting on the first one: a regression in one type
+        // must not hide another's.
         for (const auto &d : descendants) {
-            QTRY_VERIFY2(d.second.isNull(),
-                         qPrintable(QStringLiteral("%1: composed %2 survived its owner's destruction")
-                                        .arg(QString::fromLatin1(s.name), QString::fromLatin1(d.first))));
+            if (!d.second.isNull())
+                survivors << QStringLiteral("%1: composed %2 survived its owner's destruction")
+                                 .arg(QString::fromLatin1(s.name), QString::fromLatin1(d.first));
         }
     }
+    QVERIFY2(survivors.isEmpty(), qPrintable(survivors.join(QLatin1Char('\n'))));
 }
