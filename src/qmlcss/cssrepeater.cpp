@@ -203,7 +203,9 @@ void CssRepeater::rebuild()
                 if (row.context)
                     row.context->setContextProperty(QStringLiteral("modelData"), row.data);
             }
-            if (row.context)
+            // Only a row that MOVED gets a new index (its old index is its old position `found`):
+            // re-setting an unchanged value still notifies every binding that reads `index`.
+            if (row.context && found != i)
                 row.context->setContextProperty(QStringLiteral("index"), i);
             if (found != i)
                 changed = true;

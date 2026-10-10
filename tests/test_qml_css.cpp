@@ -3212,3 +3212,48 @@ void QmlCssTests::cssRepeaterSwapKeepsDocumentOrder()
     root->setProperty("order", model);
     QCOMPARE(docOrder(), expect(rows));
 }
+
+void QmlCssTests::cssRepeaterWritesIndexOnlyWhenChanged()
+{
+    CssTheme theme;
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect {
+            id: box
+            cssPrimitive: ""
+            width: 200; height: 200
+            property var order: ["a", "b", "c", "d"]
+            // A plain counter PROPERTY read-and-incremented from inside the probe (`evals++`) would
+            // itself become a dependency of every probe binding, so one row's genuine re-evaluation
+            // cascades into re-evaluating every OTHER row's probe too (confirmed with a standalone
+            // repro: QML's property-capture guard treats the read half of `x++` as a real dependency,
+            // and in-place `push()` on a `var` array does NOT emit a change notification — so logging
+            // into an array counts evaluations without wiring the probes to each other).
+            property var evalLog: []
+            CssRepeater {
+                model: box.order
+                delegate: Component {
+                    CssRect {
+                        cssPrimitive: "div"
+                        // Re-evaluates whenever `index` is notified, even with an unchanged value.
+                        property int probe: { box.evalLog.push(index); return index }
+                    }
+                }
+            }
+        }
+    )", QUrl());
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+    const int base = root->property("evalLog").toList().size();
+
+    // Append: the 4 surviving rows keep their index — none of their probes may re-run.
+    root->setProperty("order", QVariant(QStringList{QStringLiteral("a"), QStringLiteral("b"),
+                                                    QStringLiteral("c"), QStringLiteral("d"), QStringLiteral("e")}));
+    QCOMPARE(root->property("evalLog").toList().size() - base, 1); // only the new row's probe
+}

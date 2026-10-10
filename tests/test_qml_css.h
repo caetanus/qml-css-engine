@@ -154,4 +154,7 @@ private slots:
     // Step 2 Task 3: restack keeps document order through create/swap/remove/append, including
     // when new rows land after a static sibling (the footer).
     void cssRepeaterSwapKeepsDocumentOrder();
+    // Step 2 Task 4: a surviving row that did not move must not have `index` re-set — re-setting
+    // an unchanged context property still notifies every binding that reads it.
+    void cssRepeaterWritesIndexOnlyWhenChanged();
 };
