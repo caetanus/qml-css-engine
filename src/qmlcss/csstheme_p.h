@@ -13,6 +13,7 @@
 #include <QVariantList>
 #include <QVariantMap>
 
+#include <atomic>
 #include <cstdio>
 
 namespace QmlCss {
@@ -56,6 +57,35 @@ inline int g_ownResolveMisses = 0; // test probe: own resolves a CssBox apply ac
 inline int g_namedInheritReads = 0; // test probe: by-name inherited* reads (foreign ancestors only, 4b-4)
 inline int g_textLabelWrites = 0; // test probe: properties written to a CssText's composed label (4b-4)
 inline int g_layoutStringParses = 0; // test probe: layout style strings parsed (lengths, boxes, `flex`; 4b-3)
+// Lean text (4c) probes: text layouts a lean CssText built on the GUI thread (metrics, and the layout the private
+// handoff keeps until sync), on the render thread (public handoff, or a scene graph rebuilt without one), and its
+// QSGTextNode (re)builds. The render-thread ones are atomics (threaded render loop).
+inline int g_textGuiLayouts = 0;
+inline std::atomic<int> g_textRenderLayouts{ 0 };
+inline std::atomic<int> g_textNodeBuilds{ 0 };
+
+// Lean text switches, read once from the environment: SQ_LEAN_TEXT=0 keeps every CssText on the composed
+// QQuickText; SQ_LEAN_TEXT_HANDOFF=private (default) | public picks how the layout reaches the render thread.
+// The overrides are test probes (-1: the environment).
+enum class LeanTextHandoff { Private, Public };
+inline int g_leanTextOverride = -1; // 0 composed, 1 lean
+inline int g_leanTextHandoffOverride = -1; // 0 private, 1 public
+inline bool leanTextEnabled()
+{
+    if (g_leanTextOverride >= 0)
+        return g_leanTextOverride != 0;
+    static const bool enabled = qEnvironmentVariable("SQ_LEAN_TEXT") != QLatin1String("0");
+    return enabled;
+}
+inline LeanTextHandoff leanTextHandoff()
+{
+    if (g_leanTextHandoffOverride >= 0)
+        return g_leanTextHandoffOverride ? LeanTextHandoff::Public : LeanTextHandoff::Private;
+    static const LeanTextHandoff handoff = qEnvironmentVariable("SQ_LEAN_TEXT_HANDOFF") == QLatin1String("public")
+        ? LeanTextHandoff::Public
+        : LeanTextHandoff::Private;
+    return handoff;
+}
 
 // Exception-safe layout hibernation: open the batch on construction, single flush on scope
 // exit. Null-safe so callers work before any CssLayoutEngine registered.

@@ -7,13 +7,19 @@
 #include "qmlcss/valueparser.h"
 
 #include <QFont>
+#include <QMatrix4x4>
 #include <QMetaProperty>
 #include <QJSValue>
 #include <QQmlComponent>
 #include <QQmlContext>
 #include <QQmlEngine>
+#include <QQuickWindow>
+#include <QSGTextNode>
 #include <QTextOption>
 #include <QUrl>
+
+#include <QtGui/private/qtextengine_p.h>
+#include <QtQuick/private/qquickitem_p.h>
 
 #include <algorithm>
 
@@ -69,6 +75,35 @@ void putLabel(QQuickItem *label, const QMetaProperty &prop, bool fresh, const T 
     ++Detail::g_textLabelWrites;
 }
 
+// Everything but the colour: a payload change outside these is a repaint, not a relayout.
+bool sameLayoutInputs(const CssTextPayload &a, const CssTextPayload &b)
+{
+    return a.text == b.text && a.font == b.font && a.lineHeightMode == b.lineHeightMode
+        && a.lineHeight == b.lineHeight && a.textFormat == b.textFormat && a.leftPadding == b.leftPadding
+        && a.rightPadding == b.rightPadding && a.topPadding == b.topPadding && a.bottomPadding == b.bottomPadding
+        && a.wrapMode == b.wrapMode && a.elide == b.elide && a.horizontalAlignment == b.horizontalAlignment;
+}
+
+// QQuickText's renderType default: QQuickTextUtil::textRenderType<QQuickText>() (qquicktextutil_p.h 96-108).
+QSGTextNode::RenderType windowRenderType()
+{
+    switch (QQuickWindow::textRenderType()) {
+    case QQuickWindow::NativeTextRendering:
+        return QSGTextNode::NativeRendering;
+    case QQuickWindow::CurveTextRendering:
+        return QSGTextNode::CurveRendering;
+    case QQuickWindow::QtTextRendering:
+        break;
+    }
+    return QSGTextNode::QtRendering;
+}
+
+void resetFontEngineCache(QTextLayout *layout)
+{
+    if (layout && layout->engine())
+        layout->engine()->resetFontEngineCache();
+}
+
 } // namespace
 
 CssText::CssText(QQuickItem *parent)
@@ -98,8 +133,13 @@ void CssText::setText(const QString &v)
     if (m_text == v)
         return;
     m_text = v;
-    if (m_label)
+    if (m_label) {
         putLabel<QString>(m_label, labelProps(m_label).text, !m_payloadApplied, m_text, m_applied.text);
+    } else if (m_lean && m_leanMounted) {
+        CssTextPayload p = m_applied;
+        p.text = m_text;
+        applyLeanPayload(p);
+    }
     emit textChanged();
 }
 
@@ -108,6 +148,9 @@ void CssText::setStyledText(bool v)
     if (m_styledText == v)
         return;
     m_styledText = v;
+    // Styled text keeps the composed QQuickText (its tag subset); plain text goes lean.
+    if (isComponentComplete())
+        syncPath();
     if (m_label) // Text.StyledText : PlainText
         putLabel<int>(m_label, labelProps(m_label).textFormat, !m_payloadApplied, m_styledText ? 4 : 0,
                       m_applied.textFormat);
@@ -177,11 +220,8 @@ QString CssText::inheritedTextAlign() const { return inheritedText().textAlign; 
 
 // --- apply resolved CSS onto the composed Text -----------------------------------------------
 
-void CssText::applyToText()
+CssTextPayload CssText::resolvePayload() const
 {
-    if (!m_label)
-        return;
-
     auto styleStr = [&](const char *k) { return m_style.value(QLatin1String(k)).toString(); };
     CssTextPayload p;
 
@@ -228,8 +268,7 @@ void CssText::applyToText()
 
     // padding (QML boxSideLength side order: left=3, right=1, top=0, bottom=2). Without a theme the
     // padding is never written: carry the applied values so the diff leaves them alone.
-    const bool padded = m_theme;
-    if (padded) {
+    if (m_theme) {
         p.leftPadding = m_theme->boxSideLength(m_style, QStringLiteral("padding"), 3);
         p.rightPadding = m_theme->boxSideLength(m_style, QStringLiteral("padding"), 1);
         p.topPadding = m_theme->boxSideLength(m_style, QStringLiteral("padding"), 0);
@@ -254,46 +293,59 @@ void CssText::applyToText()
         ? Qt::AlignHCenter
         : (align == QLatin1String("right") ? Qt::AlignRight : Qt::AlignLeft);
     p.horizontalAlignment = static_cast<int>(halign);
+    return p;
+}
 
-    // Write only the fields that differ from the payload last applied (all of them on a fresh label).
-    QQuickItem *t = m_label;
-    const LabelProps &lp = labelProps(t);
-    const bool fresh = !m_payloadApplied;
-    putLabel(t, lp.text, fresh, p.text, m_applied.text);
-    putLabel(t, lp.color, fresh, p.color, m_applied.color);
-    putLabel(t, lp.font, fresh, p.font, m_applied.font);
-    putLabel(t, lp.lineHeightMode, fresh, p.lineHeightMode, m_applied.lineHeightMode);
-    putLabel(t, lp.lineHeight, fresh, p.lineHeight, m_applied.lineHeight);
-    putLabel(t, lp.textFormat, fresh, p.textFormat, m_applied.textFormat);
-    if (padded) {
-        putLabel(t, lp.leftPadding, fresh, p.leftPadding, m_applied.leftPadding);
-        putLabel(t, lp.rightPadding, fresh, p.rightPadding, m_applied.rightPadding);
-        putLabel(t, lp.topPadding, fresh, p.topPadding, m_applied.topPadding);
-        putLabel(t, lp.bottomPadding, fresh, p.bottomPadding, m_applied.bottomPadding);
+void CssText::applyToText()
+{
+    if (isComponentComplete())
+        syncPath();
+    if (!m_label && !m_lean)
+        return;
+
+    const CssTextPayload p = resolvePayload();
+    if (m_lean) {
+        applyLeanPayload(p);
+    } else {
+        // Write only the fields that differ from the payload last applied (all of them on a fresh label).
+        QQuickItem *t = m_label;
+        const LabelProps &lp = labelProps(t);
+        const bool fresh = !m_payloadApplied;
+        putLabel(t, lp.text, fresh, p.text, m_applied.text);
+        putLabel(t, lp.color, fresh, p.color, m_applied.color);
+        putLabel(t, lp.font, fresh, p.font, m_applied.font);
+        putLabel(t, lp.lineHeightMode, fresh, p.lineHeightMode, m_applied.lineHeightMode);
+        putLabel(t, lp.lineHeight, fresh, p.lineHeight, m_applied.lineHeight);
+        putLabel(t, lp.textFormat, fresh, p.textFormat, m_applied.textFormat);
+        if (m_theme) {
+            putLabel(t, lp.leftPadding, fresh, p.leftPadding, m_applied.leftPadding);
+            putLabel(t, lp.rightPadding, fresh, p.rightPadding, m_applied.rightPadding);
+            putLabel(t, lp.topPadding, fresh, p.topPadding, m_applied.topPadding);
+            putLabel(t, lp.bottomPadding, fresh, p.bottomPadding, m_applied.bottomPadding);
+        }
+        putLabel(t, lp.wrapMode, fresh, p.wrapMode, m_applied.wrapMode);
+        putLabel(t, lp.elide, fresh, p.elide, m_applied.elide);
+        putLabel(t, lp.horizontalAlignment, fresh, p.horizontalAlignment, m_applied.horizontalAlignment);
+        m_payloadApplied = true;
     }
-    putLabel(t, lp.wrapMode, fresh, p.wrapMode, m_applied.wrapMode);
-    putLabel(t, lp.elide, fresh, p.elide, m_applied.elide);
-    putLabel(t, lp.horizontalAlignment, fresh, p.horizontalAlignment, m_applied.horizontalAlignment);
-    m_payloadApplied = true;
 
     // display:none never writes `visible` (imperative writes sever author bindings, e.g. the
     // <Show> guard); the layout skips it by style, painting dies via opacity 0.
-    if (styleStr("display") == QLatin1String("none") || styleStr("visibility") == QLatin1String("hidden"))
+    const QString display = m_style.value(QStringLiteral("display")).toString();
+    const QString visibility = m_style.value(QStringLiteral("visibility")).toString();
+    if (display == QLatin1String("none") || visibility == QLatin1String("hidden"))
         setOpacity(0);
     else
         setOpacity(m_style.contains(QStringLiteral("opacity")) ? m_style.value(QStringLiteral("opacity")).toReal()
                                                                : 1.0);
 
-    mirrorImplicit();
+    if (!m_lean)
+        mirrorImplicit();
 }
 
 void CssText::applyShadow()
 {
-    // QML: _dropShadow = (cssTheme.loaded && style["text-shadow"]) ? parseBoxShadow(...) : ({})
-    QVariantMap shadow;
-    const QString ts = m_style.value(QStringLiteral("text-shadow")).toString();
-    if (m_theme && m_theme->isLoaded() && !ts.isEmpty())
-        shadow = m_theme->parseBoxShadow(ts);
+    const QVariantMap shadow = shadowSpec();
     const bool hasShadow = shadow.contains(QStringLiteral("color"));
 
     // Lazy composition: only a label that actually declares text-shadow pays for the effect.
@@ -337,28 +389,34 @@ void CssText::applyShadow()
 
 void CssText::layoutChild()
 {
-    if (!m_label)
+    // The box the text occupies: ours when a width/height is assigned (by the layout engine), else the text's
+    // implicit size so a standalone label never collapses. The shadow and the background take it from the outer
+    // item's box (contract 9), never from the label.
+    QSizeF box;
+    if (m_label) {
+        m_label->setX(0);
+        m_label->setY(0);
+        // Fill an assigned size so wrap/elide/valign apply.
+        const qreal w = width();
+        m_label->setWidth(w > 0.5 ? w : m_label->implicitWidth());
+        const qreal h = height();
+        m_label->setHeight(h > 0.5 ? h : m_label->implicitHeight());
+        box = m_label->size();
+    } else if (m_lean) {
+        box = m_box;
+    } else {
         return;
-    m_label->setX(0);
-    m_label->setY(0);
-    // When a width/height is assigned (by the layout engine), fill it so wrap/elide/valign apply;
-    // otherwise let the Text keep its own implicit size so a standalone label never collapses.
-    const qreal w = width();
-    m_label->setWidth(w > 0.5 ? w : m_label->implicitWidth());
-    const qreal h = height();
-    m_label->setHeight(h > 0.5 ? h : m_label->implicitHeight());
+    }
 
     if (m_shadow) {
         m_shadow->setX(0);
         m_shadow->setY(0);
-        m_shadow->setWidth(m_label->width());
-        m_shadow->setHeight(m_label->height());
+        m_shadow->setSize(box);
     }
     if (m_bg) {
         m_bg->setX(0);
         m_bg->setY(0);
-        m_bg->setWidth(m_label->width());
-        m_bg->setHeight(m_label->height());
+        m_bg->setSize(box);
     }
 }
 
@@ -404,50 +462,13 @@ void CssText::componentComplete()
         m_scenelessResolve = window() == nullptr; // healed by itemChange on scene attach
     }
 
-    if (QQmlEngine *eng = qmlEngine(this)) {
-        // The REAL QtQuick Text, via the Qt type-system (we forward everything onto it).
-        // Configured BETWEEN beginCreate and completeCreate: a QQuickText that is not yet complete
-        // defers its text layout, so the ~20 property writes of the first applyToText() cost ONE
-        // layout (and one font match) at completion instead of one per write.
-        {
-            QQmlComponent *comp = QmlCss::cachedComponent(eng, QStringLiteral("csstext-bf5e2923"),
-                "import QtQuick\nText {}");
-            if (QObject *o = comp->beginCreate(qmlContext(this))) {
-                if (QQuickItem *label = qobject_cast<QQuickItem *>(o)) {
-                    label->setParent(this); // C++ ownership: beginCreate() means C++ owns it
-                    label->setParentItem(this);
-                    m_label = label;
-                    m_payloadApplied = false; // a fresh label: the first apply writes the whole payload
-                    // Constant for every label, so written once here instead of in the payload.
-                    labelProps(label).verticalAlignment.write(label, static_cast<int>(Qt::AlignVCenter));
-                    ++Detail::g_textLabelWrites;
-                    applyToText();
-                    comp->completeCreate();
-                } else {
-                    comp->completeCreate();
-                    o->deleteLater();
-                }
-            } else {
-                qWarning("CssText: failed to compose Text: %s", qPrintable(comp->errorString()));
-            }
-        }
-
-        // The text-shadow MultiEffect is composed LAZILY in applyShadow(): a MultiEffect
-        // drags in ShaderEffectSources + blur items even while invisible, and most labels
-        // never declare text-shadow.
-    }
-
-    if (m_label) {
-        // The composed Text's implicit size drives ours; re-flow the parent on change.
-        connect(m_label, &QQuickItem::implicitWidthChanged, this, [this]() {
-            mirrorImplicit();
-            layoutChild();
-        });
-        connect(m_label, &QQuickItem::implicitHeightChanged, this, [this]() {
-            mirrorImplicit();
-            layoutChild();
-        });
-    }
+    // Plain text draws itself (lean); styled text composes the REAL QtQuick Text. The text-shadow
+    // MultiEffect is composed LAZILY in applyShadow(): a MultiEffect drags in ShaderEffectSources + blur
+    // items even while invisible, and most labels never declare text-shadow.
+    if (wantsLean())
+        enterLean();
+    else
+        composeLabel();
 
     // notifyParentLayout on implicit/visible change (QML on*Changed -> _notifyParent), like CssHr.
     connect(this, &QQuickItem::implicitWidthChanged, this, [this]() {
@@ -465,8 +486,17 @@ void CssText::componentComplete()
     // font.family re-resolves once a downloaded @font-face registers (QML leading fontRevision dep).
     if (m_theme)
         connect(m_theme, &CssTheme::fontRevisionChanged, this, [this]() {
+            const CssTextPayload before = m_applied;
             applyToText();
             applyShadow();
+            // The same family name may now resolve to the registered font: lay out again even if the payload
+            // did not change (applyToText re-laid out when it did).
+            if (m_lean && m_leanMounted && sameLayoutInputs(before, m_applied)) {
+                leanRelayout();
+                leanResize();
+                leanPublishImplicit();
+                layoutChild();
+            }
         });
     // An ancestor's inherited text props re-propagate to us (CSS inheritance).
     if (QQuickItem *anc = cssParentItem())
@@ -485,6 +515,13 @@ void CssText::componentComplete()
 void CssText::geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry)
 {
     QQuickItem::geometryChange(newGeometry, oldGeometry);
+    if (m_lean) {
+        // A move needs nothing (the item's transform node moves the glyphs); a resize is the label's.
+        if (newGeometry.size() == oldGeometry.size() || !m_leanMounted)
+            return;
+        leanResize();
+        leanPublishImplicit();
+    }
     layoutChild();
 }
 
@@ -554,6 +591,309 @@ Shape {
     layoutChild(); // size the fresh underlay to the current box
 }
 
+QVariantMap CssText::shadowSpec() const
+{
+    // QML: _dropShadow = (cssTheme.loaded && style["text-shadow"]) ? parseBoxShadow(...) : ({})
+    QVariantMap shadow;
+    const QString ts = m_style.value(QStringLiteral("text-shadow")).toString();
+    if (m_theme && m_theme->isLoaded() && !ts.isEmpty())
+        shadow = m_theme->parseBoxShadow(ts);
+    return shadow;
+}
+
+// --- path selection (contract 1/4: QQuickText fallback for styledText and text-shadow) --------------
+
+bool CssText::wantsLean() const
+{
+    return Detail::leanTextEnabled() && !m_styledText && !shadowSpec().contains(QStringLiteral("color"));
+}
+
+void CssText::syncPath()
+{
+    // Before componentComplete picks the first path there is nothing to switch from.
+    if (!m_lean && !m_label)
+        return;
+    const bool lean = wantsLean();
+    if (lean == m_lean)
+        return;
+    if (lean)
+        enterLean();
+    else
+        enterComposed();
+}
+
+void CssText::enterLean()
+{
+    // Drop the composed path: the MultiEffect first, its source detached while the label still lives.
+    if (m_shadow) {
+        m_shadow->setProperty("source", QVariant::fromValue<QQuickItem *>(nullptr));
+        delete m_shadow.data();
+    }
+    if (m_label) {
+        disconnect(m_label, nullptr, this, nullptr);
+        delete m_label.data();
+    }
+    m_payloadApplied = false;
+
+    m_lean = true;
+    m_leanMounted = false; // a fresh virtual label: its first layout is a mount
+    setFlag(ItemHasContents, true);
+    applyToText();
+    layoutChild();
+}
+
+void CssText::enterComposed()
+{
+    // Drop the lean path: its layouts, and its paint node (removed at the next sync once the item no longer has
+    // contents — update() first, it only marks items that have them).
+    m_lean = false;
+    m_leanMounted = false;
+    m_nodeDirty = false;
+    m_guiLayout.reset();
+    m_guiElideLayout.reset();
+    if (flags() & ItemHasContents) {
+        update();
+        setFlag(ItemHasContents, false);
+    }
+    composeLabel();
+    layoutChild();
+    applyShadow();
+}
+
+void CssText::composeLabel()
+{
+    QQmlEngine *eng = qmlEngine(this);
+    if (!eng)
+        return;
+    // The REAL QtQuick Text, via the Qt type-system (we forward everything onto it).
+    // Configured BETWEEN beginCreate and completeCreate: a QQuickText that is not yet complete
+    // defers its text layout, so the ~20 property writes of the first applyToText() cost ONE
+    // layout (and one font match) at completion instead of one per write.
+    QQmlComponent *comp = QmlCss::cachedComponent(eng, QStringLiteral("csstext-bf5e2923"), "import QtQuick\nText {}");
+    QObject *o = comp->beginCreate(qmlContext(this));
+    if (!o) {
+        qWarning("CssText: failed to compose Text: %s", qPrintable(comp->errorString()));
+        return;
+    }
+    QQuickItem *label = qobject_cast<QQuickItem *>(o);
+    if (!label) {
+        comp->completeCreate();
+        o->deleteLater();
+        return;
+    }
+    label->setParent(this); // C++ ownership: beginCreate() means C++ owns it
+    label->setParentItem(this);
+    m_label = label;
+    m_payloadApplied = false; // a fresh label: the first apply writes the whole payload
+    // Constant for every label, so written once here instead of in the payload.
+    labelProps(label).verticalAlignment.write(label, static_cast<int>(Qt::AlignVCenter));
+    ++Detail::g_textLabelWrites;
+    applyToText();
+    comp->completeCreate();
+
+    // The composed Text's implicit size drives ours; re-flow the parent on change.
+    connect(m_label, &QQuickItem::implicitWidthChanged, this, [this]() {
+        mirrorImplicit();
+        layoutChild();
+    });
+    connect(m_label, &QQuickItem::implicitHeightChanged, this, [this]() {
+        mirrorImplicit();
+        layoutChild();
+    });
+    mirrorImplicit();
+}
+
+// --- lean path ------------------------------------------------------------------------------------------
+//
+// The lean CssText runs a VIRTUAL QQuickText label: the same layouts at the same moments as the composed one
+// (mount layout, then QQuickText::geometryChange deciding on each resize), so what it draws is what the composed
+// label would draw (tests/test_text.cpp leanTextRendersLikeQQuickText).
+
+void CssText::applyLeanPayload(const CssTextPayload &p)
+{
+    if (!m_leanMounted) {
+        // QQuickText::componentComplete: the label is laid out before it has a size and follows its implicit
+        // one; CssText::layoutChild then gives it ours (assigning the implicit size it has is no change).
+        m_applied = p;
+        m_payloadApplied = true;
+        leanRelayout();
+        m_leanMounted = true;
+        m_box = QSizeF(m_metrics.implicitWidth, m_metrics.implicitHeight);
+        leanResize();
+        leanPublishImplicit();
+        return;
+    }
+    if (sameLayoutInputs(p, m_applied)) {
+        if (p.color != m_applied.color) { // QQuickText::setColor: a repaint
+            m_applied.color = p.color;
+            markNodeDirty();
+        }
+        return;
+    }
+    // A QQuickText setter: updateLayout at the label's current size.
+    m_applied = p;
+    leanRelayout();
+    leanResize();
+    leanPublishImplicit();
+}
+
+void CssText::leanRelayout()
+{
+    m_mirrored = labelMirrored();
+    m_layoutMount = !m_leanMounted;
+    m_layoutBox = m_box;
+    ++Detail::g_textGuiLayouts;
+    if (Detail::leanTextHandoff() == Detail::LeanTextHandoff::Private) {
+        // Shape once, here; the layout waits for the sync that builds the node from it (updatePolish readies it).
+        CssTextBuiltLayout built = m_layoutMount
+            ? CssTextLayout::buildMountLayout(m_applied, m_mirrored)
+            : CssTextLayout::buildLayout(m_applied, m_box.width(), m_box.height(), m_mirrored);
+        m_metrics = built.metrics;
+        m_guiLayout = std::move(built.layout);
+        m_guiElideLayout = std::move(built.elideLayout);
+    } else {
+        // Public handoff: scalars only; the render thread lays out again from value state.
+        m_metrics = m_layoutMount ? CssTextLayout::mountMetrics(m_applied, m_mirrored)
+                                  : CssTextLayout::metrics(m_applied, m_box.width(), m_box.height(), m_mirrored);
+    }
+    markNodeDirty();
+}
+
+void CssText::leanResize()
+{
+    // CssText::layoutChild gives the label our width, then our height — each one a QQuickText::geometryChange;
+    // an unassigned dimension is the label's implicit one, which a relayout may change (bounded: a size that
+    // keeps moving is QQuickText's own behaviour, and three rounds cover a wrap that changes both).
+    auto resizeTo = [this](QSizeF to) {
+        if (to == m_box)
+            return;
+        const QSizeF from = m_box;
+        m_box = to;
+        switch (CssTextLayout::geometryEffect(m_metrics, m_applied, from, to)) {
+        case CssTextGeometryEffect::Relayout:
+            leanRelayout();
+            break;
+        case CssTextGeometryEffect::Repaint:
+            markNodeDirty();
+            break;
+        case CssTextGeometryEffect::None:
+            break;
+        }
+    };
+    for (int round = 0; round < 3; ++round) {
+        const QSizeF before = m_box;
+        resizeTo(QSizeF(width() > 0.5 ? width() : m_metrics.implicitWidth, m_box.height()));
+        resizeTo(QSizeF(m_box.width(), height() > 0.5 ? height() : m_metrics.implicitHeight));
+        if (m_box == before)
+            break;
+    }
+}
+
+void CssText::leanPublishImplicit()
+{
+    // We are the layout participant; our implicit size is the label's.
+    setImplicitSize(m_metrics.implicitWidth, m_metrics.implicitHeight);
+    layoutChild();
+}
+
+void CssText::markNodeDirty()
+{
+    m_nodeDirty = true;
+    update();
+    if (Detail::leanTextHandoff() == Detail::LeanTextHandoff::Private)
+        polish();
+}
+
+bool CssText::labelMirrored() const
+{
+    // A composed label inherits our children's mirroring (QQuickItemPrivate::setImplicitLayoutMirror): its
+    // effective LayoutMirroring is our inheritedLayoutMirror.
+    return QQuickItemPrivate::get(this)->inheritedLayoutMirror;
+}
+
+void CssText::updatePolish()
+{
+    QQuickItem::updatePolish();
+    if (!m_lean || Detail::leanTextHandoff() != Detail::LeanTextHandoff::Private)
+        return;
+    if (m_nodeDirty && leanDrawable() && !m_guiLayout) {
+        // A repaint without a relayout (colour, re-placement, new window): lay the same text out again.
+        ++Detail::g_textGuiLayouts;
+        CssTextBuiltLayout built = m_layoutMount
+            ? CssTextLayout::buildMountLayout(m_applied, m_mirrored)
+            : CssTextLayout::buildLayout(m_applied, m_layoutBox.width(), m_layoutBox.height(), m_mirrored);
+        m_guiLayout = std::move(built.layout);
+        m_guiElideLayout = std::move(built.elideLayout);
+    }
+    // QQuickText::updatePolish (qquicktext.cpp 2697): the GUI-thread shaping filled the layout's font-engine
+    // cache; the render thread must not extract glyphs through those engines (qtextengine.cpp 2344-2347).
+    resetFontEngineCache(m_guiLayout.get());
+    resetFontEngineCache(m_guiElideLayout.get());
+}
+
+QSGNode *CssText::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)
+{
+    // QQuickText::updatePaintNode (qquicktext.cpp 2601-2677) for a plain-text label.
+    if (!m_lean || !leanDrawable() || !window()) {
+        delete oldNode;
+        m_guiLayout.reset();
+        m_guiElideLayout.reset();
+        m_nodeDirty = false;
+        return nullptr;
+    }
+    if (oldNode && !m_nodeDirty)
+        return oldNode;
+
+    auto *node = static_cast<QSGTextNode *>(oldNode);
+    if (!node) {
+        node = window()->createTextNode();
+        if (!node)
+            return nullptr;
+    }
+
+    std::unique_ptr<QTextLayout> layout;
+    std::unique_ptr<QTextLayout> elideLayout;
+    if (m_guiLayout) {
+        // Private handoff: the GUI-shaped layout, its font-engine cache reset in updatePolish.
+        layout = std::move(m_guiLayout);
+        elideLayout = std::move(m_guiElideLayout);
+    } else {
+        // Public handoff (or a scene graph rebuilt without a pending layout): lay out here from value state.
+        const CssTextPayload payload = m_applied;
+        CssTextBuiltLayout built = m_layoutMount
+            ? CssTextLayout::buildMountLayout(payload, m_mirrored)
+            : CssTextLayout::buildLayout(payload, m_layoutBox.width(), m_layoutBox.height(), m_mirrored);
+        ++Detail::g_textRenderLayouts;
+        layout = std::move(built.layout);
+        elideLayout = std::move(built.elideLayout);
+    }
+
+    const QSGTextNode::RenderType renderType = windowRenderType();
+    node->setFiltering(smooth() ? QSGTexture::Linear : QSGTexture::Nearest);
+    node->setTextStyle(QSGTextNode::Normal);
+    node->setRenderType(renderType);
+    node->setRenderTypeQuality(-1); // QQuickText::DefaultRenderTypeQuality
+    node->clear();
+    node->setMatrix(QMatrix4x4());
+    node->setColor(m_applied.color);
+    node->setViewport(QRectF());
+
+    // The origin at the label's CURRENT size, from the scalars of its last layout.
+    const QPointF origin = CssTextLayout::paintOrigin(m_metrics, m_applied, m_box.width(), m_box.height());
+    if (m_metrics.unelidedLineCount > 0 && layout)
+        node->addTextLayout(origin, layout.get(), -1, -1, 0, m_metrics.unelidedLineCount);
+    if (m_metrics.elided && elideLayout)
+        node->addTextLayout(origin, elideLayout.get());
+    // The glyph nodes hold their own glyph runs: the layouts die here (contract 6/7).
+    layout.reset();
+    elideLayout.reset();
+
+    m_unscalableGlyphs = renderType == QSGTextNode::NativeRendering;
+    m_nodeDirty = false;
+    ++Detail::g_textNodeBuilds;
+    return node;
+}
+
 void CssText::onAncestorInheritedChanged()
 {
     applyToText();
@@ -571,5 +911,39 @@ void QmlCss::CssText::itemChange(QQuickItem::ItemChange change, const QQuickItem
     if (change == ItemSceneChange && data.window && m_scenelessResolve && isComponentComplete()) {
         m_scenelessResolve = false;
         maybeLoadCss();
+    }
+    if (!m_lean || !m_leanMounted)
+        return;
+    switch (change) {
+    case ItemSceneChange:
+        // A new window has a new scene graph: the node is built again there. Leaving one frees the layout
+        // the private handoff was holding for it.
+        if (data.window) {
+            markNodeDirty();
+        } else {
+            m_guiLayout.reset();
+            m_guiElideLayout.reset();
+        }
+        break;
+    case ItemDevicePixelRatioHasChanged:
+        // QQuickText::itemChange: native glyphs are laid out for one pixel grid — lay out again.
+        if (m_unscalableGlyphs) {
+            leanRelayout();
+            leanResize();
+            leanPublishImplicit();
+            layoutChild();
+        }
+        break;
+    case ItemParentHasChanged:
+        // The inherited LayoutMirroring may differ under the new parent.
+        if (labelMirrored() != m_mirrored) {
+            leanRelayout();
+            leanResize();
+            leanPublishImplicit();
+            layoutChild();
+        }
+        break;
+    default:
+        break;
     }
 }

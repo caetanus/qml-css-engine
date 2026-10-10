@@ -76,15 +76,18 @@ qml_css_engine_qt_sources = qt6.preprocess(
 qml_css_engine_include = include_directories('src')
 
 # CssTextLayout ports QQuickText's layout code literally, which elides through the private QTextEngine
-# (QQuickTextPrivate::elidedText does the same). Private to the library: no installed header includes it.
+# (QQuickTextPrivate::elidedText does the same); the lean CssText resets a layout's font-engine cache before the
+# render thread reads it (QTextEngine) and reads the LayoutMirroring a composed label would inherit
+# (QQuickItemPrivate). Private to the library: no installed header includes them.
 qt6_gui_private_dep = dependency('qt6', modules: ['Core', 'Gui'], private_headers: true)
+qt6_quick_private_dep = dependency('qt6', modules: ['Core', 'Gui', 'Qml', 'Quick'], private_headers: true)
 
 qml_css_engine_lib = static_library(
   'qmlcssengine',
   qml_css_engine_sources,
   qml_css_engine_qt_sources,
   include_directories: qml_css_engine_include,
-  dependencies: [qt6_dep, qt6_gui_private_dep],
+  dependencies: [qt6_dep, qt6_gui_private_dep, qt6_quick_private_dep],
   install: true,
 )
 
@@ -146,13 +149,14 @@ if get_option('tests').enabled() or (not meson.is_subproject() and not get_optio
   test('layout', layout_test, env: ['QT_QPA_PLATFORM=offscreen'])
 
 # The text oracle reads QQuickTextPrivate (what a real QQuickText draws, and where): private headers, test only.
-qt6_quick_private_dep = dependency('qt6', modules: ['Core', 'Gui', 'Qml', 'Quick'], private_headers: true)
+# tests/data holds the OFL test font the font-revision test registers.
 text_test_moc = qt6.preprocess(moc_headers: files('tests/test_text.h'))
 text_test = executable(
   'test-text',
   files('tests/test_text.cpp'),
   text_test_moc,
   dependencies: [qml_css_engine_dep, qt6_test_dep, qt6_quick_private_dep],
+  cpp_args: ['-DSQ_TEST_DATA_DIR="' + (meson.current_source_dir() / 'tests' / 'data') + '"'],
 )
 test('text', text_test, env: ['QT_QPA_PLATFORM=offscreen'])
 endif

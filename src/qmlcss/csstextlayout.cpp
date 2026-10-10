@@ -591,9 +591,20 @@ QuickTextPort configure(const CssTextPayload &p, qreal width, qreal height, bool
     return t;
 }
 
-CssTextBuiltLayout run(const CssTextPayload &p, qreal width, qreal height, bool mirrored)
+// The label as QQuickText::componentComplete lays it out: no size yet (it follows its implicit one).
+QuickTextPort configureMount(const CssTextPayload &p, bool mirrored)
 {
-    QuickTextPort t = configure(p, width, height, mirrored);
+    QuickTextPort t = configure(p, 0, 0, mirrored);
+    t.widthValid = false;
+    t.heightValid = false;
+    t.implicitWidthValid = false;
+    t.implicitHeightValid = false;
+    return t;
+}
+
+CssTextBuiltLayout run(const CssTextPayload &p, qreal width, qreal height, bool mirrored, bool mount = false)
+{
+    QuickTextPort t = mount ? configureMount(p, mirrored) : configure(p, width, height, mirrored);
     t.updateSize();
 
     CssTextBuiltLayout out;
@@ -601,11 +612,7 @@ CssTextBuiltLayout run(const CssTextPayload &p, qreal width, qreal height, bool 
     if (t.earlyElidedReturn) {
         // The zero-size elided exit keeps the implicit size of the previous full layout: the one the label got
         // at mount, at its own implicit size (width/height not yet assigned by a layout).
-        QuickTextPort mount = configure(p, 0, 0, mirrored);
-        mount.widthValid = false;
-        mount.heightValid = false;
-        mount.implicitWidthValid = false;
-        mount.implicitHeightValid = false;
+        QuickTextPort mount = configureMount(p, mirrored);
         mount.updateSize();
         t.implicitWidth = mount.implicitWidth;
         t.implicitHeight = mount.implicitHeight;
@@ -632,6 +639,10 @@ CssTextBuiltLayout run(const CssTextPayload &p, qreal width, qreal height, bool 
         unelidedLineCount -= 1;
     m.unelidedLineCount = qMax(unelidedLineCount, 0);
     m.elided = t.elideLayout != nullptr;
+    m.widthExceeded = t.widthExceeded;
+    m.heightExceeded = t.heightExceeded;
+    m.lineHeightOffset = t.lineHeightOffset();
+    m.effectiveHAlign = t.effectiveHAlign;
 
     out.layout = std::move(t.layout);
     out.elideLayout = std::move(t.elideLayout);
@@ -648,6 +659,80 @@ CssTextMetrics CssTextLayout::metrics(const CssTextPayload &payload, qreal width
 CssTextBuiltLayout CssTextLayout::buildLayout(const CssTextPayload &payload, qreal width, qreal height, bool mirrored)
 {
     return run(payload, width, height, mirrored);
+}
+
+CssTextMetrics CssTextLayout::mountMetrics(const CssTextPayload &payload, bool mirrored)
+{
+    return run(payload, 0, 0, mirrored, /*mount*/ true).metrics;
+}
+
+CssTextBuiltLayout CssTextLayout::buildMountLayout(const CssTextPayload &payload, bool mirrored)
+{
+    return run(payload, 0, 0, mirrored, /*mount*/ true);
+}
+
+QPointF CssTextLayout::paintOrigin(const CssTextMetrics &m, const CssTextPayload &p, qreal width, qreal height)
+{
+    // QQuickTextPrivate::availableWidth/availableHeight at the CURRENT size; lineWidth and the laid-out rect are
+    // the ones of the last layout (a resize that needs no relayout keeps them).
+    const qreal availableWidth = width - p.leftPadding - p.rightPadding;
+    const qreal availableHeight = height - p.topPadding - p.bottomPadding;
+    const qreal dy = alignedY(m.layedOutTextRect.height() + m.lineHeightOffset, availableHeight, Qt::AlignVCenter)
+        + p.topPadding;
+    const qreal dx = alignedX(m.lineWidth, availableWidth, m.effectiveHAlign) + p.leftPadding;
+    return QPointF(dx, dy);
+}
+
+CssTextGeometryEffect CssTextLayout::geometryEffect(const CssTextMetrics &m, const CssTextPayload &p, QSizeF from,
+                                                    QSizeF to)
+{
+    // 2513-2516: an empty label never re-lays out on a resize.
+    if (m.empty)
+        return CssTextGeometryEffect::None;
+
+    const bool widthChanged = to.width() != from.width();
+    const bool heightChanged = to.height() != from.height();
+    const bool wrapped = p.wrapMode != QTextOption::NoWrap;
+    const bool elide = p.elide != Qt::ElideNone;
+    // scaleFont/verticalScale: fontSizeMode is FixedSize (unreachable).
+
+    const bool widthMaximum = to.width() >= from.width() && !m.widthExceeded;
+    const bool heightMaximum = to.height() >= from.height() && !m.heightExceeded;
+
+    const bool verticalPositionChanged = heightChanged; // vAlign is AlignVCenter, never AlignTop
+
+    // 2530-2531 (internalWidthUpdate: the label is never resized from inside its own layout here)
+    if (!widthChanged && !heightChanged)
+        return CssTextGeometryEffect::None;
+
+    // 2533-2538: re-place the text even if no layout is needed.
+    CssTextGeometryEffect effect = CssTextGeometryEffect::None;
+    if ((m.effectiveHAlign != Qt::AlignLeft && widthChanged) || verticalPositionChanged)
+        effect = CssTextGeometryEffect::Repaint;
+
+    // 2540-2541: left aligned unwrapped text without eliding never needs relayout.
+    if (!wrapped && !elide && !verticalPositionChanged)
+        return effect;
+
+    // 2543-2547: eliding and dimensions were and remain invalid (both sizes are valid on a CssText label).
+    if (elide && ((from.width() <= 0 && to.width() <= 0) || (from.height() <= 0 && to.height() <= 0)))
+        return effect;
+
+    // 2549-2550: size is sufficient and growing (no lineLaidOut handler).
+    if (widthMaximum && heightMaximum && !verticalPositionChanged && !elide)
+        return effect;
+
+    if (!(widthChanged || widthMaximum)) {
+        // 2552-2571: only the height changed — verticalPositionChanged is then always true (AlignVCenter), so
+        // none of the early returns of that block is reachable.
+    } else if (!heightChanged && widthMaximum && !elide) {
+        // 2572-2579: no change to height, width is adequate and wasn't 0 before.
+        if (from.width() > 0)
+            return effect;
+    }
+
+    // 2581-2587
+    return CssTextGeometryEffect::Relayout;
 }
 
 } // namespace QmlCss

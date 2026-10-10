@@ -50,6 +50,15 @@ QQuickItem *composedText(QObject *cssText)
     return nullptr;
 }
 
+// Keeps the CssTexts created while it lives on the COMPOSED QQuickText (the styledText/text-shadow fallback).
+// The tests that read the forwarded payload off the composed label use it: the payload is resolved once for both
+// paths, and the lean path is held to the composed one pixel for pixel (tests/test_text.cpp).
+struct ComposedTextScope {
+    int previous = Detail::g_leanTextOverride;
+    ComposedTextScope() { Detail::g_leanTextOverride = 0; }
+    ~ComposedTextScope() { Detail::g_leanTextOverride = previous; }
+};
+
 // Walk the VISUAL tree (childItems(), recursively) rather than the QObject tree: a part an
 // engine type composes via QQmlComponent::create/beginCreate is always a visual (setParentItem)
 // child, but — before the Step 3 Task 1 fix — some of them were NOT also a QObject child, so
@@ -105,6 +114,7 @@ void QmlCssTests::cssRectLoadsAndRestyles()
 
 void QmlCssTests::cssTextUsesStandaloneDefaults()
     {
+        ComposedTextScope composed;
         CssTheme theme;
         theme.loadFromString(QStringLiteral("#label { color: rgba(10, 20, 30, 0.5); font-size: 18px; }"));
 
@@ -619,6 +629,7 @@ void QmlCssTests::layoutBoxSizingBorderBox()
 
 void QmlCssTests::buttonLabelInheritsColor()
 {
+    ComposedTextScope composed;
     CssTheme theme;
     theme.loadFromString(QStringLiteral("button { color: #ffffff; }"));
 
@@ -661,6 +672,7 @@ void QmlCssTests::buttonLabelInheritsColor()
 
 void QmlCssTests::deepInheritanceIsLinear()
 {
+    ComposedTextScope composed;
     // A label 22 boxes below the only element that sets a colour. Resolving an inherited value
     // must walk that chain ONCE: probing each ancestor by calling its getter (which climbs the
     // rest of the chain) and then climbing again doubled the work per level — 2^22 here.
@@ -815,6 +827,7 @@ void QmlCssTests::cssRectOverflowHidden()
 
 void QmlCssTests::cssTextDecorationUnderline()
 {
+    ComposedTextScope composed;
     CssTheme theme;
     theme.loadFromString(QStringLiteral("#uline { text-decoration: underline; }"));
 
@@ -844,6 +857,7 @@ void QmlCssTests::cssTextDecorationUnderline()
 
 void QmlCssTests::cssTextWhiteSpaceNowrap()
 {
+    ComposedTextScope composed;
     CssTheme theme;
     theme.loadFromString(QStringLiteral("#nowrap { white-space: nowrap; }"));
 
@@ -872,6 +886,7 @@ void QmlCssTests::cssTextWhiteSpaceNowrap()
 
 void QmlCssTests::cssTextOverflowEllipsis()
 {
+    ComposedTextScope composed;
     CssTheme theme;
     theme.loadFromString(QStringLiteral("#ellipsis { text-overflow: ellipsis; white-space: nowrap; }"));
 
@@ -1304,6 +1319,7 @@ void QmlCssTests::cssImageCppNoRadiusShowsImageDirect()
 // container's colour/font/align through the CSS-inheritance chain.
 void QmlCssTests::cssTextCppComposesRealText()
 {
+    ComposedTextScope composed;
     CssTheme theme;
     theme.loadFromString(QStringLiteral(
         "#box { color: #ff0000; font-size: 20px; text-align: center; } "
@@ -3507,11 +3523,11 @@ void QmlCssTests::composedItemsDieWithTheirOwner()
         QString qml;
     };
     const QList<Scenario> scenarios = {
-        // csstext.cpp:443 — the composed Text label (measured leak).
+        // csstext.cpp composeLabel — the composed Text label (measured leak); styled text keeps it composed.
         { "CssText", QStringLiteral(R"(
             import QtQuick
             import qmlcss
-            CssText { text: "hi"; width: 80; height: 20 }
+            CssText { text: "hi"; styledText: true; width: 80; height: 20 }
         )") },
         // cssimage.cpp:238/268/282 — Image + Shape mask + MultiEffect, always composed.
         { "CssImage", QStringLiteral(R"(
@@ -4008,6 +4024,7 @@ void QmlCssTests::identicalRowsResolveOnce()
 // size and alignment, and re-resolving the text reads no inherited value by name (all ancestors are CssBoxes).
 void QmlCssTests::inheritanceWalkIsTyped()
 {
+    ComposedTextScope composed;
     CssTheme theme;
     theme.loadFromString(QStringLiteral(
         ".outer { color: #123456; font-size: 20px; text-align: center; } .mid { width: 10px; }"
@@ -4134,6 +4151,7 @@ void QmlCssTests::inheritanceGettersUnchanged()
 // whole payload, an unchanged re-apply writes none, and each single change writes exactly its own property.
 void QmlCssTests::textPayloadWritesOnlyChanges()
 {
+    ComposedTextScope composed;
     CssTheme theme;
     theme.loadFromString(QStringLiteral(".row { color: #111111; } .row2 { color: #222222; }"));
     CssLayoutEngine layoutEngine(&theme);
