@@ -47,6 +47,12 @@ void CssIncubator::adopt(QObject *o)
     // The Repeater trick: the item becomes a DIRECT child of our parent (the content
     // holder), so the layout engine treats it exactly like a declared child.
     item->setParentItem(parentItem() ? parentItem() : this);
+    // ATOMIC reveal: the page is in the scene from here on, while finalize() may stream its bindings and
+    // componentComplete() calls over several frames — hold it transparent. The root completes LAST
+    // (QQmlObjectCreator::finalize pops the parser-status stack; the root was pushed first) and its CSS
+    // resolve rewrites opacity, then Ready follows in the same call: ready() re-asserts the hold with no
+    // frame in between (except when nested async incubators make Ready wait — QQmlIncubator waitingFor).
+    item->setOpacity(0.0);
 }
 
 void CssIncubator::setActive(bool v)
@@ -112,9 +118,8 @@ void CssIncubator::ready()
         return;
     }
     m_item = item;
-    // ATOMIC reveal: componentComplete() just resolved CSS and set the style's own opacity
-    // (default 1.0) — snap it back to transparent now that creation is finished, then fade
-    // the held page in once the layout settled (one event-loop turn after mount).
+    // The root's componentComplete() just resolved CSS and set the style's own opacity (default 1.0):
+    // re-assert the hold (see adopt), then fade the page in once the layout settled (one turn later).
     item->setOpacity(0.0);
     QTimer::singleShot(60, item, [item] {
         auto *fade = new QVariantAnimation(item);

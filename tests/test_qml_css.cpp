@@ -3442,7 +3442,13 @@ void QmlCssTests::cssIncubatorPageResolvesOnceInsideTheScene()
                 objectName: "inc"
                 active: false
                 sourceComponent: Component {
-                    CssRect { objectName: "page"; cssPrimitive: "div"; cssClass: ["page"] }
+                    CssRect {
+                        objectName: "page"; cssPrimitive: "div"; cssClass: ["page"]
+                        // Logs opacity on every evaluation; the FIRST runs in finalize's binding phase,
+                        // before any componentComplete — i.e. while the page streams in.
+                        property var opacityLog: []
+                        property int probe: { opacityLog.push(opacity); return 0 }
+                    }
                 }
             }
         }
@@ -3466,7 +3472,9 @@ void QmlCssTests::cssIncubatorPageResolvesOnceInsideTheScene()
     auto *page = root->findChild<QQuickItem *>(QStringLiteral("page"));
     QCOMPARE(page->property("style").toMap().value(QStringLiteral("background-color")).toString(),
              QStringLiteral("#123456"));
-    QCOMPARE(page->opacity(), 0.0); // the atomic-reveal hold is in place from the first frame
+    QCOMPARE(page->opacity(), 0.0); // the atomic-reveal hold is in place once mounted...
+    // ...and already while finalize() streamed the page in (in the scene since setInitialState).
+    QCOMPARE(page->property("opacityLog").toList().value(0).toDouble(), 0.0);
 }
 
 // --- Step 3 Task 1 (C21): composed parts must die with their owner --------------------------
