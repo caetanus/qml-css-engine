@@ -2915,6 +2915,123 @@ void QmlCssTests::listTeardownIsLinear()
     }
 }
 
+// Showing a hidden list again — a <Show> page coming back, `visible: false -> true` on any
+// ancestor — must cost O(N) layout work and leave the same geometry. Qt flips the whole subtree's
+// effective visibility first, then emits visibleChanged deepest first: every row used to re-lay
+// its container synchronously, O(N^2) per re-shown list. Rows added while hidden must appear.
+void QmlCssTests::listShowIsLinear()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(".row { height: 10px; }"));
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQuickWindow window;
+
+    // The y of every visible row, in document order.
+    const auto rowYs = [](QQuickItem *list) {
+        QList<qreal> ys;
+        const auto kids = qobject_cast<CssRect *>(list)->layoutContentHolder()->childItems();
+        for (QQuickItem *k : kids) {
+            if (qobject_cast<CssRect *>(k) && k->isVisible())
+                ys.push_back(k->y());
+        }
+        return ys;
+    };
+
+    // Returns the child visits spent showing a list of n rows again after hiding `toggled`: the
+    // list itself, or a plain Item wrapping it. `added` rows join while the list is hidden.
+    const auto showVisits = [&](int n, bool wrapper, int added) -> quint64 {
+        QQmlComponent component(&engine);
+        component.setData(R"(
+            import QtQuick
+            import qmlcss
+            CssRect {
+                cssPrimitive: ""
+                width: 200; height: 900
+                style: ({ "display": "flex", "flex-direction": "column" })
+                property alias list: list
+                property alias wrapper: wrapper
+                CssRect {
+                    cssPrimitive: "div"
+                    style: ({ "display": "flex", "flex-direction": "column" })
+                    Item {
+                        id: wrapper
+                        width: 200; height: 900
+                        CssRect {
+                            id: list
+                            width: 200
+                            cssPrimitive: "div"
+                            property int count: 0
+                            style: ({ "display": "flex", "flex-direction": "column" })
+                            CssRepeater {
+                                model: list.count
+                                delegate: Component {
+                                    CssRect { cssClass: ["row"]; cssPrimitive: "div"
+                                        CssText { text: "a" }
+                                        CssText { text: "b" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        )", QUrl());
+        QScopedPointer<QObject> root(component.create());
+        if (!root) {
+            qWarning() << component.errorString();
+            return ~quint64(0);
+        }
+        qobject_cast<QQuickItem *>(root.data())->setParentItem(window.contentItem());
+        auto *list = root->property("list").value<QQuickItem *>();
+        auto *toggled = wrapper ? root->property("wrapper").value<QQuickItem *>() : list;
+        list->setProperty("count", n);
+        if (!qFuzzyCompare(list->implicitHeight(), qreal(10 * n))) {
+            qWarning() << "mounted list height" << list->implicitHeight();
+            return ~quint64(0);
+        }
+        toggled->setVisible(false);
+        if (added)
+            list->setProperty("count", n + added);
+        const quint64 before = layoutEngine.childVisits();
+        toggled->setVisible(true);
+        const quint64 visits = layoutEngine.childVisits() - before;
+        // Settled synchronously: geometry is read right after setVisible returns.
+        const int total = n + added;
+        if (!qFuzzyCompare(list->implicitHeight(), qreal(10 * total))) {
+            qWarning() << "re-shown list height" << list->implicitHeight() << "expected" << 10 * total;
+            return ~quint64(0);
+        }
+        const QList<qreal> ys = rowYs(list);
+        if (ys.size() != total) {
+            qWarning() << "re-shown rows" << ys.size() << "expected" << total;
+            return ~quint64(0);
+        }
+        for (int i = 0; i < total; ++i) {
+            if (!qFuzzyCompare(ys[i] + 1, qreal(10 * i) + 1)) {
+                qWarning() << "row" << i << "y" << ys[i];
+                return ~quint64(0);
+            }
+        }
+        return visits;
+    };
+
+    for (const bool wrapper : { false, true }) {
+        for (const int added : { 0, 50 }) {
+            const quint64 small = showVisits(200, wrapper, added);
+            const quint64 large = showVisits(400, wrapper, added);
+            const QString msg = QStringLiteral("%1, +%2 while hidden: visits(200) %3, visits(400) %4")
+                .arg(wrapper ? QStringLiteral("wrapper") : QStringLiteral("list"))
+                .arg(added).arg(small).arg(large);
+            qInfo().noquote() << msg;
+            QVERIFY2(large <= 3 * small + 50, qPrintable(msg));
+            QVERIFY2(large < quint64(400 * 10), qPrintable(msg));
+        }
+    }
+}
+
 void QmlCssTests::contentHolderReportsLateForeignChild()
 {
     CssTheme theme;

@@ -11,6 +11,13 @@ CssBox::CssBox(const QString &defaultPrimitive, QQuickItem *parent)
 {
 }
 
+void CssBox::itemChange(ItemChange change, const ItemChangeData &data)
+{
+    QQuickItem::itemChange(change, data);
+    if (change == ItemVisibleHasChanged)
+        m_visibilityDelivered = data.boolValue;
+}
+
 void CssBox::identityChanged()
 {
     m_contextDirty = true; // first: the re-apply below must intern a fresh node

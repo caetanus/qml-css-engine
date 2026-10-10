@@ -91,6 +91,10 @@ public:
     // Whether this box declares the inherited* getters (CssRect, CssFill, CssText — the only ones that
     // take part in CSS text inheritance). Answers what a `inheritedColor` metaobject probe answers.
     virtual bool takesPartInInheritance() const { return false; }
+    // Qt flips a whole subtree's effective visibility first, then notifies deepest first: while a
+    // descendant reacts, this box's own visibleChanged is still to come. Lets the layout engine tell
+    // the top of a show cascade from the boxes inside it.
+    bool visibilityChangePending() const { return m_visibilityDelivered != isVisible(); }
 
 signals:
     void cssIdChanged();
@@ -113,6 +117,7 @@ protected:
     void identityChanged();
     // The ancestor this box inherits text values from (each class keeps its own rule), or null.
     virtual QQuickItem *inheritanceParent() const { return nullptr; }
+    void itemChange(ItemChange change, const ItemChangeData &data) override;
 
     QString m_cssId;
     QVariant m_cssAlternateId = QVariant::fromValue(QVariantList());
@@ -129,6 +134,8 @@ protected:
 private:
     QExplicitlySharedDataPointer<CssContextNode> m_contextNode;
     bool m_contextDirty = true; // set by every identity write (identityChanged)
+    // The visibility last delivered by ItemVisibleHasChanged (sent right before visibleChanged).
+    bool m_visibilityDelivered = true;
     QStringList m_classList;
     QStringList m_stateList;
     QStringList m_alternateIdList;

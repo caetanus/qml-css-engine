@@ -179,6 +179,28 @@ void CssLayoutEngine::notifyVisibilityChanged(QQuickItem *item)
     const QQuickItem *parent = item->parentItem();
     if (!item->isVisible() && parent && !parent->isVisible())
         return;
+    // Shown inside a show cascade: the nearest container's own visibleChanged is still to come
+    // (Qt notifies deepest first), and it — or the cascade's top above it — flushes. Only RECORD
+    // this relayout; synchronously, each row re-laid its whole list, O(N^2) per re-shown list.
+    // The top of the cascade still flushes before setVisible returns, so geometry stays settled.
+    if (item->isVisible()) {
+        for (QQuickItem *p = item->parentItem(); p; p = p->parentItem()) {
+            auto *box = qobject_cast<CssBox *>(p);
+            if (!box)
+                continue; // a content holder / Flickable, or a foreign wrapper
+            if ((qobject_cast<CssRect *>(box) || qobject_cast<CssFill *>(box))
+                && box->visibilityChangePending()) {
+                ++m_batchDepth;
+                notifyParentLayout(item);
+                --m_batchDepth;
+                // Backstop only (that container lost its engine mid-cascade): settle next turn.
+                if (!m_pending.isEmpty() && !m_flushing && !m_flushTimer->isActive())
+                    m_flushTimer->start();
+                return;
+            }
+            break;
+        }
+    }
     notifyParentLayout(item);
 }
 

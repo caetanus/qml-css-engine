@@ -42,7 +42,8 @@ public:
     // notifyParentLayout for an item's (effective) visibility change — except when it merely
     // followed a hidden or detached parent. Hiding or unparenting a subtree flips every
     // descendant, deepest first; each one re-laying its already hidden box made tearing down a
-    // list O(N^2). Showing again flips them back with the parent visible, which notifies.
+    // list O(N^2). Showing again notifies deepest first too: a box whose container is still to be
+    // notified only records its relayout, and the cascade's top flushes once.
     void notifyVisibilityChanged(QQuickItem *item);
 
     // Layout hibernation (owner's batch gate): while a batch is open, requestLayout only

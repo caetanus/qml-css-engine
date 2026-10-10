@@ -141,6 +141,7 @@ private slots:
     void layoutCountsChildVisits();
     void cssRepeaterAppendAndClearAreLinear();
     void listTeardownIsLinear();
+    void listShowIsLinear();
     void contentHolderReportsLateForeignChild();
     void scrollExtentFollowsLayoutOnClear();
     void scrollExtentFollowsLateCssChildGrowth();

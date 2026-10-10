@@ -1630,7 +1630,7 @@ void CssRect::pushFastRect()
 
 void QmlCss::CssRect::itemChange(QQuickItem::ItemChange change, const QQuickItem::ItemChangeData &data)
 {
-    QQuickItem::itemChange(change, data);
+    CssBox::itemChange(change, data);
     // Heal the truncated-ancestor resolve (see maybeLoadCss): one re-resolve when the item
     // actually joins a window — zero cost for elements built inside the live scene.
     if (change == ItemSceneChange && data.window && m_scenelessResolve && isComponentComplete()) {
