@@ -2,6 +2,7 @@
 
 #include <QByteArray>
 #include <QColor>
+#include <QExplicitlySharedDataPointer>
 #include <QFileSystemWatcher>
 #include <QHash>
 #include <QObject>
@@ -12,10 +13,12 @@
 #include <QVariantMap>
 
 class QNetworkAccessManager;
+class QQuickItem;
 
 namespace QmlCss {
 class CssBox;
 class CssLayoutEngine;
+struct CssContextNode;
 
 struct CssSimpleSelector {
     bool universal = false;
@@ -248,6 +251,16 @@ public:
     // Test/bench probe: live registered (styled) objects.
     int registeredCount() const { return int(m_registered.size()); }
 
+    // 4b-2: the interned selector-context node of `item` (a CssBox — validated/cached on the box — or a
+    // foreign element rebuilt by name). nullptr for items that are not CSS elements. Pure: reads identity
+    // only, never renderer state, and works before the item (or any ancestor) completes.
+    QExplicitlySharedDataPointer<CssContextNode> contextNodeFor(QQuickItem *item) const;
+    // The nearest CSS element above `item` (the collectCssAncestors walk: cssAncestor re-anchoring
+    // honoured, plain Items skipped), or nullptr.
+    QQuickItem *nearestCssElementOf(QQuickItem *item) const;
+    // Bumped by every rule rebuild; a node of an older generation is stale.
+    quint64 ruleGeneration() const { return m_generation; }
+
 signals:
     void loadedChanged();
     void viewportChanged();
@@ -261,6 +274,17 @@ private slots:
     void reapplyForSender();
 
 private:
+    friend struct CssContextNode; // erases its own intern entry
+    friend class CssBox;          // interns its node (CssBox::contextNode)
+    // Intern (parent, self): the existing node for that key, or a new one of the current generation.
+    QExplicitlySharedDataPointer<CssContextNode> internContext(
+        const QExplicitlySharedDataPointer<CssContextNode> &parent, const CssAncestorInfo &self) const;
+    // Weak intern table (key -> node): a node erases its own entry in its destructor, only if the entry
+    // still points at it. Cleared (with m_generation bumped) by rebuildRules(); mutable like the resolve
+    // memo, since applyCssTo is const.
+    mutable QHash<QString, CssContextNode *> m_contextNodes;
+    quint64 m_generation = 1;
+
     QVariantMap resolveImpl(const QList<CssAncestorInfo> &ancestors, const QString &id,
                             const QStringList &classes, const QString &pseudoElement,
                             const QString &primitive = {}) const;

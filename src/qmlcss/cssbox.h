@@ -1,5 +1,7 @@
 #pragma once
 
+#include "qmlcss/csscontextnode.h"
+
 #include <QPointer>
 #include <QQuickItem>
 #include <QStringList>
@@ -54,6 +56,13 @@ public:
     // never needs a per-class qobject_cast.
     virtual void applyResolvedStyle(const QVariantMap &style) = 0;
 
+    // 4b-2: this box's interned selector-context node, re-validated on every call (cheap when nothing
+    // changed): reused only when no identity write dirtied it, the rule generation is current and the
+    // nearest CSS ancestor still has the same node. Pure — identity reads only, no renderer side effects,
+    // valid before this box or any ancestor completes.
+    QExplicitlySharedDataPointer<CssContextNode> contextNode(const CssTheme *theme);
+    const CssContextNode *contextNodeForTest() const { return m_contextNode.data(); }
+
 signals:
     void cssIdChanged();
     void cssAlternateIdChanged();
@@ -87,6 +96,8 @@ protected:
     bool m_scenelessResolve = false;
 
 private:
+    QExplicitlySharedDataPointer<CssContextNode> m_contextNode;
+    bool m_contextDirty = true; // set by every identity write (identityChanged)
     QStringList m_classList;
     QStringList m_stateList;
     QStringList m_alternateIdList;

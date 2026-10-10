@@ -50,6 +50,7 @@ qml_css_engine_headers = files(
   'src/qmlcss/csstheme.h',
   'src/qmlcss/csslayout.h',
   'src/qmlcss/cssbox.h',
+  'src/qmlcss/csscontextnode.h',
   'src/qmlcss/csshr.h',
   'src/qmlcss/cssimage.h',
   'src/qmlcss/cssfill.h',

@@ -3824,3 +3824,99 @@ void QmlCssTests::hrPrimitiveRestyles()
     QCOMPARE(line.value(QStringLiteral("color")).value<QColor>(), QColor(QStringLiteral("#ff8800")));
     QCOMPARE(applies, 1);
 }
+
+void QmlCssTests::contextNodesAreSharedByIdenticalSiblings()
+{
+    IdentityFixture f(QStringLiteral(".list .row { background-color: #111111; }"), R"(
+        CssRect { cssClass: ["list"]; width: 50; height: 50
+            CssRect { objectName: "r0"; cssClass: ["row"] }
+            CssRect { objectName: "r1"; cssClass: ["row"] }
+            CssRect { objectName: "r2"; cssClass: ["row"] } }
+    )");
+    QVERIFY2(f.object, qPrintable(f.error));
+    auto *list = qobject_cast<CssBox *>(f.object.data());
+    QVERIFY(list);
+    QList<const CssContextNode *> nodes;
+    for (const char *name : {"r0", "r1", "r2"}) {
+        auto *row = qobject_cast<CssBox *>(f.object->findChild<QQuickItem *>(QLatin1String(name)));
+        QVERIFY(row);
+        QCOMPARE(row->styleMap().value(QStringLiteral("background-color")).toString(), QStringLiteral("#111111"));
+        nodes << row->contextNodeForTest();
+    }
+    QVERIFY(nodes.at(0));
+    QCOMPARE(nodes.at(1), nodes.at(0));
+    QCOMPARE(nodes.at(2), nodes.at(0));
+    QVERIFY(list->contextNodeForTest());
+    QVERIFY(nodes.at(0) != list->contextNodeForTest());
+    QCOMPARE(nodes.at(0)->parent.data(), list->contextNodeForTest());
+}
+
+void QmlCssTests::contextNodeFollowsAncestorIdentityAndReparenting()
+{
+    const QString css = QStringLiteral(".a .row { background-color: #111111; } .b .row { background-color: #222222; }");
+    IdentityFixture f(css, R"(
+        CssRect { width: 50; height: 50
+            CssRect { objectName: "p1"; cssClass: ["a"]
+                CssRect { objectName: "row"; cssClass: ["row"] } }
+            CssRect { objectName: "p2"; cssClass: ["a"] } }
+    )");
+    QVERIFY2(f.object, qPrintable(f.error));
+    auto *p1 = f.object->findChild<QQuickItem *>(QStringLiteral("p1"));
+    auto *p2 = f.object->findChild<QQuickItem *>(QStringLiteral("p2"));
+    auto *rowItem = f.object->findChild<QQuickItem *>(QStringLiteral("row"));
+    auto *row = qobject_cast<CssBox *>(rowItem);
+    QVERIFY(p1 && p2 && row);
+    auto bg = [&] { return row->styleMap().value(QStringLiteral("background-color")).toString(); };
+    // Strong refs keep the old nodes alive, so a freed node's address cannot be reused by a new one and
+    // fake a "same pointer" (or a "changed pointer") result.
+    auto ref = [](const CssContextNode *n) { return CssContextRef(const_cast<CssContextNode *>(n)); };
+    QCOMPARE(bg(), QStringLiteral("#111111"));
+    const CssContextRef n0 = ref(row->contextNodeForTest());
+    QVERIFY(n0);
+
+    p1->setProperty("cssClass", QStringList{QStringLiteral("b")}); // ancestor identity: live read
+    const CssContextRef n1 = ref(row->contextNodeForTest());
+    QVERIFY(n1 != n0);
+    QCOMPARE(bg(), QStringLiteral("#222222"));
+
+    rowItem->setParentItem(p2); // reparent under another `.a`
+    f.theme.loadCss(rowItem);
+    const CssContextRef n2 = ref(row->contextNodeForTest());
+    QVERIFY(n2 != n1);
+    QCOMPARE(n2->parent.data(), qobject_cast<CssBox *>(p2)->contextNodeForTest());
+    QCOMPARE(bg(), QStringLiteral("#111111"));
+
+    const quint64 generation = n2->generation;
+    f.theme.loadFromString(css); // rule rebuild -> reapplyAll re-validates every box
+    QVERIFY(row->contextNodeForTest()->generation > generation);
+    QCOMPARE(bg(), QStringLiteral("#111111"));
+}
+
+void QmlCssTests::contextNodesDieWithTheirBoxes()
+{
+    const int before = Detail::g_liveContextNodes;
+    {
+        IdentityFixture f(QStringLiteral(".list .row { background-color: #111111; }"), R"(
+            CssRect { cssClass: ["list"]; width: 50; height: 50
+                Repeater { model: 50; CssRect { cssClass: ["row"] } } }
+        )");
+        QVERIFY2(f.object, qPrintable(f.error));
+        // Repeater delegates are visual descendants only (not QObject children): walk the item tree.
+        int rows = 0;
+        QList<QQuickItem *> stack = qobject_cast<QQuickItem *>(f.object.data())->childItems();
+        while (!stack.isEmpty()) {
+            QQuickItem *k = stack.takeLast();
+            auto *box = qobject_cast<CssBox *>(k);
+            rows += box && box->classList() == QStringList{QStringLiteral("row")} && box->contextNodeForTest();
+            stack += k->childItems();
+        }
+        QCOMPARE(rows, 50);
+        const int grown = Detail::g_liveContextNodes - before;
+        QVERIFY2(grown >= 2 && grown <= 3, qPrintable(QString::number(grown))); // list + row (+ maybe one)
+        f.object.reset();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QCOMPARE(Detail::g_liveContextNodes, before);
+    }
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QCOMPARE(Detail::g_liveContextNodes, before);
+}

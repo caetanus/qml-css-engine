@@ -13,6 +13,7 @@ CssBox::CssBox(const QString &defaultPrimitive, QQuickItem *parent)
 
 void CssBox::identityChanged()
 {
+    m_contextDirty = true; // first: the re-apply below must intern a fresh node
     // No hasCssIdentity() gate here: a registered box that LOSES its identity (a text node's class
     // emptied) must still drop the stale style — the theme decides (see CssTheme::restyle).
     if (m_theme && isComponentComplete()) {
@@ -21,6 +22,27 @@ void CssBox::identityChanged()
     } else {
         maybeLoadCss();
     }
+}
+
+QExplicitlySharedDataPointer<CssContextNode> CssBox::contextNode(const CssTheme *theme)
+{
+    // Re-validated on every apply (contract: frozen snapshots must not defeat live ancestor reads): the parent
+    // node is recomputed first — an ancestor whose identity changed, a reparent, a cssAncestor re-anchor all
+    // change the parent pointer — and our node is reused only if nothing of ours changed either.
+    QExplicitlySharedDataPointer<CssContextNode> parent;
+    if (QQuickItem *anc = theme->nearestCssElementOf(this))
+        parent = theme->contextNodeFor(anc);
+    if (m_contextNode && !m_contextDirty && m_contextNode->generation == theme->ruleGeneration()
+        && m_contextNode->parent == parent)
+        return m_contextNode;
+    CssAncestorInfo self;
+    self.id = m_cssId;
+    self.classes = m_classList;
+    self.classes += m_stateList;
+    self.primitive = m_cssPrimitive;
+    m_contextNode = theme->internContext(parent, self);
+    m_contextDirty = false;
+    return m_contextNode;
 }
 
 bool CssBox::hasCssIdentity() const

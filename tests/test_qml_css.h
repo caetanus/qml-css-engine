@@ -199,4 +199,11 @@ private slots:
     void cssPartChangeRestyles();
     void imageStateAndPrimitiveRestyle();
     void hrPrimitiveRestyles();
+
+    // 4b-2 Task 1: every box points to an interned selector-context node (its identity + its nearest
+    // CSS ancestor's node). Identical siblings share one node; an ancestor identity change, a reparent
+    // and a rule rebuild each give the box a new node; nodes die with the last box that holds them.
+    void contextNodesAreSharedByIdenticalSiblings();
+    void contextNodeFollowsAncestorIdentityAndReparenting();
+    void contextNodesDieWithTheirBoxes();
 };

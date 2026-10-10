@@ -3,6 +3,7 @@
 
 #include "csslayout.h"
 #include "qmlcss/cssbox.h"
+#include "qmlcss/csscontextnode.h"
 #include "valueparser.h"
 
 #include <QCryptographicHash>
@@ -68,10 +69,26 @@ QVariantMap CssTheme::resolveMerged(const QList<CssAncestorInfo> &ancestors, con
 // chain, so descendant selectors written against the logical owner (`.wg-select .popup`)
 // stop matching. A `property Item cssAncestor: owner` declared on the subtree root re-anchors
 // the walk at the owner, restoring the logical chain. The metaobject probe keeps the cost to
-// a meta lookup for items that don't declare it.
+// a meta lookup for items that don't declare it — memoised per metaobject (a metaobject never gains
+// properties), so the per-hop cost is a hash lookup instead of indexOfProperty's string scan over every
+// property of the class chain. A plain static is fine: items live on the single GUI thread. QML types get
+// dynamic metaobjects that can be freed (engine/type teardown) and their address reused by another type,
+// so a hit is confirmed by className (QML type names carry a process-unique _QMLTYPE_n suffix).
+static bool declaresCssAncestor(const QMetaObject *mo)
+{
+    struct Probe { QByteArray className; bool has; };
+    static QHash<const QMetaObject *, Probe> cache;
+    auto it = cache.find(mo);
+    if (it != cache.end() && qstrcmp(it->className.constData(), mo->className()) == 0)
+        return it->has;
+    const bool has = mo->indexOfProperty("cssAncestor") >= 0;
+    cache.insert(mo, Probe{QByteArray(mo->className()), has});
+    return has;
+}
+
 static QQuickItem *nextCssAncestorHop(QQuickItem *n)
 {
-    if (n->metaObject()->indexOfProperty("cssAncestor") >= 0) {
+    if (declaresCssAncestor(n->metaObject())) {
         if (auto *redirect = n->property("cssAncestor").value<QQuickItem *>())
             return redirect;
     }
@@ -111,6 +128,87 @@ static QList<CssAncestorInfo> collectCssAncestors(QObject *target)
     return chain;
 }
 
+// Does `p` count as an element of the selector chain? Every CssBox does; a foreign item does when it
+// declares a cssPrimitive or cssClass — the same test collectCssAncestors() applies.
+static bool isCssElement(QQuickItem *p)
+{
+    if (qobject_cast<CssBox *>(p))
+        return true;
+    const QMetaObject *mo = p->metaObject();
+    return mo->indexOfProperty("cssPrimitive") >= 0 || mo->indexOfProperty("cssClass") >= 0;
+}
+
+CssContextNode::~CssContextNode()
+{
+    --Detail::g_liveContextNodes;
+    // Erase our intern entry ONLY if it still points at us: after rebuildRules() cleared the table, a
+    // fresh node of the new generation may own the same key.
+    if (owner) {
+        auto it = owner->m_contextNodes.find(internKey);
+        if (it != owner->m_contextNodes.end() && it.value() == this)
+            owner->m_contextNodes.erase(it);
+    }
+    // `parent` is released after this body: a parent whose last child just died dies next, and erases
+    // its own entry the same way.
+}
+
+QExplicitlySharedDataPointer<CssContextNode> CssTheme::internContext(
+    const QExplicitlySharedDataPointer<CssContextNode> &parent, const CssAncestorInfo &self) const
+{
+    // The parent's ADDRESS is part of the key: safe, because every node holds a strong ref to its parent —
+    // a key's parent cannot be freed (and its address reused) while the keyed node exists.
+    QString key;
+    key.reserve(64);
+    key += QString::number(quintptr(parent.data()), 16);
+    key += QLatin1Char('\x1d');
+    key += self.id;
+    key += QLatin1Char('\x1e');
+    key += self.classes.join(QLatin1Char('\x1e'));
+    key += QLatin1Char('\x1e');
+    key += self.primitive;
+    if (CssContextNode *n = m_contextNodes.value(key))
+        return QExplicitlySharedDataPointer<CssContextNode>(n);
+    auto *n = new CssContextNode;
+    ++Detail::g_liveContextNodes;
+    n->parent = parent;
+    n->self = self;
+    n->generation = m_generation;
+    n->owner = this;
+    n->internKey = key;
+    m_contextNodes.insert(key, n);
+    return QExplicitlySharedDataPointer<CssContextNode>(n);
+}
+
+QQuickItem *CssTheme::nearestCssElementOf(QQuickItem *item) const
+{
+    if (!item)
+        return nullptr;
+    for (QQuickItem *p = nextCssAncestorHop(item); p; p = nextCssAncestorHop(p)) {
+        if (isCssElement(p))
+            return p;
+    }
+    return nullptr;
+}
+
+QExplicitlySharedDataPointer<CssContextNode> CssTheme::contextNodeFor(QQuickItem *item) const
+{
+    if (!item)
+        return {};
+    if (auto *box = qobject_cast<CssBox *>(item))
+        return box->contextNode(this);
+    if (!isCssElement(item))
+        return {};
+    // A foreign element: no cache to validate, so its node is re-interned by name on every walk (the
+    // same reads collectCssAncestors does for it).
+    ++Detail::g_namedIdentityReads;
+    CssAncestorInfo self;
+    self.id = item->property("cssId").toString();
+    self.classes = cssVariantToStringList(item->property("cssClass"));
+    self.classes += cssVariantToStringList(item->property("cssState"));
+    self.primitive = item->property("cssPrimitive").toString();
+    return internContext(contextNodeFor(nearestCssElementOf(item)), self);
+}
+
 void CssTheme::applyCssTo(QObject *target) const
 {
     QElapsedTimer t;
@@ -147,6 +245,16 @@ void CssTheme::applyCssTo(QObject *target) const
         cssPart = target->property("cssPart").toString();
         cssPrimitive = target->property("cssPrimitive").toString();
     }
+    // 4b-2 Task 1: keep the box's selector-context node current (re-validated on every apply). Not read
+    // yet — resolution below still walks collectCssAncestors(); Task 2 resolves through the node. Its
+    // cost is counted in the `chain` bucket, where that walk will move.
+    if (box) {
+        const qint64 tn = g_applyStats.enabled ? t.nsecsElapsed() : 0;
+        box->contextNode(this);
+        if (g_applyStats.enabled)
+            g_applyStats.chainNs += t.nsecsElapsed() - tn;
+    }
+
     // Engine-tracked hover (a composed HoverHandler on elements with an applicable :hover
     // rule — the web hovers ANY element, not just interactive ones). CssRect-only, stays
     // by name on purpose (out of scope here) — not counted: it is a live render state, not

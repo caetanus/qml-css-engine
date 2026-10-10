@@ -279,6 +279,10 @@ void CssTheme::loadFromString(const QString &cssIn)
 void CssTheme::rebuildRules()
 {
     m_resolveCache.clear();
+    // Context nodes of the old rules are stale: new applies intern fresh ones (boxes re-validate by
+    // generation); old nodes die with their last box and only erase an entry that still points at them.
+    ++m_generation;
+    m_contextNodes.clear();
     m_rules = m_baseRules;
     // Append matching @media rules AFTER the base so they override on equal specificity
     // (CSS source order: @media blocks follow and refine the base).
