@@ -79,6 +79,29 @@ inline int g_virtualA11yOverride = -1;
 // Test probe (5c): model elements a CssRepeater converted from JS to QVariant (one per element
 // QJSValue::toVariant()'d — a whole-model conversion counts every element).
 inline int g_repeaterConversions = 0;
+
+// Memory step 1: walks over the engine's intrusive follower lists (an ancestor's inherited-text followers,
+// the theme's font followers) that replaced one signal connection per item. Like a signal emission, a walk
+// must survive a follower leaving the list while it runs (destroyed by a handler): every live walk of that
+// list kind is a stack frame here, and an unlinking node hands any walk about to visit it its successor.
+// One stack per list kind (`Kind`): a CssText is in both lists at the same address. GUI thread only.
+struct FollowerWalk {
+    void *next;
+    FollowerWalk *outer;
+};
+template <int Kind>
+struct FollowerWalks {
+    static inline FollowerWalk *top = nullptr;
+    static void unlinked(const void *node, void *successor)
+    {
+        for (FollowerWalk *w = top; w; w = w->outer) {
+            if (w->next == node)
+                w->next = successor;
+        }
+    }
+};
+enum FollowerListKind { InheritFollowers = 0, FontFollowers = 1 };
+
 inline bool leanTextEnabled()
 {
     if (g_leanTextOverride >= 0)

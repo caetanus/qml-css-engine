@@ -70,6 +70,9 @@ class CssFill : public CssBox {
 
 public:
     explicit CssFill(QQuickItem *parent = nullptr);
+    ~CssFill() override;
+    // Engine-internal: the layout engine this box requests its relayouts from.
+    CssLayoutEngine *layoutEngine() const;
 
     // Engine-internal: the layout pass inspects a CHILD box's content to classify it (e.g. the
     // replaced-foreign inference) — direct pointer, no list-property indirection in the hot path.
@@ -130,6 +133,12 @@ signals:
 protected:
     void componentComplete() override;
     void geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry) override;
+    // The typed hooks that replaced this box's per-item connections (see CssBox).
+    void ownImplicitSizeChanged() override;
+    void ownVisibilityChanged() override;
+    void inheritSourceChanged() override;
+    void contentChildAdded(QQuickItem *child) override;
+    void contentChildRemoved(QQuickItem *child) override;
 
 private:
     // Re-run the CSS->value resolution the QML `readonly property` bindings did (solid colour,
@@ -165,6 +174,8 @@ private:
     // escape-hatch growth re-flows the box (mirrors CssRect).
     void watchForeignChildren();
     void watchForeignChild(QQuickItem *k);
+    // emit inheritedChanged + walk the followers (every inherited change this box reports).
+    void notifyInherited();
 
     // Resolved border widths [t,r,b,l] — cached at style-set time so layoutChildren (per-resize
     // hot path) never parses style strings. The content holder is inset by these (padding box).

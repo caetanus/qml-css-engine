@@ -350,6 +350,7 @@ void CssTheme::registerFontData(const QByteArray &bytes)
     // revision (text bindings observe it and re-resolve) and re-push styles to registered objects.
     ++m_fontRevision;
     emit fontRevisionChanged();
+    notifyFontFollowers(); // every CssText re-resolves its family (was one connection per text)
     if (g_applyStats.enabled) fprintf(stderr, "[reapplyAll] from FONT REGISTRATION\n");
     reapplyAll();
 }

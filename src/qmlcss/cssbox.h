@@ -101,6 +101,15 @@ public:
     // the top of a show cascade from the boxes inside it.
     bool visibilityChangePending() const { return m_visibilityDelivered != isVisible(); }
 
+    // Memory step 1: CSS text inheritance without one `inheritedChanged` connection per descendant. A box
+    // follows the inheriting ancestor it found at completion (followInheritanceOf); that ancestor, whenever
+    // it reports an inherited change (its inheritedChanged signal), also walks its followers in follow order
+    // and calls their inheritSourceChanged(). The followers are an intrusive list (no allocation); a foreign
+    // ancestor (a hand-written item declaring the inherited* contract) is still followed through its signal.
+    void propagateInheritedChange();
+
+    ~CssBox() override;
+
 signals:
     void cssIdChanged();
     void cssAlternateIdChanged();
@@ -124,6 +133,25 @@ protected:
     virtual QQuickItem *inheritanceParent() const { return nullptr; }
     void itemChange(ItemChange change, const ItemChangeData &data) override;
 
+    // Follow `ancestor`'s inherited text changes (see propagateInheritedChange); called once, at completion.
+    void followInheritanceOf(QQuickItem *ancestor);
+    // The followed ancestor reported an inherited change (re-apply / re-propagate as the class needs).
+    virtual void inheritSourceChanged() {}
+
+    // From the call on (the classes call it at completion), this box's own implicit-size and visibility
+    // changes reach ownImplicitSizeChanged()/ownVisibilityChanged() — through one shared QQuickItem change
+    // listener and itemChange(), instead of three connections per item to its own signals. The visibility
+    // hook runs from ItemVisibleHasChanged, i.e. right before visibleChanged is emitted.
+    void watchOwnLayoutChanges();
+    bool watchingOwnLayout() const { return m_watchingOwnLayout; }
+    virtual void ownImplicitSizeChanged() {}
+    virtual void ownVisibilityChanged() {}
+
+    // The box's CssContentHolder reports each child added/removed here (CssRect/CssFill relayout on it).
+    friend class CssContentHolder;
+    virtual void contentChildAdded(QQuickItem *) {}
+    virtual void contentChildRemoved(QQuickItem *) {}
+
     QString m_cssId;
     QVariant m_cssAlternateId = QVariant::fromValue(QVariantList());
     QVariant m_cssClass = QVariant::fromValue(QVariantList());
@@ -132,15 +160,35 @@ protected:
     QString m_cssPart;
     QVariantMap m_style;
     QPointer<CssTheme> m_theme; // every class used QPointer (CHECK (a), 2026-10-10)
+
+private:
+    QExplicitlySharedDataPointer<CssContextNode> m_contextNode;
+
+protected:
     // The last resolve ran without a window (truncated ancestors). Set by maybeLoadCss() and by
     // identityChanged(); CssRect/CssText/CssFill heal it with one re-resolve on scene join.
     bool m_scenelessResolve = false;
 
+private Q_SLOTS:
+    void onForeignInheritedChanged() { inheritSourceChanged(); }
+
 private:
-    QExplicitlySharedDataPointer<CssContextNode> m_contextNode;
+    friend class CssTheme;           // registers us (m_themeRegistered)
+    friend struct CssOwnLayoutListener; // calls ownImplicitSizeChanged()
+    void unfollowInheritance();
+
     bool m_contextDirty = true; // set by every identity write (identityChanged)
     // The visibility last delivered by ItemVisibleHasChanged (sent right before visibleChanged).
     bool m_visibilityDelivered = true;
+    bool m_watchingOwnLayout = false;
+    // Registered by m_theme (CssTheme::loadCss): the theme forgets us in ~CssBox, no `destroyed` connection.
+    bool m_themeRegistered = false;
+    // Inherited-text followers (intrusive, see propagateInheritedChange): the ancestor we follow, our
+    // followers' head (head->m_inheritPrev is the tail), and our links in our source's list.
+    CssBox *m_inheritSource = nullptr;
+    CssBox *m_inheritFollowers = nullptr;
+    CssBox *m_inheritPrev = nullptr;
+    CssBox *m_inheritNext = nullptr;
     QStringList m_classList;
     QStringList m_stateList;
     QStringList m_alternateIdList;

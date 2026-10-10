@@ -10,6 +10,8 @@
 #include "qmlcss/cssbox.h"
 #include "qmlcss/csstextlayout.h" // CssTextPayload, CssTextMetrics
 
+#include <memory>
+
 namespace QmlCss {
 
 class CssTheme;
@@ -91,6 +93,7 @@ class CssText : public CssBox {
 
 public:
     explicit CssText(QQuickItem *parent = nullptr);
+    ~CssText() override;
 
     QVariantMap style() const { return m_style; }
     void setStyle(const QVariantMap &v);
@@ -101,11 +104,11 @@ public:
     bool styledText() const { return m_styledText; }
     void setStyledText(bool v);
 
-    QColor defaultColor() const { return m_defaultColor; }
+    QColor defaultColor() const { return m_extra ? m_extra->defaultColor : QColor(Qt::black); }
     void setDefaultColor(const QColor &v);
-    QString defaultFontFamily() const { return m_defaultFontFamily; }
+    QString defaultFontFamily() const { return m_extra ? m_extra->defaultFontFamily : QStringLiteral("Sans Serif"); }
     void setDefaultFontFamily(const QString &v);
-    qreal defaultFontSize() const { return m_defaultFontSize; }
+    qreal defaultFontSize() const { return m_extra ? m_extra->defaultFontSize : 11.0; }
     void setDefaultFontSize(qreal v);
 
     QString inheritedColor() const;
@@ -131,12 +134,17 @@ protected:
     void componentComplete() override;
     void geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry) override;
     QSGNode *updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *data) override;
-
-private slots:
+    // The typed hooks that replaced this text's per-item connections (see CssBox).
+    void ownImplicitSizeChanged() override;
+    void ownVisibilityChanged() override;
     // An ancestor's inherited text props changed (CSS inheritance): re-apply + re-propagate.
-    void onAncestorInheritedChanged();
+    void inheritSourceChanged() override;
 
 private:
+    friend class CssTheme; // font followers (m_fontPrev/m_fontNext, onFontRevisionChanged)
+    // A font registered (CssTheme::notifyFontFollowers): the family may resolve differently now.
+    void onFontRevisionChanged();
+
     // Resolve every CSS-driven value (the QML `readonly property`/binding set) and push it onto the
     // composed Text — the C++ equivalent of all of CssText.qml's Text bindings — or, lean, lay it out.
     void applyToText();
@@ -194,17 +202,35 @@ private:
     // The CSS-inheriting ancestor (QML `_cssParent`): a directly-styled parent, else parent.parent.
     QQuickItem *cssParentItem() const;
 
+    // --- memory step 1: hot state inline, feature state in a lazily allocated extra -------------------
+    // Inline: what every apply, layout and paint of a LEAN label reads — the text, the applied payload and
+    // its 5d memo inputs, the scalar metrics and boxes. The composed-path items (label, text-shadow effect,
+    // background underlay) and the rarely set defaults live in Extra, allocated on first use.
+    struct Extra {
+        QPointer<QQuickItem> label; // the REAL QtQuick Text, via the type-system (composed path)
+        QPointer<QQuickItem> shadow; // the REAL QtQuick.Effects MultiEffect drop-shadow (text-shadow)
+        QPointer<QQuickItem> bg; // background underlay Shape, composed on first background-color
+        QColor defaultColor = QColor(Qt::black);
+        QString defaultFontFamily = QStringLiteral("Sans Serif");
+        qreal defaultFontSize = 11;
+    };
+    Extra &ensureExtra()
+    {
+        if (!m_extra)
+            m_extra.reset(new Extra);
+        return *m_extra;
+    }
+    QQuickItem *composedLabel() const { return m_extra ? m_extra->label.data() : nullptr; }
+    QQuickItem *shadowItem() const { return m_extra ? m_extra->shadow.data() : nullptr; }
+    QQuickItem *bgItem() const { return m_extra ? m_extra->bg.data() : nullptr; }
+
     QString m_text;
-    bool m_styledText = false;
-
-    QColor m_defaultColor = QColor(Qt::black);
-    QString m_defaultFontFamily = QStringLiteral("Sans Serif");
-    qreal m_defaultFontSize = 11;
-
     QPointer<CssLayoutEngine> m_layout;
-    QPointer<QQuickItem> m_label; // the REAL QtQuick Text, via the type-system
-    CssTextPayload m_applied; // what m_label was last given (valid while m_payloadApplied)
-    bool m_payloadApplied = false; // false until the first apply onto the current m_label
+    std::unique_ptr<Extra> m_extra;
+    // The theme's font followers (intrusive; see CssTheme::notifyFontFollowers).
+    CssText *m_fontPrev = nullptr;
+    CssText *m_fontNext = nullptr;
+    CssTextPayload m_applied; // what the label was last given (valid while m_payloadApplied)
     // 5d: the inputs m_applied was last resolved from. A resolve is a pure function of m_style, the inherited
     // values, the defaults, styledText, text, the theme and its fontRevision (resolveFontFamily's answer can only
     // change when a font registers); every apply leaves m_applied equal to the payload it resolved, and setText
@@ -215,8 +241,9 @@ private:
     CssInheritedText m_resolvedInherited;
     int m_resolvedFontRevision = 0;
     bool m_resolvedValid = false;
-    QPointer<QQuickItem> m_shadow; // the REAL QtQuick.Effects MultiEffect drop-shadow (text-shadow)
-    QPointer<QQuickItem> m_bg; // background underlay Shape, composed on first background-color
+    bool m_payloadApplied = false; // false until the first apply onto the current label
+    bool m_styledText = false;
+    bool m_fontFollowing = false; // linked in m_theme's font followers
 
     // Lean path state (m_applied is the lean payload too). Scalars only — the render thread builds its own
     // QTextLayout(s) from this value state in updatePaintNode and drops them once added to the QSGTextNode.

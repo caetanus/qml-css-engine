@@ -184,9 +184,17 @@ void CssLayoutEngine::requestLayout(QQuickItem *root, QQuickItem *content)
     // Registry of every root ever laid out (for viewport-driven relayouts); pruned on death.
     if (!m_known.contains(root)) {
         m_known.insert(root, content);
-        connect(root, &QObject::destroyed, this, [this](QObject *obj) {
-            m_known.remove(static_cast<QQuickItem *>(obj));
-        });
+        // A CssRect/CssFill laid out by its own engine forgets itself in its destructor (forgetRoot) —
+        // no `destroyed` connection per box; any other root is pruned through the signal.
+        bool selfForgetting = false;
+        if (auto *rect = qobject_cast<CssRect *>(root))
+            selfForgetting = rect->layoutEngine() == this;
+        else if (auto *fill = qobject_cast<CssFill *>(root))
+            selfForgetting = fill->layoutEngine() == this;
+        if (!selfForgetting)
+            connect(root, &QObject::destroyed, this, [this](QObject *obj) {
+                m_known.remove(static_cast<QQuickItem *>(obj));
+            });
     }
     m_pending.insert(root, content);
     // Hibernating (batch open): only record — endBatch runs the single flush.

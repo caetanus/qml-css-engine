@@ -10,6 +10,9 @@
 #include <QVariantMap>
 
 #include "qmlcss/cssbox.h"
+#include "qmlcss/csscontentholder.h"
+
+#include <memory>
 
 class QVariantAnimation;
 
@@ -57,8 +60,10 @@ public:
     // animate instead of snapping. Covers-check: empty/`all` or the exact property.
     bool transitionCovers(QLatin1String prop) const
     {
+        // m_transMs > 0 implies the extra holds the parsed spec.
         return m_transMs > 0
-            && (m_transProp.isEmpty() || m_transProp == QLatin1String("all") || m_transProp == prop);
+            && (m_extra->transProp.isEmpty() || m_extra->transProp == QLatin1String("all")
+                || m_extra->transProp == prop);
     }
     // Animate width/height to `target`; returns false when no covering transition (the caller
     // writes directly). Idempotent while already animating toward the same target.
@@ -119,15 +124,18 @@ private:
     Q_CLASSINFO("DefaultProperty", "content")
 
 public:
-    qreal scrollTop() const { return m_flickable ? m_flickable->property("contentY").toReal() : 0.0; }
-    qreal scrollHeight() const { return m_flickable ? m_flickable->property("contentHeight").toReal() : height(); }
-    qreal clientHeight() const { return m_flickable ? m_flickable->height() : height(); }
+    qreal scrollTop() const { QQuickItem *f = scrollFlickable(); return f ? f->property("contentY").toReal() : 0.0; }
+    qreal scrollHeight() const { QQuickItem *f = scrollFlickable(); return f ? f->property("contentHeight").toReal() : height(); }
+    qreal clientHeight() const { QQuickItem *f = scrollFlickable(); return f ? f->height() : height(); }
     // Engine-internal: CssLayoutEngine::layout() checks this BEFORE walking children to publish
     // the scroll extent — only scroll boxes need that work (Task 4 review finding #3).
-    bool hasScroll() const { return m_flickable; }
+    bool hasScroll() const { return m_extra && m_extra->flickable; }
     // Engine-internal (5v-1): the composed scroll Flickable (null when the box does not scroll).
-    QQuickItem *scrollFlickable() const { return m_flickable; }
+    QQuickItem *scrollFlickable() const { return m_extra ? m_extra->flickable.data() : nullptr; }
+    // Engine-internal: the layout engine this box requests its relayouts from.
+    CssLayoutEngine *layoutEngine() const;
     explicit CssRect(QQuickItem *parent = nullptr);
+    ~CssRect() override;
 
     // Engine-internal: the layout pass inspects a CHILD box's content to classify it (e.g. the
     // replaced-foreign inference) — direct pointer, no list-property indirection in the hot path.
@@ -159,13 +167,13 @@ public:
     void applyStaticTransformAndAnim();
     Q_SLOT void syncScrollContent();
 
-    qreal radius() const { return m_radius; }
+    qreal radius() const { return m_extra ? m_extra->radius : 0.0; }
     void setRadius(qreal v);
-    QColor defaultColor() const { return m_defaultColor; }
+    QColor defaultColor() const { return m_extra ? m_extra->defaultColor : QColor(Qt::transparent); }
     void setDefaultColor(const QColor &v);
-    QColor defaultBorderColor() const { return m_defaultBorderColor; }
+    QColor defaultBorderColor() const { return m_extra ? m_extra->defaultBorderColor : QColor(Qt::transparent); }
     void setDefaultBorderColor(const QColor &v);
-    qreal defaultBorderWidth() const { return m_defaultBorderWidth; }
+    qreal defaultBorderWidth() const { return m_extra ? m_extra->defaultBorderWidth : 0.0; }
     void setDefaultBorderWidth(qreal v);
 
     QString inheritedColor() const;
@@ -178,16 +186,16 @@ public:
     QString inheritedTextAlign() const;
     bool takesPartInInheritance() const override { return true; }
 
-    qreal animRotate() const { return m_animRotate; }
+    qreal animRotate() const { return m_extra ? m_extra->animRotate : 0.0; }
     void setAnimRotate(qreal v);
-    qreal animScale() const { return m_animScale; }
+    qreal animScale() const { return m_extra ? m_extra->animScale : 1.0; }
     void setAnimScale(qreal v);
-    qreal animTx() const { return m_animTx; }
+    qreal animTx() const { return m_extra ? m_extra->animTx : 0.0; }
     void setAnimTx(qreal v);
-    qreal animTy() const { return m_animTy; }
+    qreal animTy() const { return m_extra ? m_extra->animTy : 0.0; }
     void setAnimTy(qreal v);
 
-    qreal animTick() const { return m_animTick; }
+    qreal animTick() const { return m_extra ? m_extra->animTick : 0.0; }
     void setAnimTick(qreal v);
 
     QQmlListProperty<QObject> content();
@@ -218,6 +226,12 @@ signals:
 protected:
     void componentComplete() override;
     void geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry) override;
+    // The typed hooks that replaced this box's per-item connections (see CssBox).
+    void ownImplicitSizeChanged() override;
+    void ownVisibilityChanged() override;
+    void inheritSourceChanged() override;
+    void contentChildAdded(QQuickItem *child) override;
+    void contentChildRemoved(QQuickItem *child) override;
 
 private:
     // Re-run the CSS→value resolution the QML `readonly property` bindings did (colours, radii,
@@ -247,71 +261,76 @@ protected:
 private:
     // The CSS-inheriting ancestor (containing CssRect at parent.parent), or null.
     CssRect *cssParent() const;
+    // emit inheritedChanged + walk the followers (every inherited change this box reports).
+    void notifyInherited();
+
+    // --- memory step 1: hot state inline, feature state in a lazily allocated extra -------------------
+    // Inline: what the layout pass, the CSS apply and the geometry path read on EVERY box. Everything a
+    // box only needs once a feature is in use (renderer defaults, transforms/@keyframes, transitions,
+    // scroll, the paint shells, the hover handler) lives in Extra, allocated on first use (ensureExtra)
+    // and never freed before the box: zero cost for a layout-only box, one allocation for the rest.
+    struct AnimStop { double offset, rotate, scale, tx, ty; };
+    struct Extra {
+        // Renderer defaults (the QML default* props, set by the CssFill shim).
+        qreal radius = 0;
+        QColor defaultColor = QColor(Qt::transparent);
+        QColor defaultBorderColor = QColor(Qt::transparent);
+        qreal defaultBorderWidth = 0;
+        // Animated transform channels — written each tick by setAnimTick()/CssLayoutEngine::applyAnim().
+        qreal animRotate = 0, animScale = 1, animTx = 0, animTy = 0;
+        // Static (non-animated) transform resolved from `style` (rotate deg / scale / tx,ty px).
+        qreal staticRotate = 0, staticScale = 1, staticTx = 0, staticTy = 0;
+        // @keyframes driver: the normalised position (QML `property real animTick`), the stops
+        // (buildAnimStops output) and the same stops pre-parsed for the per-frame tick (the QVariantMap
+        // form costs allocations EVERY frame at 60fps), and the REAL NumberAnimation on animTick (0→1).
+        qreal animTick = 0.0;
+        QVariantList animStops;
+        QList<AnimStop> animStopsFast;
+        QPointer<QObject> anim;
+        QPointer<QObject> translate; // the QtQuick Translate in our transform list
+        // CSS transition (parsed from `transition` at style apply; m_transMs stays inline).
+        int transEasing = 1; // QEasingCurve::InOutQuad set at parse; int to avoid the header dep
+        QString transProp;
+        QVariantAnimation *opacityAnim = nullptr; // lazy; animates our own opacity
+        QVariantAnimation *widthAnim = nullptr;   // lazy; driven via animateGeometry
+        QVariantAnimation *heightAnim = nullptr;
+        qreal widthAnimTarget = -1;
+        qreal heightAnimTarget = -1;
+        // overflow(-y): auto/scroll — composed Flickable hosting the contentHolder.
+        QPointer<QQuickItem> flickable;
+        // The paint shells: the REAL QtQuick render subtree (Shapes + MultiEffect), or the fast
+        // QQuickRectangle when the style is rectangle-safe.
+        QPointer<QQuickItem> render;
+        QPointer<QQuickItem> fastRect;
+        // The fast Rectangle that already received its FIRST style (a transition animates a change,
+        // never the first style). A pointer compare per push — no meta-object lookup on the hot path;
+        // QPointer, so a Rectangle recreated at a recycled address still counts as new.
+        QPointer<QQuickItem> primedFast;
+        QPointer<QObject> hoverHandler; // composed QtQuick HoverHandler (created on demand)
+    };
+    Extra &ensureExtra()
+    {
+        if (!m_extra)
+            m_extra.reset(new Extra);
+        return *m_extra;
+    }
 
     // Resolved border widths [t,r,b,l] — cached at style-set time so layoutChildren (per-resize
     // hot path) never parses style strings. The content holder is inset by these (padding box).
-    QVector<double> m_borderInsets{0.0, 0.0, 0.0, 0.0};
-
-    qreal m_radius = 0;
-    QColor m_defaultColor = QColor(Qt::transparent);
-    QColor m_defaultBorderColor = QColor(Qt::transparent);
-    qreal m_defaultBorderWidth = 0;
-
-    // Animated transform channels — written each tick by CssLayoutEngine::applyAnim().
-    qreal m_animRotate = 0;
-    qreal m_animScale = 1;
-    qreal m_animTx = 0;
-    qreal m_animTy = 0;
-
-    // Static (non-animated) transform resolved from `style` (rotate deg / scale / tx,ty px).
-    qreal m_staticRotate = 0;
-    qreal m_staticScale = 1;
-    qreal m_staticTx = 0;
-    qreal m_staticTy = 0;
-
-    // @keyframes animation driver — QML-equivalent:
-    //   property real animTick: 0
-    //   NumberAnimation on animTick { from: 0.0; to: 1.0; duration: ...; loops: ...; easing: ... }
-    //   onAnimTickChanged: if (cssLayout) cssLayout.applyAnim(root, _animStops, animTick)
-    qreal m_animTick = 0.0;
-    bool m_animActive = false;           // _animStops.length >= 2
-
-    // --- CSS transition state (parsed from `transition` at style apply) -------------------
+    double m_borderInsets[4] = { 0.0, 0.0, 0.0, 0.0 };
+    QPointer<CssLayoutEngine> m_layout;
+    // Hosts declared children (the layout participants). Created in the constructor, a QObject child we
+    // never delete before ourselves: a plain pointer.
+    CssContentHolder *m_contentHolder = nullptr;
+    qreal m_extentTop = 0.0;    // vertical extent of the last layout pass — drives scroll contentHeight
+    qreal m_extentBottom = 0.0;
+    std::unique_ptr<Extra> m_extra;
+    // Transition duration (0: none) — read by the layout on every geometry write (transitionCovers).
     int m_transMs = 0;
-    int m_transEasing = 1; // QEasingCurve::InOutQuad set at parse; int to avoid the header dep
-    QString m_transProp;
-    QVariantAnimation *m_opacityAnim = nullptr; // lazy; animates our own opacity
-    QVariantAnimation *m_widthAnim = nullptr;   // lazy; driven via animateGeometry
-    QVariantAnimation *m_heightAnim = nullptr;
-    qreal m_widthAnimTarget = -1;
-    qreal m_heightAnimTarget = -1;
-
-    // overflow(-y): auto/scroll — composed Flickable hosting the contentHolder.
-    QPointer<QQuickItem> m_flickable;
-    // Fast paint path: a REAL QQuickRectangle when the style is rectangle-safe.
-    QPointer<QQuickItem> m_fastRect;
-    // The fast Rectangle that already received its FIRST style (a transition animates a change,
-    // never the first style). A pointer compare per push — no meta-object lookup on the hot path;
-    // QPointer, so a Rectangle recreated at a recycled address still counts as new.
-    QPointer<QQuickItem> m_primedFast;
-
+    bool m_animActive = false; // _animStops.length >= 2
     // Engine-driven hover tracking (see cssHoverStyled/cssEngineHover above).
     bool m_hoverStyled = false;
     bool m_engineHover = false;
-    QPointer<QObject> m_hoverHandler; // composed QtQuick HoverHandler (created on demand)
-    QVariantList m_animStops;            // buildAnimStops output for current @keyframes
-    // Same stops pre-parsed for the per-frame tick (the QVariantMap form costs allocations
-    // EVERY frame at 60fps; this is the relayout-adjacent hot path).
-    struct AnimStop { double offset, rotate, scale, tx, ty; };
-    QVarLengthArray<AnimStop, 8> m_animStopsFast;
-    QPointer<QObject> m_anim;            // REAL QtQuick NumberAnimation on animTick (0→1)
-
-    QPointer<CssLayoutEngine> m_layout;
-    QPointer<QQuickItem> m_render;       // the REAL QtQuick render subtree (Shapes + MultiEffect)
-    QPointer<QQuickItem> m_contentHolder; // hosts declared children (the layout participants)
-    qreal m_extentTop = 0.0;    // vertical extent of the last layout pass — drives scroll contentHeight
-    qreal m_extentBottom = 0.0;
-    QPointer<QObject> m_translate;        // the QtQuick Translate in our transform list
 };
 
 } // namespace QmlCss

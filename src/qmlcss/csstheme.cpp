@@ -4,6 +4,7 @@
 #include "csslayout.h"
 #include "qmlcss/cssbox.h"
 #include "qmlcss/csscontextnode.h"
+#include "qmlcss/csstext.h"
 #include "cssvar.h"
 #include "valueparser.h"
 
@@ -44,6 +45,10 @@ CssTheme::CssTheme(QObject *parent)
     connect(m_watcher, &QFileSystemWatcher::fileChanged, this, &CssTheme::onCssFileChanged);
 }
 
+namespace {
+using FontWalks = FollowerWalks<FontFollowers>;
+} // namespace
+
 CssTheme::~CssTheme()
 {
     // Same opt-in as the phase timers' own exit print (SQ_PHASE_STATS=1): dump the sharing census
@@ -51,6 +56,79 @@ CssTheme::~CssTheme()
     // env var to see both phase timings and the census at exit.
     if (g_phaseStats.enabled)
         dumpCensus();
+    // Texts outliving the theme follow nothing (their m_theme QPointer is null from now on).
+    for (CssText *t = m_fontFollowers; t;) {
+        CssText *next = t->m_fontNext;
+        FontWalks::unlinked(t, nullptr);
+        t->m_fontPrev = t->m_fontNext = nullptr;
+        t->m_fontFollowing = false;
+        t = next;
+    }
+}
+
+void CssTheme::addFontFollower(CssText *text)
+{
+    if (text->m_fontFollowing)
+        return;
+    text->m_fontFollowing = true;
+    text->m_fontNext = nullptr;
+    if (CssText *head = m_fontFollowers) {
+        CssText *tail = head->m_fontPrev;
+        tail->m_fontNext = text;
+        text->m_fontPrev = tail;
+        head->m_fontPrev = text;
+    } else {
+        m_fontFollowers = text;
+        text->m_fontPrev = text;
+    }
+}
+
+void CssTheme::removeFontFollower(CssText *text)
+{
+    if (!text->m_fontFollowing)
+        return;
+    FontWalks::unlinked(text, text->m_fontNext);
+    CssText *head = m_fontFollowers;
+    if (head == text) {
+        m_fontFollowers = text->m_fontNext;
+        if (text->m_fontNext)
+            text->m_fontNext->m_fontPrev = text->m_fontPrev; // the tail
+    } else {
+        text->m_fontPrev->m_fontNext = text->m_fontNext;
+        if (text->m_fontNext)
+            text->m_fontNext->m_fontPrev = text->m_fontPrev;
+        else
+            head->m_fontPrev = text->m_fontPrev; // it was the tail
+    }
+    text->m_fontPrev = text->m_fontNext = nullptr;
+    text->m_fontFollowing = false;
+}
+
+void CssTheme::notifyFontFollowers()
+{
+    FollowerWalk walk{ m_fontFollowers, FontWalks::top };
+    FontWalks::top = &walk;
+    while (walk.next) {
+        auto *text = static_cast<CssText *>(walk.next);
+        walk.next = text->m_fontNext;
+        text->onFontRevisionChanged();
+    }
+    FontWalks::top = walk.outer;
+}
+
+void CssTheme::forgetRegistered(QObject *obj)
+{
+    m_registered.remove(obj);
+    // Never resize m_bindings while reapplyAll() (below) is range-for'ing over it — applyCssTo()
+    // could, in principle, destroy a registered object synchronously (today everything uses
+    // deleteLater, so this hasn't been observed, but the guard is cheap and the alternative is
+    // UB). Compaction just waits for the next death or reapplyAll's own prune.
+    ++m_deadBindings;
+    if (!m_walkingBindings && m_deadBindings > m_bindings.size() / 2) {
+        // From ~CssBox the dying box's QPointer is not null yet (QObject clears it later): drop it by address.
+        m_bindings.removeIf([obj](const QPointer<QObject> &p) { return p.isNull() || p.data() == obj; });
+        m_deadBindings = 0;
+    }
 }
 
 QVariantMap CssTheme::resolveMerged(const QList<CssAncestorInfo> &ancestors, const QString &cssId,
@@ -418,25 +496,19 @@ void CssTheme::loadCss(QObject *target)
     if (!m_registered.contains(target)) {
         m_registered.insert(target);
         m_bindings.append(QPointer<QObject>(target));
-        // The reverse slot must never dangle: forget the object when it dies — O(1). Its QPointer in
-        // m_bindings is already null; compact once the dead outnumber the live (amortised O(1)).
-        connect(target, &QObject::destroyed, this, [this](QObject *obj) {
-            m_registered.remove(obj);
-            // Never resize m_bindings while reapplyAll() (below) is range-for'ing over it — applyCssTo()
-            // could, in principle, destroy a registered object synchronously (today everything uses
-            // deleteLater, so this hasn't been observed, but the guard is cheap and the alternative is
-            // UB). Compaction just waits for the next death or reapplyAll's own prune.
-            ++m_deadBindings;
-            if (!m_walkingBindings && m_deadBindings > m_bindings.size() / 2) {
-                m_bindings.removeIf([](const QPointer<QObject> &p) { return p.isNull(); });
-                m_deadBindings = 0;
-            }
-        });
+        // The reverse slot must never dangle: forget the object when it dies — O(1); compact once the
+        // dead outnumber the live (amortised O(1)). A box of ours tells us from its destructor (no
+        // connection per box); anything else through `destroyed`.
+        auto *box = qobject_cast<CssBox *>(target);
+        if (box && box->m_theme == this)
+            box->m_themeRegistered = true;
+        else
+            connect(target, &QObject::destroyed, this, &CssTheme::forgetRegistered);
         // Observe a FOREIGN target's cssClass AND cssState: a state change (focused/urgent/
         // hover/active) must re-style automatically, so the applet registers once and never
         // re-calls loadCss. A CssBox is not observed: its identity setters call restyle()
         // themselves — observing it too resolved every class/state write twice.
-        if (!qobject_cast<CssBox *>(target)) {
+        if (!box) {
             const QMetaMethod reapplySlot = staticMetaObject.method(
                 staticMetaObject.indexOfSlot("reapplyForSender()"));
             for (const char *stateProp : { "cssClass", "cssState" }) {

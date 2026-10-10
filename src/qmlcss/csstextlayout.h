@@ -19,10 +19,11 @@ struct CssTextPayload {
     QString text;
     QColor color;
     QFont font;
-    int lineHeightMode = 0; // QQuickText::ProportionalHeight (0) / FixedHeight (1)
     qreal lineHeight = 0;
-    int textFormat = 0; // QQuickText::PlainText (0) / StyledText (4)
     qreal leftPadding = 0, rightPadding = 0, topPadding = 0, bottomPadding = 0;
+    // The ints together (no padding holes: every CssText keeps one payload inline).
+    int lineHeightMode = 0; // QQuickText::ProportionalHeight (0) / FixedHeight (1)
+    int textFormat = 0; // QQuickText::PlainText (0) / StyledText (4)
     int wrapMode = 0; // QTextOption::WrapMode
     int elide = 0; // Qt::TextElideMode
     int horizontalAlignment = 0; // Qt::AlignmentFlag (horizontal)

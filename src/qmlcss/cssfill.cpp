@@ -116,15 +116,57 @@ CssFill::CssFill(QQuickItem *parent)
     // The content holder must exist BEFORE the QML engine appends declared children to `content`
     // (which happens during parsing, before componentComplete). A plain Item, sized to us, hosting
     // the layout participants — exactly the QML `contentHolder`.
-    auto *holder = new CssContentHolder(this);
-    m_contentHolder = holder;
-    // Per-child: handle the ONE child that came or went (a rescan of every sibling per change made
-    // building a list quadratic). Relayout requests coalesce inside the layout batch.
-    connect(holder, &CssContentHolder::childAdded, this, [this](QQuickItem *k) {
-        watchForeignChild(k);
-        requestRelayout();
-    });
-    connect(holder, &CssContentHolder::childRemoved, this, &CssFill::requestRelayout);
+    // Per-child: the holder reports the ONE child that came or went (contentChildAdded/Removed — a
+    // rescan of every sibling per change made building a list quadratic). Relayout requests coalesce
+    // inside the layout batch.
+    m_contentHolder = new CssContentHolder(this);
+}
+
+CssLayoutEngine *CssFill::layoutEngine() const
+{
+    return m_layout;
+}
+
+CssFill::~CssFill()
+{
+    if (m_contentHolder)
+        static_cast<CssContentHolder *>(m_contentHolder.data())->clearOwner();
+    if (m_layout)
+        m_layout->forgetRoot(this);
+}
+
+void CssFill::contentChildAdded(QQuickItem *child)
+{
+    watchForeignChild(child);
+    requestRelayout();
+}
+
+void CssFill::contentChildRemoved(QQuickItem *)
+{
+    requestRelayout();
+}
+
+void CssFill::ownImplicitSizeChanged()
+{
+    if (m_layout)
+        m_layout->notifyParentLayout(this);
+}
+
+void CssFill::ownVisibilityChanged()
+{
+    if (m_layout)
+        m_layout->notifyVisibilityChanged(this);
+}
+
+void CssFill::inheritSourceChanged()
+{
+    notifyInherited(); // an ancestor's inherited text props re-propagate through us
+}
+
+void CssFill::notifyInherited()
+{
+    emit inheritedChanged();
+    propagateInheritedChange();
 }
 
 void CssFill::watchForeignChildren()
@@ -198,7 +240,7 @@ void CssFill::setStyle(const QVariantMap &v)
         if (m_layout)
             m_layout->notifyParentLayout(this);
     }
-    emit inheritedChanged();
+    notifyInherited();
 }
 
 void CssFill::setRadius(qreal v)
@@ -512,22 +554,11 @@ void CssFill::componentComplete()
     m_rect = composeLayer("import QtQuick\nimport qmlcss\nCssRect { cssPrimitive: \"\" }", m_contentHolder,
                           [](CssFill *self, QQuickItem *rect) { self->m_rect = rect; self->recompute(); });
 
-    // React to implicit-size / visibility changes like the QML on*Changed handlers.
-    connect(this, &QQuickItem::implicitWidthChanged, this, [this]() {
-        if (m_layout)
-            m_layout->notifyParentLayout(this);
-    });
-    connect(this, &QQuickItem::implicitHeightChanged, this, [this]() {
-        if (m_layout)
-            m_layout->notifyParentLayout(this);
-    });
-    connect(this, &QQuickItem::visibleChanged, this, [this]() {
-        if (m_layout)
-            m_layout->notifyVisibilityChanged(this);
-    });
+    // React to implicit-size / visibility changes like the QML on*Changed handlers — typed hooks, no
+    // connection per box (see CssBox::watchOwnLayoutChanges).
+    watchOwnLayoutChanges();
     // An ancestor's inherited text props re-propagate to us (CSS inheritance).
-    if (QObject *anc = cssInheritingAncestor(this))
-        connect(anc, SIGNAL(inheritedChanged()), this, SIGNAL(inheritedChanged()));
+    followInheritanceOf(cssInheritingAncestor(this));
 
     recompute(); // overflow/scroll + clip need the completed item; layers already hold the style
     layoutChildren();

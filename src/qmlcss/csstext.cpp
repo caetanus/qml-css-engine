@@ -105,6 +105,39 @@ CssText::CssText(QQuickItem *parent)
 {
 }
 
+CssText::~CssText()
+{
+    if (m_fontFollowing && m_theme)
+        m_theme->removeFontFollower(this);
+}
+
+void CssText::ownImplicitSizeChanged()
+{
+    if (m_layout)
+        m_layout->notifyParentLayout(this);
+}
+
+void CssText::ownVisibilityChanged()
+{
+    if (m_layout)
+        m_layout->notifyVisibilityChanged(this);
+}
+
+void CssText::onFontRevisionChanged()
+{
+    const CssTextPayload before = m_applied;
+    applyToText();
+    applyShadow();
+    // The same family name may now resolve to the registered font: lay out again even if the payload
+    // did not change (applyToText re-laid out when it did).
+    if (m_lean && m_leanMounted && sameLayoutInputs(before, m_applied)) {
+        leanRelayout();
+        leanResize();
+        leanPublishImplicit();
+        layoutChild();
+    }
+}
+
 void CssText::setStyle(const QVariantMap &v)
 {
     if (m_style == v)
@@ -120,6 +153,7 @@ void CssText::setStyle(const QVariantMap &v)
     if (isComponentComplete() && m_layout)
         m_layout->notifyParentLayout(this);
     emit inheritedChanged();
+    propagateInheritedChange();
 }
 
 void CssText::setText(const QString &v)
@@ -127,8 +161,8 @@ void CssText::setText(const QString &v)
     if (m_text == v)
         return;
     m_text = v;
-    if (m_label) {
-        putLabel<QString>(m_label, labelProps(m_label).text, !m_payloadApplied, m_text, m_applied.text);
+    if (composedLabel()) {
+        putLabel<QString>(composedLabel(), labelProps(composedLabel()).text, !m_payloadApplied, m_text, m_applied.text);
     } else if (m_lean && m_leanMounted) {
         CssTextPayload p = m_applied;
         p.text = m_text;
@@ -146,17 +180,17 @@ void CssText::setStyledText(bool v)
     // Styled text keeps the composed QQuickText (its tag subset); plain text goes lean.
     if (isComponentComplete())
         syncPath();
-    if (m_label) // Text.StyledText : PlainText
-        putLabel<int>(m_label, labelProps(m_label).textFormat, !m_payloadApplied, m_styledText ? 4 : 0,
+    if (composedLabel()) // Text.StyledText : PlainText
+        putLabel<int>(composedLabel(), labelProps(composedLabel()).textFormat, !m_payloadApplied, m_styledText ? 4 : 0,
                       m_applied.textFormat);
     emit styledTextChanged();
 }
 
 void CssText::setDefaultColor(const QColor &v)
 {
-    if (m_defaultColor == v)
+    if (defaultColor() == v)
         return;
-    m_defaultColor = v;
+    ensureExtra().defaultColor = v;
     m_resolvedValid = false;
     emit defaultColorChanged();
     applyToText();
@@ -164,9 +198,9 @@ void CssText::setDefaultColor(const QColor &v)
 
 void CssText::setDefaultFontFamily(const QString &v)
 {
-    if (m_defaultFontFamily == v)
+    if (defaultFontFamily() == v)
         return;
-    m_defaultFontFamily = v;
+    ensureExtra().defaultFontFamily = v;
     m_resolvedValid = false;
     emit defaultFontFamilyChanged();
     applyToText();
@@ -174,9 +208,9 @@ void CssText::setDefaultFontFamily(const QString &v)
 
 void CssText::setDefaultFontSize(qreal v)
 {
-    if (qFuzzyCompare(m_defaultFontSize, v))
+    if (qFuzzyCompare(defaultFontSize(), v))
         return;
-    m_defaultFontSize = v;
+    ensureExtra().defaultFontSize = v;
     m_resolvedValid = false;
     emit defaultFontSizeChanged();
     applyToText();
@@ -232,22 +266,25 @@ CssTextPayload CssText::resolvePayload(const CssInheritedText &inh) const
     auto styleStr = [&](const char *k) { return m_style.value(QLatin1String(k)).toString(); };
     ++Detail::g_textPayloadResolves;
     CssTextPayload p;
+    const QColor defaultColor = this->defaultColor();
+    const QString defaultFontFamily = this->defaultFontFamily();
+    const qreal defaultFontSize = this->defaultFontSize();
 
     // text
     p.text = m_text;
 
     // color <- inheritedColor, else default.
     const QString &ic = inh.color;
-    p.color = (!ic.isEmpty() && m_theme) ? m_theme->parseColor(ic) : m_defaultColor;
+    p.color = (!ic.isEmpty() && m_theme) ? m_theme->parseColor(ic) : defaultColor;
 
     // --- font (family/pointSize/weight/letterSpacing/wordSpacing/capitalization/underline/strike) ---
     QFont &font = p.font;
     const QString &fam = inh.fontFamily;
-    font.setFamily(m_theme ? m_theme->resolveFontFamily(fam, m_defaultFontFamily)
-                           : (fam.isEmpty() ? m_defaultFontFamily : fam));
+    font.setFamily(m_theme ? m_theme->resolveFontFamily(fam, defaultFontFamily)
+                           : (fam.isEmpty() ? defaultFontFamily : fam));
     const QString &fs = inh.fontSize;
-    const qreal pointSize = (!fs.isEmpty() && m_theme) ? m_theme->parseFontSize(fs, m_defaultFontSize)
-                                                       : m_defaultFontSize;
+    const qreal pointSize = (!fs.isEmpty() && m_theme) ? m_theme->parseFontSize(fs, defaultFontSize)
+                                                       : defaultFontSize;
     font.setPointSizeF(pointSize);
     if (m_theme)
         font.setWeight(static_cast<QFont::Weight>(m_theme->fontWeight(inh.fontWeight)));
@@ -307,7 +344,7 @@ void CssText::applyToText()
 {
     if (isComponentComplete())
         syncPath();
-    if (!m_label && !m_lean)
+    if (!composedLabel() && !m_lean)
         return;
 
     // One typed walk for all eight inherited values (own style value, else the inheriting ancestor's). Equal
@@ -327,7 +364,7 @@ void CssText::applyToText()
         applyLeanPayload(p);
     } else {
         // Write only the fields that differ from the payload last applied (all of them on a fresh label).
-        QQuickItem *t = m_label;
+        QQuickItem *t = composedLabel();
         const LabelProps &lp = labelProps(t);
         const bool fresh = !m_payloadApplied;
         putLabel(t, lp.text, fresh, p.text, m_applied.text);
@@ -368,7 +405,7 @@ void CssText::applyShadow()
     const bool hasShadow = shadow.contains(QStringLiteral("color"));
 
     // Lazy composition: only a label that actually declares text-shadow pays for the effect.
-    if (!m_shadow && hasShadow && m_label && isComponentComplete()) {
+    if (!shadowItem() && hasShadow && composedLabel() && isComponentComplete()) {
         if (QQmlEngine *eng = qmlEngine(this)) {
             QQmlComponent *comp = QmlCss::cachedComponent(eng, QStringLiteral("csstext-81a20bf2"),
                 "import QtQuick.Effects\nMultiEffect { autoPaddingEnabled: true; visible: false }");
@@ -376,8 +413,8 @@ void CssText::applyShadow()
                 if (QQuickItem *fx = qobject_cast<QQuickItem *>(o)) {
                     fx->setParent(this);
                     fx->setParentItem(this);
-                    fx->setProperty("source", QVariant::fromValue(m_label.data()));
-                    m_shadow = fx;
+                    fx->setProperty("source", QVariant::fromValue(composedLabel()));
+                    ensureExtra().shadow = fx;
                     layoutChild(); // size the fresh effect to the current box
                 } else {
                     o->deleteLater();
@@ -385,25 +422,25 @@ void CssText::applyShadow()
             }
         }
     }
-    if (!m_shadow)
+    if (!shadowItem())
         return;
 
     // Mirror CssDropShadow.qml onto the composed MultiEffect (sourcing the Text).
-    m_shadow->setProperty("shadowEnabled", hasShadow);
-    m_shadow->setProperty("shadowColor", hasShadow ? shadow.value(QStringLiteral("color")).value<QColor>()
+    shadowItem()->setProperty("shadowEnabled", hasShadow);
+    shadowItem()->setProperty("shadowColor", hasShadow ? shadow.value(QStringLiteral("color")).value<QColor>()
                                                     : QColor(Qt::transparent));
-    m_shadow->setProperty("shadowHorizontalOffset", hasShadow ? shadow.value(QStringLiteral("x")).toReal() : 0.0);
-    m_shadow->setProperty("shadowVerticalOffset", hasShadow ? shadow.value(QStringLiteral("y")).toReal() : 0.0);
+    shadowItem()->setProperty("shadowHorizontalOffset", hasShadow ? shadow.value(QStringLiteral("x")).toReal() : 0.0);
+    shadowItem()->setProperty("shadowVerticalOffset", hasShadow ? shadow.value(QStringLiteral("y")).toReal() : 0.0);
     // MultiEffect.shadowBlur is 0..1 over blurMax (32px default).
-    m_shadow->setProperty("shadowBlur",
+    shadowItem()->setProperty("shadowBlur",
                           hasShadow ? std::min<qreal>(1.0, shadow.value(QStringLiteral("blur")).toReal() / 32.0) : 0.0);
 
     // The MultiEffect draws the Text (plus shadow) when active — ABOVE the still-visible label
     // (same glyphs, so no double vision). Hiding the label empties the effect's source texture
     // on the RHI path, blanking the text entirely.
-    m_shadow->setVisible(hasShadow);
-    if (m_label)
-        m_label->setVisible(true);
+    shadowItem()->setVisible(hasShadow);
+    if (composedLabel())
+        composedLabel()->setVisible(true);
 }
 
 void CssText::layoutChild()
@@ -412,45 +449,45 @@ void CssText::layoutChild()
     // implicit size so a standalone label never collapses. The shadow and the background take it from the outer
     // item's box (contract 9), never from the label.
     QSizeF box;
-    if (m_label) {
-        m_label->setX(0);
-        m_label->setY(0);
+    if (composedLabel()) {
+        composedLabel()->setX(0);
+        composedLabel()->setY(0);
         // Fill an assigned size so wrap/elide/valign apply.
         const qreal w = width();
-        m_label->setWidth(w > 0.5 ? w : m_label->implicitWidth());
+        composedLabel()->setWidth(w > 0.5 ? w : composedLabel()->implicitWidth());
         const qreal h = height();
-        m_label->setHeight(h > 0.5 ? h : m_label->implicitHeight());
-        box = m_label->size();
+        composedLabel()->setHeight(h > 0.5 ? h : composedLabel()->implicitHeight());
+        box = composedLabel()->size();
     } else if (m_lean) {
         box = m_box;
     } else {
         return;
     }
 
-    if (m_shadow) {
-        m_shadow->setX(0);
-        m_shadow->setY(0);
-        m_shadow->setSize(box);
+    if (shadowItem()) {
+        shadowItem()->setX(0);
+        shadowItem()->setY(0);
+        shadowItem()->setSize(box);
     }
-    if (m_bg) {
-        m_bg->setX(0);
-        m_bg->setY(0);
-        m_bg->setSize(box);
+    if (bgItem()) {
+        bgItem()->setX(0);
+        bgItem()->setY(0);
+        bgItem()->setSize(box);
     }
 }
 
 void CssText::mirrorImplicit()
 {
-    if (!m_label)
+    if (!composedLabel())
         return;
     // We are the layout participant; our implicit size is the composed Text's.
-    setImplicitWidth(m_label->implicitWidth());
-    setImplicitHeight(m_label->implicitHeight());
+    setImplicitWidth(composedLabel()->implicitWidth());
+    setImplicitHeight(composedLabel()->implicitHeight());
     // Keep the Text at its natural size while unmanaged.
     if (width() <= 0.5)
-        m_label->setWidth(m_label->implicitWidth());
+        composedLabel()->setWidth(composedLabel()->implicitWidth());
     if (height() <= 0.5)
-        m_label->setHeight(m_label->implicitHeight());
+        composedLabel()->setHeight(composedLabel()->implicitHeight());
 }
 
 void CssText::maybeLoadCss()
@@ -490,37 +527,15 @@ void CssText::componentComplete()
     else
         composeLabel();
 
-    // notifyParentLayout on implicit/visible change (QML on*Changed -> _notifyParent), like CssHr.
-    connect(this, &QQuickItem::implicitWidthChanged, this, [this]() {
-        if (m_layout)
-            m_layout->notifyParentLayout(this);
-    });
-    connect(this, &QQuickItem::implicitHeightChanged, this, [this]() {
-        if (m_layout)
-            m_layout->notifyParentLayout(this);
-    });
-    connect(this, &QQuickItem::visibleChanged, this, [this]() {
-        if (m_layout)
-            m_layout->notifyVisibilityChanged(this);
-    });
-    // font.family re-resolves once a downloaded @font-face registers (QML leading fontRevision dep).
+    // notifyParentLayout on implicit/visible change (QML on*Changed -> _notifyParent), like CssHr — typed
+    // hooks, no connection per text (see CssBox::watchOwnLayoutChanges).
+    watchOwnLayoutChanges();
+    // font.family re-resolves once a downloaded @font-face registers (QML leading fontRevision dep): the
+    // theme walks its font followers (onFontRevisionChanged) — no connection per text.
     if (m_theme)
-        connect(m_theme, &CssTheme::fontRevisionChanged, this, [this]() {
-            const CssTextPayload before = m_applied;
-            applyToText();
-            applyShadow();
-            // The same family name may now resolve to the registered font: lay out again even if the payload
-            // did not change (applyToText re-laid out when it did).
-            if (m_lean && m_leanMounted && sameLayoutInputs(before, m_applied)) {
-                leanRelayout();
-                leanResize();
-                leanPublishImplicit();
-                layoutChild();
-            }
-        });
+        m_theme->addFontFollower(this);
     // An ancestor's inherited text props re-propagate to us (CSS inheritance).
-    if (QQuickItem *anc = cssParentItem())
-        connect(anc, SIGNAL(inheritedChanged()), this, SLOT(onAncestorInheritedChanged()));
+    followInheritanceOf(cssParentItem());
 
     layoutChild();
     applyToText();
@@ -563,12 +578,12 @@ void CssText::applyBackground()
     const QColor color = bgValue.isEmpty() ? QColor() : CssValueParser::parseColor(bgValue);
 
     if (!color.isValid() || color.alpha() == 0) {
-        if (m_bg)
-            m_bg->setProperty("bgColor", QColor(Qt::transparent));
+        if (bgItem())
+            bgItem()->setProperty("bgColor", QColor(Qt::transparent));
         return;
     }
 
-    if (!m_bg && isComponentComplete()) {
+    if (!bgItem() && isComponentComplete()) {
         if (QQmlEngine *eng = qmlEngine(this)) {
             QQmlComponent *comp = QmlCss::cachedComponent(eng, QStringLiteral("csstext-f477b5b7"),
                 R"(import QtQuick
@@ -592,7 +607,7 @@ Shape {
                 if (QQuickItem *bg = qobject_cast<QQuickItem *>(o)) {
                     bg->setParent(this); // C++ ownership (mirrors CssRect's composed scene)
                     bg->setParentItem(this);
-                    m_bg = bg;
+                    ensureExtra().bg = bg;
                 } else {
                     o->deleteLater();
                 }
@@ -601,13 +616,13 @@ Shape {
             }
         }
     }
-    if (!m_bg)
+    if (!bgItem())
         return;
 
     double radius = 0;
     CssValueParser::parseLengthPx(m_style.value(QStringLiteral("border-radius")).toString(), &radius);
-    m_bg->setProperty("bgColor", color);
-    m_bg->setProperty("bgRadius", radius);
+    bgItem()->setProperty("bgColor", color);
+    bgItem()->setProperty("bgRadius", radius);
     layoutChild(); // size the fresh underlay to the current box
 }
 
@@ -631,7 +646,7 @@ bool CssText::wantsLean() const
 void CssText::syncPath()
 {
     // Before componentComplete picks the first path there is nothing to switch from.
-    if (!m_lean && !m_label)
+    if (!m_lean && !composedLabel())
         return;
     const bool lean = wantsLean();
     if (lean == m_lean)
@@ -645,13 +660,13 @@ void CssText::syncPath()
 void CssText::enterLean()
 {
     // Drop the composed path: the MultiEffect first, its source detached while the label still lives.
-    if (m_shadow) {
-        m_shadow->setProperty("source", QVariant::fromValue<QQuickItem *>(nullptr));
-        delete m_shadow.data();
+    if (shadowItem()) {
+        shadowItem()->setProperty("source", QVariant::fromValue<QQuickItem *>(nullptr));
+        delete shadowItem();
     }
-    if (m_label) {
-        disconnect(m_label, nullptr, this, nullptr);
-        delete m_label.data();
+    if (composedLabel()) {
+        disconnect(composedLabel(), nullptr, this, nullptr);
+        delete composedLabel();
     }
     m_payloadApplied = false;
 
@@ -701,7 +716,7 @@ void CssText::composeLabel()
     }
     label->setParent(this); // C++ ownership: beginCreate() means C++ owns it
     label->setParentItem(this);
-    m_label = label;
+    ensureExtra().label = label;
     m_payloadApplied = false; // a fresh label: the first apply writes the whole payload
     // Constant for every label, so written once here instead of in the payload.
     labelProps(label).verticalAlignment.write(label, static_cast<int>(Qt::AlignVCenter));
@@ -710,11 +725,11 @@ void CssText::composeLabel()
     comp->completeCreate();
 
     // The composed Text's implicit size drives ours; re-flow the parent on change.
-    connect(m_label, &QQuickItem::implicitWidthChanged, this, [this]() {
+    connect(composedLabel(), &QQuickItem::implicitWidthChanged, this, [this]() {
         mirrorImplicit();
         layoutChild();
     });
-    connect(m_label, &QQuickItem::implicitHeightChanged, this, [this]() {
+    connect(composedLabel(), &QQuickItem::implicitHeightChanged, this, [this]() {
         mirrorImplicit();
         layoutChild();
     });
@@ -880,11 +895,12 @@ QSGNode *CssText::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)
     return node;
 }
 
-void CssText::onAncestorInheritedChanged()
+void CssText::inheritSourceChanged()
 {
     applyToText();
     applyShadow();
     emit inheritedChanged();
+    propagateInheritedChange();
 }
 
 } // namespace QmlCss

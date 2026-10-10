@@ -55,6 +55,18 @@ QQuickItem *composedText(QObject *cssText)
 // Keeps the CssTexts created while it lives on the COMPOSED QQuickText (the styledText/text-shadow fallback).
 // The tests that read the forwarded payload off the composed label use it: the payload is resolved once for both
 // paths, and the lean path is held to the composed one pixel for pixel (tests/test_text.cpp).
+// A forced re-propagation of a box's inherited text values, as the engine reports one: its inheritedChanged
+// signal (QML observers) plus the walk over its followers (memory step 1: descendants follow through the
+// engine's intrusive list, not through a connection to the signal).
+bool forceInheritedPropagation(QObject *box)
+{
+    auto *b = qobject_cast<CssBox *>(box);
+    if (!b || !QMetaObject::invokeMethod(box, "inheritedChanged"))
+        return false;
+    b->propagateInheritedChange();
+    return true;
+}
+
 struct ComposedTextScope {
     int previous = Detail::g_leanTextOverride;
     ComposedTextScope() { Detail::g_leanTextOverride = 0; }
@@ -4417,7 +4429,7 @@ void QmlCssTests::textPayloadWritesOnlyChanges()
 
     // 2. an unchanged re-resolve, plus a forced full re-apply through the inheritance chain, writes nothing
     theme.loadCss(qobject_cast<QQuickItem *>(row.data()));
-    QVERIFY(QMetaObject::invokeMethod(row.data(), "inheritedChanged"));
+    QVERIFY(forceInheritedPropagation(row.data()));
     QCOMPARE(delta(), 0);
 
     // 3. the inherited color changes: one write (color)
@@ -4439,7 +4451,7 @@ void QmlCssTests::textPayloadWritesOnlyChanges()
     text->setProperty("styledText", true);
     QCOMPARE(delta(), 1);
     QCOMPARE(label->property("textFormat").toInt(), 4); // Text.StyledText
-    QVERIFY(QMetaObject::invokeMethod(row.data(), "inheritedChanged"));
+    QVERIFY(forceInheritedPropagation(row.data()));
     QCOMPARE(delta(), 0);
 }
 
@@ -4518,7 +4530,7 @@ void QmlCssTests::textPayloadResolvedOncePerChange()
         // 2. an ancestor restyle that changes nothing inherited (the row's own style map does change),
         // and a forced re-propagation: nothing to rebuild.
         row->setProperty("cssClass", QStringList{ QStringLiteral("row"), QStringLiteral("wide") });
-        QVERIFY(QMetaObject::invokeMethod(row, "inheritedChanged"));
+        QVERIFY(forceInheritedPropagation(row));
         QCOMPARE(delta(), 0);
 
         // 3. the inherited color changes: one payload per text of that row, and the label shows it.
@@ -4540,7 +4552,7 @@ void QmlCssTests::textPayloadResolvedOncePerChange()
 
         // 5. the text changes: written without a rebuild, and a forced re-apply after it keeps it.
         id->setProperty("text", QStringLiteral("42"));
-        QVERIFY(QMetaObject::invokeMethod(row, "inheritedChanged"));
+        QVERIFY(forceInheritedPropagation(row));
         QCOMPARE(delta(), 0);
         if (!lean)
             QCOMPARE(composedText(id)->property("text").toString(), QStringLiteral("42"));
@@ -6206,4 +6218,188 @@ void QmlCssTests::virtualLateAccessibilityActivation()
     QVERIFY2(s.rows().size() < n, qPrintable(QString::number(s.rows().size())));
     const QString bad = checkVirtualRows(s, model);
     QVERIFY2(bad.isEmpty(), qPrintable(bad));
+}
+
+namespace {
+
+// Every signal connection whose SENDER is `o` (QObject::receivers() per signal, reached through a pointer to
+// the protected member — the declarative receivers it also counts are QML's own, not the engine's). Summed over
+// every object of a scene, each connection is counted exactly once.
+struct ConnectionProbe : QObject {
+    static int count(const QObject *o, const char *signal)
+    {
+        int (QObject::*receivers)(const char *) const = &ConnectionProbe::receivers;
+        return (o->*receivers)(signal);
+    }
+    static int outgoing(const QObject *o)
+    {
+        int (QObject::*receivers)(const char *) const = &ConnectionProbe::receivers;
+        int n = 0;
+        const QMetaObject *mo = o->metaObject();
+        for (int i = 0; i < mo->methodCount(); ++i) {
+            const QMetaMethod m = mo->method(i);
+            if (m.methodType() != QMetaMethod::Signal || (m.attributes() & QMetaMethod::Cloned))
+                continue; // a cloned overload (destroyed() of destroyed(QObject*)) shares its original's index
+            const QByteArray sig = QByteArray::number(QSIGNAL_CODE) + m.methodSignature();
+            n += (o->*receivers)(sig.constData());
+        }
+        return n;
+    }
+};
+
+int sceneConnections(const QList<QObject *> &roots)
+{
+    QSet<const QObject *> seen;
+    int n = 0;
+    for (QObject *r : roots) {
+        QList<QObject *> all = r->findChildren<QObject *>();
+        all.prepend(r);
+        for (QObject *o : all) {
+            if (seen.contains(o))
+                continue;
+            seen.insert(o);
+            n += ConnectionProbe::outgoing(o);
+        }
+    }
+    return n;
+}
+
+} // namespace
+
+void QmlCssTests::perRowMemoryCensus()
+{
+    // Ceilings from the step's inventory (docs/superpowers/plans/2026-10-10-step-mem1-slim-items.md): what stays
+    // inline is read on every layout/apply/paint — CssText keeps its payload, metrics and the 5d memo inline.
+    // An eager list of N rows, each = CssRect (div.row) > 2 lean CssText — the 1000-row census shape.
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(".list { display: flex; flex-direction: column; color: #111111; } "
+                                        ".row { display: flex; gap: 8px; } .id { width: 60px; } "
+                                        ".label { flex-grow: 1; }"));
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect { cssClass: ["list"]; width: 400; height: 3000
+            property int count: 0
+            CssRepeater {
+                model: count
+                delegate: Component {
+                    CssRect { objectName: "row"; cssPrimitive: "div"; cssClass: ["row"]
+                        CssText { cssClass: ["id"]; text: "1" }
+                        CssText { cssClass: ["label"]; text: "a" }
+                    }
+                }
+            }
+        }
+    )", QUrl());
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+    QQuickWindow window;
+    qobject_cast<QQuickItem *>(root.data())->setParentItem(window.contentItem());
+    const QList<QObject *> scene{ &theme, &layoutEngine, root.data(), window.contentItem() };
+
+    const int before = sceneConnections(scene);
+    constexpr int kRows = 100;
+    root->setProperty("count", kRows);
+    QCOMPARE(root->findChildren<QQuickItem *>(QStringLiteral("row")).size(), kRows);
+    const int after = sceneConnections(scene);
+    if (qEnvironmentVariableIsSet("SQ_CENSUS_DUMP")) {
+        QObject *r0 = root->findChildren<QQuickItem *>(QStringLiteral("row")).first();
+        QList<QObject *> objs = r0->findChildren<QObject *>();
+        objs.prepend(r0);
+        objs << &theme << &layoutEngine << root.data();
+        for (QObject *o : objs) {
+            const QMetaObject *mo = o->metaObject();
+            for (int i = 0; i < mo->methodCount(); ++i) {
+                const QMetaMethod m = mo->method(i);
+                if (m.methodType() != QMetaMethod::Signal || (m.attributes() & QMetaMethod::Cloned)) continue;
+                const QByteArray sig = QByteArray::number(QSIGNAL_CODE) + m.methodSignature();
+                const int n = ConnectionProbe::count(o, sig.constData());
+                if (n) qInfo("  %s(%p) %s -> %d", mo->className(), (void*)o, m.methodSignature().constData(), n);
+            }
+        }
+    }
+    const double perRow = double(after - before) / kRows;
+    qInfo("perRowMemoryCensus: sizeof CssRect=%zu CssText=%zu CssBox=%zu; %.2f connections per eager row",
+          sizeof(CssRect), sizeof(CssText), sizeof(CssBox), perRow);
+    constexpr size_t kRectCeiling = 480;
+    constexpr size_t kTextCeiling = 950;
+    QVERIFY2(sizeof(CssRect) <= kRectCeiling,
+             qPrintable(QStringLiteral("sizeof(CssRect) = %1 > %2").arg(sizeof(CssRect)).arg(kRectCeiling)));
+    QVERIFY2(sizeof(CssText) <= kTextCeiling,
+             qPrintable(QStringLiteral("sizeof(CssText) = %1 > %2").arg(sizeof(CssText)).arg(kTextCeiling)));
+
+    QVERIFY2(perRow <= 0.0, qPrintable(QStringLiteral("%1 connections per eager row (ceiling 0)").arg(perRow)));
+}
+
+void QmlCssTests::slimItemsKeepSemantics()
+{
+    ComposedTextScope composed; // the composed label exposes the applied payload
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(".list { color: #111111; } .list.hot { color: #222222; } "
+                                        ".row { display: flex; }"));
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        Item {
+            CssRect { objectName: "list"; cssClass: ["list"]; width: 400; height: 300
+                CssRect { objectName: "row"; cssClass: ["row"]
+                    CssText { objectName: "a"; cssClass: ["a"]; text: "a" }
+                    CssText { objectName: "b"; cssClass: ["b"]; text: "b" }
+                }
+            }
+            // A foreign ancestor declaring the inherited* contract by hand: followed through its own signal.
+            Item { objectName: "foreign"
+                property string inheritedColor: "#123456"
+                signal inheritedChanged()
+                Item { CssText { objectName: "f"; text: "f" } }
+            }
+        }
+    )", QUrl());
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+    QQuickWindow window;
+    qobject_cast<QQuickItem *>(root.data())->setParentItem(window.contentItem());
+    auto *list = root->findChild<QQuickItem *>(QStringLiteral("list"));
+    auto *row = root->findChild<QQuickItem *>(QStringLiteral("row"));
+    auto *a = root->findChild<QQuickItem *>(QStringLiteral("a"));
+    QPointer<QQuickItem> b = root->findChild<QQuickItem *>(QStringLiteral("b"));
+    auto *f = root->findChild<QQuickItem *>(QStringLiteral("f"));
+    auto *foreign = root->findChild<QQuickItem *>(QStringLiteral("foreign"));
+    QVERIFY(list && row && a && b && f && foreign);
+    auto color = [](QQuickItem *t) { return composedText(t)->property("color").value<QColor>(); };
+    QCOMPARE(color(a), QColor(QStringLiteral("#111111")));
+    QCOMPARE(color(f), QColor(QStringLiteral("#123456")));
+
+    // 1. An ancestor's inherited change reaches the texts two levels down (list -> row -> texts).
+    list->setProperty("cssClass", QStringList{ QStringLiteral("list"), QStringLiteral("hot") });
+    QCOMPARE(color(a), QColor(QStringLiteral("#222222")));
+    QCOMPARE(color(b), QColor(QStringLiteral("#222222")));
+
+    // 2. The foreign ancestor's own signal still re-applies its text.
+    foreign->setProperty("inheritedColor", QStringLiteral("#abcdef"));
+    QVERIFY(QMetaObject::invokeMethod(foreign, "inheritedChanged"));
+    QCOMPARE(color(f), QColor(QStringLiteral("#abcdef")));
+
+    // 3. A follower destroyed while the propagation is under way is skipped, never touched: `a` re-emits its
+    // inheritedChanged while handling the row's, and deleting `b` (the next follower) there must be safe.
+    const QMetaObject::Connection kill = QObject::connect(qobject_cast<CssText *>(a), &CssText::inheritedChanged, a, [&b] { delete b.data(); });
+    list->setProperty("cssClass", QStringList{ QStringLiteral("list") });
+    QObject::disconnect(kill);
+    QVERIFY(b.isNull());
+    QCOMPARE(color(a), QColor(QStringLiteral("#111111")));
+
+    // 4. Registered boxes leave the theme when they die (no `destroyed` connection needed).
+    const int registered = theme.registeredCount();
+    delete row;
+    QCOMPARE(theme.registeredCount(), registered - 2); // the row and `a`
 }

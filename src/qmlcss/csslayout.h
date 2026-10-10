@@ -45,6 +45,8 @@ public:
 
     // Queue a (re)layout of `root`'s content (held by `content`); coalesced.
     Q_INVOKABLE void requestLayout(QQuickItem *root, QQuickItem *content);
+    // A CssRect/CssFill root of this engine is going away (its destructor): drop it from the known roots.
+    void forgetRoot(QQuickItem *root) { m_known.remove(root); }
     Q_INVOKABLE void notifyParentLayout(QQuickItem *item);
     // notifyParentLayout for an item's (effective) visibility change — except when it merely
     // followed a hidden or detached parent. Hiding or unparenting a subtree flips every

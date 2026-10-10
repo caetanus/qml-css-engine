@@ -3,7 +3,27 @@
 #include "csstheme.h"
 #include "csstheme_p.h" // cssVariantToStringList (internal declaration; cssbox.cpp lives beside it)
 
+#include <QtQuick/private/qquickitem_p.h>
+#include <QtQuick/private/qquickitemchangelistener_p.h>
+
 namespace QmlCss {
+
+// The one QQuickItem change listener every watching box shares (watchOwnLayoutChanges): a box's own
+// implicit-size change, typed, without a connection (and a signal vector) per item. Never destroyed: an
+// item that outlives static destruction would still call itemDestroyed() on it from ~QQuickItem.
+struct CssOwnLayoutListener final : QQuickItemChangeListener {
+    void itemImplicitWidthChanged(QQuickItem *item) override { static_cast<CssBox *>(item)->ownImplicitSizeChanged(); }
+    void itemImplicitHeightChanged(QQuickItem *item) override { static_cast<CssBox *>(item)->ownImplicitSizeChanged(); }
+};
+
+namespace {
+QQuickItemChangeListener *ownLayoutListener()
+{
+    static CssOwnLayoutListener *const listener = new CssOwnLayoutListener;
+    return listener;
+}
+using InheritWalks = Detail::FollowerWalks<Detail::InheritFollowers>;
+} // namespace
 
 CssBox::CssBox(const QString &defaultPrimitive, QQuickItem *parent)
     : QQuickItem(parent)
@@ -11,11 +31,93 @@ CssBox::CssBox(const QString &defaultPrimitive, QQuickItem *parent)
 {
 }
 
+CssBox::~CssBox()
+{
+    if (m_inheritSource)
+        unfollowInheritance();
+    // Our followers outlive us (children die after us): they follow nothing from now on.
+    for (CssBox *f = m_inheritFollowers; f;) {
+        CssBox *next = f->m_inheritNext;
+        InheritWalks::unlinked(f, nullptr); // a walk of OUR list (we died inside it) stops here
+        f->m_inheritSource = f->m_inheritPrev = f->m_inheritNext = nullptr;
+        f = next;
+    }
+    if (m_themeRegistered && m_theme)
+        m_theme->forgetRegistered(this);
+}
+
 void CssBox::itemChange(ItemChange change, const ItemChangeData &data)
 {
     QQuickItem::itemChange(change, data);
-    if (change == ItemVisibleHasChanged)
+    if (change == ItemVisibleHasChanged) {
         m_visibilityDelivered = data.boolValue;
+        if (m_watchingOwnLayout)
+            ownVisibilityChanged();
+    }
+}
+
+void CssBox::watchOwnLayoutChanges()
+{
+    if (m_watchingOwnLayout)
+        return;
+    m_watchingOwnLayout = true;
+    QQuickItemPrivate::get(this)->addItemChangeListener(
+        ownLayoutListener(), QQuickItemPrivate::ImplicitWidth | QQuickItemPrivate::ImplicitHeight);
+}
+
+void CssBox::followInheritanceOf(QQuickItem *ancestor)
+{
+    if (!ancestor || m_inheritSource)
+        return;
+    auto *source = qobject_cast<CssBox *>(ancestor);
+    if (!source || !source->takesPartInInheritance()) {
+        // A foreign element declaring the inherited* contract: its own signal is the only report.
+        connect(ancestor, SIGNAL(inheritedChanged()), this, SLOT(onForeignInheritedChanged()));
+        return;
+    }
+    // Append (follow order = the order the old connections were made in).
+    m_inheritSource = source;
+    m_inheritNext = nullptr;
+    if (CssBox *head = source->m_inheritFollowers) {
+        CssBox *tail = head->m_inheritPrev;
+        tail->m_inheritNext = this;
+        m_inheritPrev = tail;
+        head->m_inheritPrev = this;
+    } else {
+        source->m_inheritFollowers = this;
+        m_inheritPrev = this;
+    }
+}
+
+void CssBox::unfollowInheritance()
+{
+    CssBox *source = m_inheritSource;
+    InheritWalks::unlinked(this, m_inheritNext);
+    CssBox *head = source->m_inheritFollowers;
+    if (head == this) {
+        source->m_inheritFollowers = m_inheritNext;
+        if (m_inheritNext)
+            m_inheritNext->m_inheritPrev = m_inheritPrev; // the tail
+    } else {
+        m_inheritPrev->m_inheritNext = m_inheritNext;
+        if (m_inheritNext)
+            m_inheritNext->m_inheritPrev = m_inheritPrev;
+        else
+            head->m_inheritPrev = m_inheritPrev; // we were the tail
+    }
+    m_inheritSource = m_inheritPrev = m_inheritNext = nullptr;
+}
+
+void CssBox::propagateInheritedChange()
+{
+    Detail::FollowerWalk walk{ m_inheritFollowers, InheritWalks::top };
+    InheritWalks::top = &walk;
+    while (walk.next) {
+        auto *follower = static_cast<CssBox *>(walk.next);
+        walk.next = follower->m_inheritNext;
+        follower->inheritSourceChanged();
+    }
+    InheritWalks::top = walk.outer;
 }
 
 void CssBox::identityChanged()

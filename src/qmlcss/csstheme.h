@@ -17,6 +17,7 @@ class QQuickItem;
 
 namespace QmlCss {
 class CssBox;
+class CssText;
 class CssLayoutEngine;
 struct CssContextNode;
 
@@ -288,7 +289,18 @@ private slots:
 
 private:
     friend struct CssContextNode; // erases its own intern entry
-    friend class CssBox;          // interns its node (CssBox::contextNode)
+    friend class CssBox;          // interns its node (CssBox::contextNode); forgets itself in ~CssBox
+    friend class CssText;         // follows/unfollows fontRevision (the font followers below)
+    // A registered object died: drop it from m_registered/m_bindings (the `destroyed` handler of a
+    // foreign target, ~CssBox for a box this theme registered — no connection per box).
+    void forgetRegistered(QObject *obj);
+    // Memory step 1: every completed CssText re-resolves on a font registration through this intrusive
+    // list (in follow order, after fontRevisionChanged is emitted) — no fontRevisionChanged connection per
+    // text. m_fontFollowers is the head; head->m_fontPrev is the tail.
+    void addFontFollower(CssText *text);
+    void removeFontFollower(CssText *text);
+    void notifyFontFollowers();
+    CssText *m_fontFollowers = nullptr;
     // Intern (parent, self): the existing node for that key, or a new one of the current generation.
     QExplicitlySharedDataPointer<CssContextNode> internContext(
         const QExplicitlySharedDataPointer<CssContextNode> &parent, const CssAncestorInfo &self) const;

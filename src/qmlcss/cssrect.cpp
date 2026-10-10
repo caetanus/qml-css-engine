@@ -492,15 +492,57 @@ CssRect::CssRect(QQuickItem *parent)
     // The content holder must exist BEFORE the QML engine appends declared children to `content`
     // (which happens during parsing, before componentComplete). It is a plain Item (no engine
     // needed), sized to us, hosting the layout participants — exactly the QML `contentHolder`.
-    auto *holder = new CssContentHolder(this);
-    m_contentHolder = holder;
-    // Per-child: handle the ONE child that came or went (a rescan of every sibling per change made
-    // building a list quadratic). Relayout requests coalesce inside the layout batch.
-    connect(holder, &CssContentHolder::childAdded, this, [this](QQuickItem *k) {
-        watchForeignChild(k);
-        requestRelayout();
-    });
-    connect(holder, &CssContentHolder::childRemoved, this, &CssRect::requestRelayout);
+    // Per-child: the holder reports the ONE child that came or went (contentChildAdded/Removed — a
+    // rescan of every sibling per change made building a list quadratic). Relayout requests coalesce
+    // inside the layout batch.
+    m_contentHolder = new CssContentHolder(this);
+}
+
+CssLayoutEngine *CssRect::layoutEngine() const
+{
+    return m_layout;
+}
+
+CssRect::~CssRect()
+{
+    if (m_contentHolder)
+        m_contentHolder->clearOwner();
+    if (m_layout)
+        m_layout->forgetRoot(this);
+}
+
+void CssRect::contentChildAdded(QQuickItem *child)
+{
+    watchForeignChild(child);
+    requestRelayout();
+}
+
+void CssRect::contentChildRemoved(QQuickItem *)
+{
+    requestRelayout();
+}
+
+void CssRect::ownImplicitSizeChanged()
+{
+    if (m_layout)
+        m_layout->notifyParentLayout(this);
+}
+
+void CssRect::ownVisibilityChanged()
+{
+    if (m_layout)
+        m_layout->notifyVisibilityChanged(this);
+}
+
+void CssRect::inheritSourceChanged()
+{
+    notifyInherited(); // an ancestor's inherited text props re-propagate through us
+}
+
+void CssRect::notifyInherited()
+{
+    emit inheritedChanged();
+    propagateInheritedChange();
 }
 
 void CssRect::watchForeignChildren()
@@ -525,7 +567,7 @@ void CssRect::watchForeignChild(QQuickItem *k)
     connect(k, &QQuickItem::implicitHeightChanged, this, &CssRect::requestRelayout, Qt::UniqueConnection);
     // An anchored foreign host can change height without an implicit change: relayout recomputes the
     // scroll extent (task 4) from the placed geometry.
-    if (m_flickable)
+    if (hasScroll())
         connect(k, &QQuickItem::heightChanged, this, &CssRect::requestRelayout, Qt::UniqueConnection);
 }
 
@@ -544,13 +586,15 @@ void CssRect::setStyle(const QVariantMap &v)
     // Parse the transition spec FIRST: the opacity write below and the layout engine's
     // width/height writes (via animateGeometry) both key off it.
     m_transMs = 0;
-    m_transProp.clear();
+    if (m_extra)
+        m_extra->transProp.clear();
     if (m_theme && m_style.contains(QStringLiteral("transition"))) {
         const QVariantMap spec = m_theme->parseTransition(m_style.value(QStringLiteral("transition")).toString());
+        Extra &x = ensureExtra();
         m_transMs = spec.value(QStringLiteral("duration")).toInt();
-        m_transEasing = spec.value(QStringLiteral("easing"),
+        x.transEasing = spec.value(QStringLiteral("easing"),
                                    static_cast<int>(QEasingCurve::InOutQuad)).toInt();
-        m_transProp = spec.value(QStringLiteral("property")).toString();
+        x.transProp = spec.value(QStringLiteral("property")).toString();
     }
 
     // visibility:hidden -> painted invisible (opacity 0) and inert (enabled false), but STILL in flow.
@@ -561,20 +605,21 @@ void CssRect::setStyle(const QVariantMap &v)
     // A covering `transition: opacity` fades instead of snapping (the carousel crossfade).
     if (!hidden && isComponentComplete() && transitionCovers(QLatin1String("opacity"))
         && !qFuzzyCompare(opacity(), targetOpacity)) {
-        if (!m_opacityAnim) {
-            m_opacityAnim = new QVariantAnimation(this);
-            connect(m_opacityAnim, &QVariantAnimation::valueChanged, this,
+        Extra &x = *m_extra; // a covering transition was parsed into it
+        if (!x.opacityAnim) {
+            x.opacityAnim = new QVariantAnimation(this);
+            connect(x.opacityAnim, &QVariantAnimation::valueChanged, this,
                     [this](const QVariant &v) { setOpacity(v.toReal()); });
         }
-        m_opacityAnim->stop();
-        m_opacityAnim->setStartValue(opacity());
-        m_opacityAnim->setEndValue(targetOpacity);
-        m_opacityAnim->setDuration(m_transMs);
-        m_opacityAnim->setEasingCurve(static_cast<QEasingCurve::Type>(m_transEasing));
-        m_opacityAnim->start();
+        x.opacityAnim->stop();
+        x.opacityAnim->setStartValue(opacity());
+        x.opacityAnim->setEndValue(targetOpacity);
+        x.opacityAnim->setDuration(m_transMs);
+        x.opacityAnim->setEasingCurve(static_cast<QEasingCurve::Type>(x.transEasing));
+        x.opacityAnim->start();
     } else {
-        if (m_opacityAnim)
-            m_opacityAnim->stop();
+        if (m_extra && m_extra->opacityAnim)
+            m_extra->opacityAnim->stop();
         setOpacity(targetOpacity);
     }
     setEnabled(!hidden);
@@ -587,7 +632,7 @@ void CssRect::setStyle(const QVariantMap &v)
     // scrolling). Composed once, lazily; it clips itself, so the box's own clip stays off.
     if (overflowY == QLatin1String("auto") || overflowY == QLatin1String("scroll"))
         ensureScrollable();
-    setClip(!m_flickable && (overflow == QLatin1String("hidden") || overflow == QLatin1String("clip")));
+    setClip(!hasScroll() && (overflow == QLatin1String("hidden") || overflow == QLatin1String("clip")));
 
     updateBorderInsets();
     recompute();
@@ -598,41 +643,41 @@ void CssRect::setStyle(const QVariantMap &v)
         if (m_layout)
             m_layout->notifyParentLayout(this);
     }
-    emit inheritedChanged();
+    notifyInherited();
 }
 
 void CssRect::setRadius(qreal v)
 {
-    if (qFuzzyCompare(m_radius, v))
+    if (qFuzzyCompare(radius(), v))
         return;
-    m_radius = v;
+    ensureExtra().radius = v;
     emit radiusChanged();
     recompute();
 }
 
 void CssRect::setDefaultColor(const QColor &v)
 {
-    if (m_defaultColor == v)
+    if (defaultColor() == v)
         return;
-    m_defaultColor = v;
+    ensureExtra().defaultColor = v;
     emit defaultColorChanged();
     recompute();
 }
 
 void CssRect::setDefaultBorderColor(const QColor &v)
 {
-    if (m_defaultBorderColor == v)
+    if (defaultBorderColor() == v)
         return;
-    m_defaultBorderColor = v;
+    ensureExtra().defaultBorderColor = v;
     emit defaultBorderColorChanged();
     recompute();
 }
 
 void CssRect::setDefaultBorderWidth(qreal v)
 {
-    if (qFuzzyCompare(m_defaultBorderWidth, v))
+    if (qFuzzyCompare(defaultBorderWidth(), v))
         return;
-    m_defaultBorderWidth = v;
+    ensureExtra().defaultBorderWidth = v;
     emit defaultBorderWidthChanged();
     recompute();
 }
@@ -676,65 +721,67 @@ QQuickItem *CssRect::inheritanceParent() const
 
 void CssRect::setAnimRotate(qreal v)
 {
-    if (qFuzzyCompare(m_animRotate, v))
+    if (qFuzzyCompare(animRotate(), v))
         return;
-    m_animRotate = v;
+    ensureExtra().animRotate = v;
     emit animChanged();
     applyTransform();
 }
 
 void CssRect::setAnimScale(qreal v)
 {
-    if (qFuzzyCompare(m_animScale, v))
+    if (qFuzzyCompare(animScale(), v))
         return;
-    m_animScale = v;
+    ensureExtra().animScale = v;
     emit animChanged();
     applyTransform();
 }
 
 void CssRect::setAnimTx(qreal v)
 {
-    if (qFuzzyCompare(m_animTx, v))
+    if (qFuzzyCompare(animTx(), v))
         return;
-    m_animTx = v;
+    ensureExtra().animTx = v;
     emit animChanged();
     applyTransform();
 }
 
 void CssRect::setAnimTy(qreal v)
 {
-    if (qFuzzyCompare(m_animTy, v))
+    if (qFuzzyCompare(animTy(), v))
         return;
-    m_animTy = v;
+    ensureExtra().animTy = v;
     emit animChanged();
     applyTransform();
 }
 
 void CssRect::setAnimTick(qreal v)
 {
-    m_animTick = v;
+    Extra &x = ensureExtra();
+    x.animTick = v;
     emit animTickChanged();
     // Per-frame path: interpolate the PRE-PARSED stops and write the anim fields directly.
     // (The QML-equivalent went through cssLayout.applyAnim with QVariantMaps — allocation
     // churn on every tick of every animated element.)
-    const int n = m_animStopsFast.size();
+    const int n = int(x.animStopsFast.size());
     if (n < 2)
         return;
-    const AnimStop *a = &m_animStopsFast[0];
-    const AnimStop *b = &m_animStopsFast[n - 1];
+    const AnimStop *stops = x.animStopsFast.constData();
+    const AnimStop *a = &stops[0];
+    const AnimStop *b = &stops[n - 1];
     for (int i = 0; i < n - 1; ++i) {
-        if (v >= m_animStopsFast[i].offset && v <= m_animStopsFast[i + 1].offset) {
-            a = &m_animStopsFast[i];
-            b = &m_animStopsFast[i + 1];
+        if (v >= stops[i].offset && v <= stops[i + 1].offset) {
+            a = &stops[i];
+            b = &stops[i + 1];
             break;
         }
     }
     const double span = b->offset - a->offset;
     const double t = span > 0 ? (v - a->offset) / span : 0;
-    m_animRotate = a->rotate + (b->rotate - a->rotate) * t;
-    m_animScale = a->scale + (b->scale - a->scale) * t;
-    m_animTx = a->tx + (b->tx - a->tx) * t;
-    m_animTy = a->ty + (b->ty - a->ty) * t;
+    x.animRotate = a->rotate + (b->rotate - a->rotate) * t;
+    x.animScale = a->scale + (b->scale - a->scale) * t;
+    x.animTx = a->tx + (b->tx - a->tx) * t;
+    x.animTy = a->ty + (b->ty - a->ty) * t;
     emit animChanged();
     applyTransform();
 }
@@ -749,7 +796,7 @@ QQmlListProperty<QObject> CssRect::content()
             auto *self = static_cast<CssRect *>(p->object);
             if (!self->m_contentHolder || !o)
                 return;
-            QQmlListReference ref(self->m_contentHolder.data(), "data");
+            QQmlListReference ref(self->m_contentHolder, "data");
             if (ref.isValid())
                 ref.append(o);
         },
@@ -757,21 +804,21 @@ QQmlListProperty<QObject> CssRect::content()
             auto *self = static_cast<CssRect *>(p->object);
             if (!self->m_contentHolder)
                 return 0;
-            QQmlListReference ref(self->m_contentHolder.data(), "data");
+            QQmlListReference ref(self->m_contentHolder, "data");
             return ref.isValid() ? ref.count() : 0;
         },
         [](QQmlListProperty<QObject> *p, qsizetype i) -> QObject * {
             auto *self = static_cast<CssRect *>(p->object);
             if (!self->m_contentHolder)
                 return nullptr;
-            QQmlListReference ref(self->m_contentHolder.data(), "data");
+            QQmlListReference ref(self->m_contentHolder, "data");
             return ref.isValid() ? ref.at(i) : nullptr;
         },
         [](QQmlListProperty<QObject> *p) {
             auto *self = static_cast<CssRect *>(p->object);
             if (!self->m_contentHolder)
                 return;
-            QQmlListReference ref(self->m_contentHolder.data(), "data");
+            QQmlListReference ref(self->m_contentHolder, "data");
             if (ref.isValid())
                 ref.clear();
         });
@@ -878,24 +925,28 @@ void CssRect::recompute()
     // (re)apply — a hover/theme change swaps the composition.
     const bool paints = stylePaints(m_style);
     const bool shapePath = paints && needsShape(m_style);
-    if (m_render && !shapePath) {
-        m_render->deleteLater();
-        m_render = nullptr;
+    if (m_extra) {
+        Extra &x = *m_extra;
+        if (x.render && !shapePath) {
+            x.render->deleteLater();
+            x.render = nullptr;
+        }
+        if (x.fastRect && (shapePath || !paints)) {
+            x.fastRect->deleteLater();
+            x.fastRect = nullptr;
+        }
     }
-    if (m_fastRect && (shapePath || !paints)) {
-        m_fastRect->deleteLater();
-        m_fastRect = nullptr;
-    }
-    if (shapePath && !m_render)
+    if (shapePath && !(m_extra && m_extra->render))
         ensureRenderShell();
     if (!shapePath && paints) {
         ensureFastRect();
         pushFastRect();
     }
-    if (!m_render) {
+    if (!(m_extra && m_extra->render)) {
         applyStaticTransformAndAnim();
         return;
     }
+    const Extra &x = *m_extra;
 
     auto str = [&](const char *k) { return m_style.value(QLatin1String(k)).toString(); };
     auto has = [&](const char *k) { return !m_style.value(QLatin1String(k)).toString().isEmpty(); };
@@ -932,7 +983,7 @@ void CssRect::recompute()
     else if (!bgValue.isEmpty() && !bgIsGradient && m_theme)
         solid = m_theme->parseColor(bgValue);
     else
-        solid = m_defaultColor;
+        solid = x.defaultColor;
     const qreal fillAlpha = hasGradient ? gradientPeakAlpha : solid.alphaF();
 
     // --- border ---
@@ -945,14 +996,14 @@ void CssRect::recompute()
     else if (borderShorthand.contains(QStringLiteral("color")))
         borderColor = borderShorthand.value(QStringLiteral("color")).value<QColor>();
     else
-        borderColor = m_defaultBorderColor;
+        borderColor = x.defaultBorderColor;
     qreal borderWidth;
     if (has("border-width"))
-        borderWidth = parseLeadingFloat(str("border-width"), m_defaultBorderWidth);
+        borderWidth = parseLeadingFloat(str("border-width"), x.defaultBorderWidth);
     else if (borderShorthand.contains(QStringLiteral("width")))
         borderWidth = borderShorthand.value(QStringLiteral("width")).toReal();
     else
-        borderWidth = m_defaultBorderWidth;
+        borderWidth = x.defaultBorderWidth;
     // border-style: solid (default) paints as before; dotted/dashed become a dashed Shape
     // stroke; none/hidden hide the border; anything else (double/groove/…) falls back to solid.
     QString borderStyle;
@@ -1034,9 +1085,9 @@ void CssRect::recompute()
 
     // --- push everything onto the composed render root — ONE write (see cssIn) ---
     QVariantMap in;
-    QQuickItem *g = m_render;
+    QQuickItem *g = x.render;
     in.insert(QStringLiteral("radiusStr"), QVariant::fromValue(str("border-radius")));
-    in.insert(QStringLiteral("radiusFallback"), QVariant::fromValue(m_radius));
+    in.insert(QStringLiteral("radiusFallback"), QVariant::fromValue(x.radius));
     in.insert(QStringLiteral("solid"), QVariant::fromValue(opaque(solid)));
     in.insert(QStringLiteral("fillAlpha"), QVariant::fromValue(fillAlpha));
     in.insert(QStringLiteral("hasGradient"), QVariant::fromValue(hasGradient));
@@ -1100,10 +1151,14 @@ void CssRect::applyStaticTransformAndAnim()
     QVariantMap tf;
     if (m_theme && has("transform"))
         tf = m_theme->parseTransform(str("transform"));
-    m_staticRotate = tf.contains(QStringLiteral("rotate")) ? tf.value(QStringLiteral("rotate")).toReal() : 0.0;
-    m_staticScale = tf.contains(QStringLiteral("scale")) ? tf.value(QStringLiteral("scale")).toReal() : 1.0;
-    m_staticTx = tf.contains(QStringLiteral("translateX")) ? tf.value(QStringLiteral("translateX")).toReal() : 0.0;
-    m_staticTy = tf.contains(QStringLiteral("translateY")) ? tf.value(QStringLiteral("translateY")).toReal() : 0.0;
+    // No transform and no extra yet: the statics are the defaults already (rotate 0, scale 1, no shift).
+    if (!tf.isEmpty() || m_extra) {
+        Extra &x = ensureExtra();
+        x.staticRotate = tf.contains(QStringLiteral("rotate")) ? tf.value(QStringLiteral("rotate")).toReal() : 0.0;
+        x.staticScale = tf.contains(QStringLiteral("scale")) ? tf.value(QStringLiteral("scale")).toReal() : 1.0;
+        x.staticTx = tf.contains(QStringLiteral("translateX")) ? tf.value(QStringLiteral("translateX")).toReal() : 0.0;
+        x.staticTy = tf.contains(QStringLiteral("translateY")) ? tf.value(QStringLiteral("translateY")).toReal() : 0.0;
+    }
 
     // --- @keyframes animation driver ---
     // QML equivalent:
@@ -1133,44 +1188,50 @@ void CssRect::applyStaticTransformAndAnim()
     QVariantList newStops;
     if (m_layout)
         newStops = m_layout->buildAnimStops(animFrames);
-    m_animStops = newStops;
-    m_animActive = m_animStops.size() >= 2;
-    m_animStopsFast.clear();
-    for (const QVariant &v : std::as_const(m_animStops)) {
-        const QVariantMap m = v.toMap();
-        m_animStopsFast.append({ m.value(QStringLiteral("offset")).toDouble(),
-                                 m.value(QStringLiteral("rotate")).toDouble(),
-                                 m.value(QStringLiteral("scale"), 1.0).toDouble(),
-                                 m.value(QStringLiteral("tx")).toDouble(),
-                                 m.value(QStringLiteral("ty")).toDouble() });
+    if (!newStops.isEmpty() || m_extra) {
+        Extra &x = ensureExtra();
+        x.animStops = newStops;
+        m_animActive = x.animStops.size() >= 2;
+        x.animStopsFast.clear();
+        for (const QVariant &v : std::as_const(x.animStops)) {
+            const QVariantMap m = v.toMap();
+            x.animStopsFast.append({ m.value(QStringLiteral("offset")).toDouble(),
+                                     m.value(QStringLiteral("rotate")).toDouble(),
+                                     m.value(QStringLiteral("scale"), 1.0).toDouble(),
+                                     m.value(QStringLiteral("tx")).toDouble(),
+                                     m.value(QStringLiteral("ty")).toDouble() });
+        }
+    } else {
+        m_animActive = false;
     }
 
     if (m_animActive)
         ensureAnim(); // lazy: only boxes with a live @keyframes pay for the animation object
-    if (m_anim) {
+    if (m_extra && m_extra->anim) {
+        QObject *const anim = m_extra->anim;
         // Stop first so reconfiguration takes effect cleanly (matching QML reactive rebuild).
-        m_anim->setProperty("running", false);
+        anim->setProperty("running", false);
 
         // QML: duration: Math.max(1, _animation.duration !== undefined ? _animation.duration : 1000)
         // animCfg is {} when no animation key in style; parseAnimation always sets "duration".
         const int dur = animCfg.isEmpty() ? 1000 : qMax(1, animCfg.value(QStringLiteral("duration")).toInt());
-        m_anim->setProperty("duration", dur);
+        anim->setProperty("duration", dur);
 
         // QML: loops: (_animation.iterations === undefined || _animation.iterations < 0)
         //          ? Animation.Infinite : Math.max(1, _animation.iterations)
         // Animation.Infinite == -1
         const int iters = animCfg.isEmpty() ? -1 : animCfg.value(QStringLiteral("iterations")).toInt();
-        m_anim->setProperty("loops", iters < 0 ? -1 : qMax(1, iters));
+        anim->setProperty("loops", iters < 0 ? -1 : qMax(1, iters));
 
         // QML: easing.type: _animation.easing !== undefined ? _animation.easing : Easing.Linear
         // Easing.Linear == QEasingCurve::Linear == 0
         const int easingType = animCfg.isEmpty()
             ? static_cast<int>(QEasingCurve::Linear)
             : animCfg.value(QStringLiteral("easing")).toInt();
-        QQmlProperty(m_anim.data(), QStringLiteral("easing.type")).write(easingType);
+        QQmlProperty(anim, QStringLiteral("easing.type")).write(easingType);
 
         // QML: running: root._animActive
-        m_anim->setProperty("running", m_animActive);
+        anim->setProperty("running", m_animActive);
     }
 
     applyTransform();
@@ -1188,15 +1249,22 @@ void CssRect::applyTransform()
     //   scale:    root._animActive ? root._animScale  : (root._staticTransform.scale  ?? 1)
     //   transform: Translate { x: root._animActive ? root._animTx : (root._staticTransform.translateX ?? 0)
     //                          y: root._animActive ? root._animTy : (root._staticTransform.translateY ?? 0) }
-    setRotation(m_animActive ? m_animRotate : m_staticRotate);
-    setScale(m_animActive ? m_animScale : m_staticScale);
-    const qreal wantTx = m_animActive ? m_animTx : m_staticTx;
-    const qreal wantTy = m_animActive ? m_animTy : m_staticTy;
-    if (!m_translate && (wantTx != 0.0 || wantTy != 0.0))
+    // No extra: no transform, no animation, no Translate — the static defaults (m_animActive implies one).
+    if (!m_extra) {
+        setRotation(0.0);
+        setScale(1.0);
+        return;
+    }
+    const Extra &x = *m_extra;
+    setRotation(m_animActive ? x.animRotate : x.staticRotate);
+    setScale(m_animActive ? x.animScale : x.staticScale);
+    const qreal wantTx = m_animActive ? x.animTx : x.staticTx;
+    const qreal wantTy = m_animActive ? x.animTy : x.staticTy;
+    if (!x.translate && (wantTx != 0.0 || wantTy != 0.0))
         ensureTranslate(); // lazy: most boxes never translate
-    if (m_translate) {
-        m_translate->setProperty("x", m_animActive ? m_animTx : m_staticTx);
-        m_translate->setProperty("y", m_animActive ? m_animTy : m_staticTy);
+    if (x.translate) {
+        x.translate->setProperty("x", m_animActive ? x.animTx : x.staticTx);
+        x.translate->setProperty("y", m_animActive ? x.animTy : x.staticTy);
     }
 }
 
@@ -1204,25 +1272,28 @@ void CssRect::layoutChildren()
 {
     const qreal w = width();
     const qreal h = height();
-    for (QQuickItem *child : {m_render.data(), m_fastRect.data()}) {
-        if (!child)
-            continue;
-        child->setX(0);
-        child->setY(0);
-        child->setWidth(w);
-        child->setHeight(h);
+    if (m_extra) {
+        for (QQuickItem *child : {m_extra->render.data(), m_extra->fastRect.data()}) {
+            if (!child)
+                continue;
+            child->setX(0);
+            child->setY(0);
+            child->setWidth(w);
+            child->setHeight(h);
+        }
     }
+    QQuickItem *const flickable = scrollFlickable();
     // The content holder (or the scroll Flickable wrapping it) is the PADDING BOX: children —
     // including anchor-filled foreign hosts — live inside the border, like the web content area.
     const qreal iw = std::max<qreal>(0.0, w - m_borderInsets[3] - m_borderInsets[1]);
     const qreal ih = std::max<qreal>(0.0, h - m_borderInsets[0] - m_borderInsets[2]);
-    if (QQuickItem *content = m_flickable ? m_flickable.data() : m_contentHolder.data()) {
+    if (QQuickItem *content = flickable ? flickable : static_cast<QQuickItem *>(m_contentHolder)) {
         content->setX(m_borderInsets[3]);
         content->setY(m_borderInsets[0]);
         content->setWidth(iw);
         content->setHeight(ih);
     }
-    if (m_flickable && m_contentHolder) {
+    if (flickable && m_contentHolder) {
         // The holder becomes the scrolled content: full width, height = children extent.
         m_contentHolder->setWidth(iw);
         // Task 4 review finding #5: on a resize, geometryChange() calls layoutChildren() (here)
@@ -1247,26 +1318,28 @@ void CssRect::updateBorderInsets()
     if (!m_layout)
         return;
     const auto sides = m_layout->borderOf(layoutStyle());
-    QVector<double> b{ sides[0], sides[1], sides[2], sides[3] };
-    if (b == m_borderInsets)
+    if (m_borderInsets[0] == sides[0] && m_borderInsets[1] == sides[1] && m_borderInsets[2] == sides[2]
+        && m_borderInsets[3] == sides[3])
         return;
-    m_borderInsets = std::move(b);
+    for (int i = 0; i < 4; ++i)
+        m_borderInsets[i] = sides[i];
     if (isComponentComplete())
         layoutChildren(); // border change moves the padding box even when our size didn't change
 }
 
 void CssRect::ensureScrollable()
 {
-    if (m_flickable || !m_contentHolder || !isComponentComplete())
+    if (hasScroll() || !m_contentHolder || !isComponentComplete())
         return;
-    m_flickable = composeScrollFlickable(this, m_contentHolder);
-    if (!m_flickable)
+    QQuickItem *const flickable = composeScrollFlickable(this, m_contentHolder);
+    if (!flickable)
         return;
+    ensureExtra().flickable = flickable;
     // scrollTop / scrollHeight / clientHeight follow the Flickable — QUEUED, like the DOM's scroll
     // event: the content height changes inside a layout pass (a list's model just changed), and a
     // handler that grows the model there (load more near the end) re-entered that very binding.
     for (const char *sig : {SIGNAL(contentYChanged()), SIGNAL(contentHeightChanged()), SIGNAL(heightChanged())})
-        connect(m_flickable, sig, this, SIGNAL(scrollChanged()), Qt::QueuedConnection);
+        connect(flickable, sig, this, SIGNAL(scrollChanged()), Qt::QueuedConnection);
     emit scrollChanged();
     watchForeignChildren(); // now scrollable: tie existing children's growth to the resync
     layoutChildren();
@@ -1279,7 +1352,7 @@ void CssRect::syncScrollContent()
     // holder starts children at y≈0, so there is no top offset to mirror).
     const qreal pb = m_layout ? m_layout->paddingOf(layoutStyle())[2] : 0.0;
     // The Flickable viewport is the padding box (layoutChildren), so the extents must match it.
-    syncScrollExtent(m_flickable, m_contentHolder, m_extentTop, m_extentBottom,
+    syncScrollExtent(scrollFlickable(), m_contentHolder, m_extentTop, m_extentBottom,
                      std::max<qreal>(0.0, height() - m_borderInsets[0] - m_borderInsets[2]),
                      std::max<qreal>(0.0, width() - m_borderInsets[3] - m_borderInsets[1]), pb);
 }
@@ -1290,7 +1363,7 @@ void CssRect::setLaidOutExtent(qreal top, qreal bottom)
         return;
     m_extentTop = top;
     m_extentBottom = bottom;
-    if (m_flickable)
+    if (hasScroll())
         syncScrollContent();
 }
 
@@ -1323,32 +1396,11 @@ void CssRect::componentComplete()
     // The render shell is composed LAZILY in ensureRenderShell(): a layout-only box (no
     // background/border/shadow — most of a page) never pays for the paint machinery.
 
-    // React to implicit-size / visibility changes like the QML on*Changed handlers.
-    connect(this, &QQuickItem::implicitWidthChanged, this, [this]() {
-        if (m_layout)
-            m_layout->notifyParentLayout(this);
-    });
-    connect(this, &QQuickItem::implicitHeightChanged, this, [this]() {
-        if (m_layout)
-            m_layout->notifyParentLayout(this);
-    });
-    connect(this, &QQuickItem::visibleChanged, this, [this]() {
-        if (m_layout)
-            m_layout->notifyVisibilityChanged(this);
-    });
-    // `:focus` is a live item state (see CssTheme: the class list reads activeFocus directly), so a
-    // focus change must re-run the cascade on this box. ONE restyle through identityChanged() —
-    // the theme re-applies us plus our descendants, exactly as the engine-hover path does. A second
-    // SYNCHRONOUS re-style inside the focus handler (the old notify slot + maybeLoadCss()) can
-    // re-enter (a style apply that shifts geometry or visibility moves focus again) — that path
-    // could hang a focus-heavy operation such as reordering split panes, whose cells are CssRects.
-    connect(this, &QQuickItem::activeFocusChanged, this, [this]() {
-        emit cssStateChanged(); // QML observers of the live state; the theme no longer listens
-        identityChanged();
-    });
+    // React to implicit-size / visibility changes like the QML on*Changed handlers, and to `:focus`
+    // (itemChange) — typed hooks, no connection per box (see CssBox::watchOwnLayoutChanges).
+    watchOwnLayoutChanges();
     // An ancestor's inherited text props re-propagate to us (CSS inheritance).
-    if (QObject *anc = cssInheritingAncestor(this))
-        connect(anc, SIGNAL(inheritedChanged()), this, SIGNAL(inheritedChanged()));
+    followInheritanceOf(cssInheritingAncestor(this));
 
     const qint64 tShell = g_mountStats.enabled ? mountTimer.nsecsElapsed() : 0;
 
@@ -1378,7 +1430,9 @@ void CssRect::geometryChange(const QRectF &newGeometry, const QRectF &oldGeometr
 
 qreal CssRect::targetHeight() const
 {
-    return (m_heightAnim && m_heightAnim->state() == QAbstractAnimation::Running) ? m_heightAnimTarget : height();
+    return (m_extra && m_extra->heightAnim && m_extra->heightAnim->state() == QAbstractAnimation::Running)
+        ? m_extra->heightAnimTarget
+        : height();
 }
 
 bool CssRect::animateGeometry(QLatin1String prop, qreal target)
@@ -1386,8 +1440,9 @@ bool CssRect::animateGeometry(QLatin1String prop, qreal target)
     const bool isW = (prop == QLatin1String("width"));
     if (!transitionCovers(prop) || !isComponentComplete())
         return false;
-    QVariantAnimation *&anim = isW ? m_widthAnim : m_heightAnim;
-    qreal &animTarget = isW ? m_widthAnimTarget : m_heightAnimTarget;
+    Extra &x = *m_extra; // a covering transition was parsed into it
+    QVariantAnimation *&anim = isW ? x.widthAnim : x.heightAnim;
+    qreal &animTarget = isW ? x.widthAnimTarget : x.heightAnimTarget;
     const qreal current = isW ? width() : height();
     // Already heading (or arrived) there: the layout re-asks every pass while children reflow —
     // treat as handled so the direct write doesn't cut the animation short.
@@ -1408,7 +1463,7 @@ bool CssRect::animateGeometry(QLatin1String prop, qreal target)
     anim->setStartValue(current);
     anim->setEndValue(target);
     anim->setDuration(m_transMs);
-    anim->setEasingCurve(static_cast<QEasingCurve::Type>(m_transEasing));
+    anim->setEasingCurve(static_cast<QEasingCurve::Type>(x.transEasing));
     animTarget = target;
     anim->start();
     return true;
@@ -1417,18 +1472,21 @@ bool CssRect::animateGeometry(QLatin1String prop, qreal target)
 void CssRect::resetTransientState()
 {
     setCssEngineHover(false); // a restyle only when it was on
-    if (m_widthAnim && m_widthAnim->state() == QAbstractAnimation::Running) {
-        m_widthAnim->stop();
-        setWidth(m_widthAnimTarget);
+    if (!m_extra)
+        return; // no animation, no fast Rectangle
+    Extra &x = *m_extra;
+    if (x.widthAnim && x.widthAnim->state() == QAbstractAnimation::Running) {
+        x.widthAnim->stop();
+        setWidth(x.widthAnimTarget);
     }
-    if (m_heightAnim && m_heightAnim->state() == QAbstractAnimation::Running) {
-        m_heightAnim->stop();
-        setHeight(m_heightAnimTarget);
+    if (x.heightAnim && x.heightAnim->state() == QAbstractAnimation::Running) {
+        x.heightAnim->stop();
+        setHeight(x.heightAnimTarget);
     }
     // A Behavior written while disabled stops its running animation and writes the target directly
     // (QQuickBehavior::write) — exactly pushFastRect()'s "first style" path.
-    if (m_fastRect && m_transMs > 0) {
-        m_primedFast = nullptr;
+    if (x.fastRect && m_transMs > 0) {
+        x.primedFast = nullptr;
         pushFastRect();
     }
 }
@@ -1439,7 +1497,7 @@ void CssRect::setCssHoverStyled(bool v)
         return;
     m_hoverStyled = v;
     emit cssHoverStyledChanged();
-    if (v && !m_hoverHandler && isComponentComplete()) {
+    if (v && !(m_extra && m_extra->hoverHandler) && isComponentComplete()) {
         // Compose a REAL QtQuick HoverHandler via the type-system (approved pattern; no
         // private headers). It writes cssEngineHover, which re-applies the style (identityChanged).
         if (QQmlEngine *eng = qmlEngine(this)) {
@@ -1449,7 +1507,7 @@ void CssRect::setCssHoverStyled(bool v)
                 o->setParent(this);
                 o->setProperty("parent", QVariant::fromValue<QObject *>(this)); // handler target
                 connect(o, SIGNAL(hoveredChanged()), this, SLOT(onEngineHoverChanged()));
-                m_hoverHandler = o;
+                ensureExtra().hoverHandler = o;
             }
         }
     }
@@ -1469,13 +1527,13 @@ void CssRect::setCssEngineHover(bool v)
 
 void CssRect::onEngineHoverChanged()
 {
-    if (m_hoverHandler)
-        setCssEngineHover(m_hoverHandler->property("hovered").toBool());
+    if (m_extra && m_extra->hoverHandler)
+        setCssEngineHover(m_extra->hoverHandler->property("hovered").toBool());
 }
 
 void CssRect::ensureTranslate()
 {
-    if (m_translate || !isComponentComplete())
+    if ((m_extra && m_extra->translate) || !isComponentComplete())
         return;
     QQmlEngine *eng = qmlEngine(this);
     if (!eng)
@@ -1487,13 +1545,13 @@ void CssRect::ensureTranslate()
         QQmlListReference ref(this, "transform");
         if (ref.isValid())
             ref.append(o);
-        m_translate = o;
+        ensureExtra().translate = o;
     }
 }
 
 void CssRect::ensureAnim()
 {
-    if (m_anim || !isComponentComplete())
+    if ((m_extra && m_extra->anim) || !isComponentComplete())
         return;
     QQmlEngine *eng = qmlEngine(this);
     if (!eng)
@@ -1504,14 +1562,14 @@ void CssRect::ensureAnim()
         o->setParent(this);
         o->setProperty("target", QVariant::fromValue(static_cast<QObject *>(this)));
         o->setProperty("property", QStringLiteral("animTick"));
-        m_anim = o;
+        ensureExtra().anim = o;
     }
 }
 
 
 void CssRect::ensureRenderShell()
 {
-    if (m_render || !isComponentComplete())
+    if ((m_extra && m_extra->render) || !isComponentComplete())
         return;
     QQmlEngine *eng = qmlEngine(this);
     if (!eng)
@@ -1524,10 +1582,10 @@ void CssRect::ensureRenderShell()
             render->setParentItem(this);
             // Keep content ABOVE the fill: the render subtree paints first (lower). A
             // scrollable box holds its content inside the composed Flickable.
-            QQuickItem *contentAnchor = m_flickable ? m_flickable.data() : m_contentHolder.data();
+            QQuickItem *contentAnchor = hasScroll() ? scrollFlickable() : m_contentHolder;
             if (contentAnchor)
                 render->stackBefore(contentAnchor);
-            m_render = render;
+            ensureExtra().render = render;
             layoutChildren(); // size the fresh shell to the current box
         } else {
             o->deleteLater();
@@ -1539,7 +1597,7 @@ void CssRect::ensureRenderShell()
 
 void CssRect::ensureFastRect()
 {
-    if (m_fastRect || !isComponentComplete())
+    if ((m_extra && m_extra->fastRect) || !isComponentComplete())
         return;
     QQmlEngine *eng = qmlEngine(this);
     if (!eng)
@@ -1560,10 +1618,10 @@ void CssRect::ensureFastRect()
         if (QQuickItem *rect = qobject_cast<QQuickItem *>(o)) {
             rect->setParent(this);
             rect->setParentItem(this);
-            QQuickItem *contentAnchor = m_flickable ? m_flickable.data() : m_contentHolder.data();
+            QQuickItem *contentAnchor = hasScroll() ? scrollFlickable() : m_contentHolder;
             if (contentAnchor)
                 rect->stackBefore(contentAnchor);
-            m_fastRect = rect;
+            ensureExtra().fastRect = rect;
             layoutChildren();
         } else {
             o->deleteLater();
@@ -1575,8 +1633,10 @@ void CssRect::ensureFastRect()
 
 void CssRect::pushFastRect()
 {
-    if (!m_fastRect)
+    if (!m_extra || !m_extra->fastRect)
         return;
+    Extra &x = *m_extra;
+    QQuickItem *const fastRect = x.fastRect;
     auto str = [&](const char *k) { return m_style.value(QLatin1String(k)).toString(); };
     auto has = [&](const char *k) { return !m_style.value(QLatin1String(k)).toString().isEmpty(); };
 
@@ -1589,30 +1649,30 @@ void CssRect::pushFastRect()
     else if (!bg.isEmpty() && m_theme)
         solid = m_theme->parseColor(bg);
     if (!solid.isValid())
-        solid = m_defaultColor;
+        solid = x.defaultColor;
     // A transition animates a CHANGE, never the first style: the first push sets the colours with
     // transitions off (re-enabled at the end), or every new element faded in from the defaults.
-    const bool first = m_primedFast != m_fastRect;
-    m_fastRect->setProperty("transitionMs", first ? 0 : m_transMs);
-    m_fastRect->setProperty("transitionEasing", m_transEasing);
-    m_fastRect->setProperty("color", solid.isValid() ? solid : QColor(Qt::transparent));
+    const bool first = x.primedFast != x.fastRect;
+    fastRect->setProperty("transitionMs", first ? 0 : m_transMs);
+    fastRect->setProperty("transitionEasing", x.transEasing);
+    fastRect->setProperty("color", solid.isValid() ? solid : QColor(Qt::transparent));
 
     // Radii: uniform -> radius; mixed -> per-corner (Rectangle, Qt >= 6.7).
     qreal radii[4];
-    parseRadiiPx(str("border-radius"), m_radius, radii);
+    parseRadiiPx(str("border-radius"), x.radius, radii);
     const bool uniform = qFuzzyCompare(radii[0], radii[1]) && qFuzzyCompare(radii[1], radii[2])
         && qFuzzyCompare(radii[2], radii[3]);
     if (uniform) {
-        m_fastRect->setProperty("radius", radii[0]);
-        m_fastRect->setProperty("topLeftRadius", QVariant());
-        m_fastRect->setProperty("topRightRadius", QVariant());
-        m_fastRect->setProperty("bottomRightRadius", QVariant());
-        m_fastRect->setProperty("bottomLeftRadius", QVariant());
+        fastRect->setProperty("radius", radii[0]);
+        fastRect->setProperty("topLeftRadius", QVariant());
+        fastRect->setProperty("topRightRadius", QVariant());
+        fastRect->setProperty("bottomRightRadius", QVariant());
+        fastRect->setProperty("bottomLeftRadius", QVariant());
     } else {
-        m_fastRect->setProperty("topLeftRadius", radii[0]);
-        m_fastRect->setProperty("topRightRadius", radii[1]);
-        m_fastRect->setProperty("bottomRightRadius", radii[2]);
-        m_fastRect->setProperty("bottomLeftRadius", radii[3]);
+        fastRect->setProperty("topLeftRadius", radii[0]);
+        fastRect->setProperty("topRightRadius", radii[1]);
+        fastRect->setProperty("bottomRightRadius", radii[2]);
+        fastRect->setProperty("bottomLeftRadius", radii[3]);
     }
 
     // Uniform border (per-side borders take the Shape path).
@@ -1625,23 +1685,23 @@ void CssRect::pushFastRect()
     else if (borderShorthand.contains(QStringLiteral("color")))
         borderColor = borderShorthand.value(QStringLiteral("color")).value<QColor>();
     else
-        borderColor = m_defaultBorderColor;
+        borderColor = x.defaultBorderColor;
     qreal borderWidth;
     if (has("border-width"))
-        borderWidth = parseLeadingFloat(str("border-width"), m_defaultBorderWidth);
+        borderWidth = parseLeadingFloat(str("border-width"), x.defaultBorderWidth);
     else if (borderShorthand.contains(QStringLiteral("width")))
         borderWidth = borderShorthand.value(QStringLiteral("width")).toReal();
     else
-        borderWidth = m_defaultBorderWidth;
+        borderWidth = x.defaultBorderWidth;
     const bool borderOn = borderWidth > 0 && borderColor.alphaF() > 0;
-    QObject *border = qvariant_cast<QObject *>(m_fastRect->property("border"));
+    QObject *border = qvariant_cast<QObject *>(fastRect->property("border"));
     if (border) {
         border->setProperty("width", borderOn ? borderWidth : 0.0);
         border->setProperty("color", borderOn ? borderColor : QColor(Qt::transparent));
     }
     if (first) {
-        m_primedFast = m_fastRect;
-        m_fastRect->setProperty("transitionMs", m_transMs);
+        x.primedFast = x.fastRect;
+        fastRect->setProperty("transitionMs", m_transMs);
     }
 }
 
@@ -1650,6 +1710,17 @@ void CssRect::pushFastRect()
 void QmlCss::CssRect::itemChange(QQuickItem::ItemChange change, const QQuickItem::ItemChangeData &data)
 {
     CssBox::itemChange(change, data);
+    // `:focus` is a live item state (see CssTheme: the class list reads activeFocus directly), so a
+    // focus change must re-run the cascade on this box. ONE restyle through identityChanged() —
+    // the theme re-applies us plus our descendants, exactly as the engine-hover path does. A second
+    // SYNCHRONOUS re-style inside the focus handler (the old notify slot + maybeLoadCss()) can
+    // re-enter (a style apply that shifts geometry or visibility moves focus again) — that path
+    // could hang a focus-heavy operation such as reordering split panes, whose cells are CssRects.
+    // ItemActiveFocusHasChanged is delivered right before activeFocusChanged (no connection per box).
+    if (change == ItemActiveFocusHasChanged && watchingOwnLayout()) {
+        emit cssStateChanged(); // QML observers of the live state; the theme no longer listens
+        identityChanged();
+    }
     // Heal the truncated-ancestor resolve (see maybeLoadCss): one re-resolve when the item
     // actually joins a window — zero cost for elements built inside the live scene.
     if (change == ItemSceneChange && data.window && m_scenelessResolve && isComponentComplete()) {

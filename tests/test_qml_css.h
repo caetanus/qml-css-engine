@@ -294,4 +294,15 @@ private slots:
     void virtualPoolAncestorChangeWhileParked();
     void virtualGapChangeRepricesMeasuredRows();
     void virtualLateAccessibilityActivation();
+
+    // Memory step 1 (slim items): the per-row census of an EAGER list row (CssRect > 2 lean CssText) —
+    // sizeof ceilings for the two hot types and the signal connections a mounted row costs (the theme's,
+    // the layout's and the ancestors' included). Cold, feature-only state lives in a lazily allocated
+    // extra; per-item self/ancestor/theme connections became typed hooks and intrusive registries.
+    void perRowMemoryCensus();
+    // The registries that replaced those connections keep their semantics: an ancestor's inherited change
+    // reaches the rows' texts (and a foreign ancestor's signal still does), a font registration re-resolves
+    // every text, implicit-size/visibility changes still relayout the parent, `:focus` still restyles, and a
+    // follower or source destroyed mid-propagation is skipped/never touched.
+    void slimItemsKeepSemantics();
 };
