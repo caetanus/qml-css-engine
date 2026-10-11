@@ -13,11 +13,16 @@ namespace QmlCss {
 class CssLayoutEngine;
 class CssTheme;
 
-// Keyed repeater with FLYWEIGHT semantics — Solid's <For>: when the model array changes,
-// entries whose VALUE survives keep their existing delegate (moved/re-stacked to the new
-// position, never recreated); removed entries destroy theirs; only genuinely new entries
-// instantiate. A plain QML Repeater tears everything down on any wholesale model change —
-// a drag-and-drop reorder recreated every card.
+// Reconciling repeater — Solid's <For>: when the model array changes, entries that survive keep their
+// existing delegate (moved/re-stacked to the new position, never recreated); removed entries destroy
+// theirs; only genuinely new entries instantiate. A plain QML Repeater tears everything down on any
+// wholesale model change — a drag-and-drop reorder recreated every card.
+// ROW IDENTITY (C23, owner decision 2026-10-11) is Solid web's by default: a JS array element is its
+// REFERENCE — the same object keeps its row, a NEW object is a new row even when it carries the same
+// id (the old row and all its local state go, the new one is created fresh). `key` (a field name,
+// <For key="id">) opts into reuse by that field: a new object whose key matches an existing row's
+// updates that row in place (modelData), keeping the row and its state. Models that are not JS arrays
+// (C++ lists) have no references: they match by VALUE, or by `key` when it is set.
 //
 // Like Repeater, delegates are reparented to OUR parent (the box's contentHolder), so the
 // layout engine treats them as direct children; document order (childItems order) follows
@@ -46,6 +51,7 @@ class CssRepeater : public QQuickItem {
     Q_PROPERTY(QVariant model READ model WRITE setModel NOTIFY modelChanged)
     Q_PROPERTY(QQmlComponent *delegate READ delegate WRITE setDelegate NOTIFY delegateChanged)
     Q_PROPERTY(bool virtualize READ virtualize WRITE setVirtualize NOTIFY virtualizeChanged)
+    Q_PROPERTY(QString key READ key WRITE setKey NOTIFY keyChanged)
 
 public:
     explicit CssRepeater(QQuickItem *parent = nullptr);
@@ -59,6 +65,10 @@ public:
 
     bool virtualize() const { return m_virtualize; }
     void setVirtualize(bool v);
+
+    // C23: the field rows are matched by (opt-in reuse); empty = reference identity (the default).
+    QString key() const { return m_key; }
+    void setKey(const QString &k);
 
     // Census probes (5a): live row contexts (materialized rows) held by this repeater instance, and
     // the logical entry count (equal unless windowed).
@@ -129,6 +139,7 @@ signals:
     void modelChanged();
     void delegateChanged();
     void virtualizeChanged();
+    void keyChanged();
 
 protected:
     void componentComplete() override;
@@ -139,8 +150,9 @@ private:
         QVariant data;                  // modelData (the element converted once, when it arrived)
         QPointer<QQuickItem> item;
         QPointer<QQmlContext> context;
-        QJSValue js;                    // the element object as received (identity); keyed JS models only
-        QString key;                    // its id; set while the key index (m_byKey) is valid
+        QJSValue js;                    // the element as received (its identity); JS array models only
+        QString key;                    // its `key` field (keyed) or its "id" lookup hint (reference
+                                        // identity); set while the key index (m_byKey) is valid
         QVariant incoming;              // staged new modelData of a matched row (the JS pass, 5c)
         int pos = -1;                   // logical index after the last reconciliation (-1: new row)
         quint32 gen = 0;                // reconciliation that claimed it (m_gen)
@@ -162,10 +174,10 @@ private:
 
     void rebuild();          // diff the rows against the new model (re-entrant calls are deferred)
     void reconcile();        // one reconciliation pass
-    // Identity-first keyed reconciliation of a JS array model (5c). False = the array is not keyed
-    // (an element without an id, or a duplicate id): nothing was changed, the caller takes the
-    // value-matching path.
-    bool rebuildKeyedJs(const QJSValue &array, bool *changed);
+    // Identity-first reconciliation of a JS array model (5c, C23). Without `key`: reference identity,
+    // never fails. With `key`: false = the array is not keyed (an element without the field, or a
+    // duplicate key): nothing was changed, the caller takes the value-matching path.
+    bool rebuildJs(const QJSValue &array, bool *changed);
     void rebuildFromList(const QVariantList &data, bool *changed);
     void buildKeyIndex();
     int allocSlot();
@@ -225,8 +237,11 @@ private:
     QVector<int> m_order;
     QVector<int> m_next;     // the order being built (swapped with m_order; capacity kept)
     QVector<int> m_free;     // released m_pool slots
-    QHash<QString, int> m_byKey;
-    bool m_keyIndexValid = false; // m_byKey maps every row's key (first row per key) to its slot
+    // key -> slot. Keyed: the first row per key. Reference identity: EVERY row with an "id" under it (a
+    // lookup hint confirmed by identity — distinct objects may share an id).
+    QMultiHash<QString, int> m_byKey;
+    bool m_keyIndexValid = false; // m_byKey indexes every row's key
+    QString m_key;                // C23: the opt-in key field; empty = reference identity
     quint32 m_gen = 0;
     bool m_rebuilding = false;
     bool m_rebuildPending = false;
@@ -275,6 +290,7 @@ private:
     int m_anchorPrev = -1;
     int m_anchorNext = -1;
     double m_anchorOffset = 0;
+    int m_anchorRefill = -1;   // a reconciliation replaced every row: the index whose new row is the anchor
     bool m_correcting = false; // contentY written by commitAnchor: not a user scroll
     bool m_wasAtEnd = false;   // the viewport was at the end before this pass (bottom-stick)
     bool m_rewindow = false;   // the window must be recomputed after this pass

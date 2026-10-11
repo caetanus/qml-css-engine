@@ -2733,6 +2733,7 @@ void QmlCssTests::cssRepeaterKeysObjectsById()
             style: ({ "display": "flex", "flex-direction": "column" })
             CssRepeater {
                 model: JSON.parse(box.json)
+                key: "id"
                 delegate: Component {
                     CssRect { objectName: "row-" + modelData.id; property string label: modelData.t
                               cssClass: ["row"]; cssPrimitive: "div" }
@@ -2770,6 +2771,66 @@ void QmlCssTests::cssRepeaterKeysObjectsById()
     // Document order (the layout's walk) follows the model: 2 before 1.
     const QList<QQuickItem *> order = one->parentItem()->childItems();
     QVERIFY(order.indexOf(two.data()) < order.indexOf(one.data()));
+}
+
+void QmlCssTests::cssRepeaterMatchesObjectsByReference()
+{
+    // C23 default (Solid web): a fresh JSON.parse is all NEW objects — every row is recreated, even the
+    // ones whose id (and content) survived. Only the same reference keeps a row.
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(".row { height: 10px; }"));
+    CssLayoutEngine layoutEngine(&theme);
+
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        CssRect {
+            id: box
+            cssPrimitive: ""
+            width: 200; height: 200
+            property string json: '[{"id":1,"t":"a"},{"id":2,"t":"b"},{"id":3,"t":"c"}]'
+            style: ({ "display": "flex", "flex-direction": "column" })
+            CssRepeater {
+                model: JSON.parse(box.json)
+                delegate: Component {
+                    CssRect { objectName: "row-" + modelData.id; property string label: modelData.t
+                              cssClass: ["row"]; cssPrimitive: "div" }
+                }
+            }
+        }
+    )", QUrl());
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+
+    auto rows = [&]() {
+        QHash<QString, QQuickItem *> out;
+        for (QQuickItem *k : root->findChildren<QQuickItem *>()) {
+            if (k->objectName().startsWith(QLatin1String("row-")) && k->parentItem())
+                out.insert(k->objectName(), k);
+        }
+        return out;
+    };
+    const auto before = rows();
+    QCOMPARE(before.size(), 3);
+    QPointer<QQuickItem> one = before.value(QStringLiteral("row-1"));
+    QPointer<QQuickItem> two = before.value(QStringLiteral("row-2"));
+    QVERIFY(one && two);
+
+    root->setProperty("json", QStringLiteral(R"([{"id":2,"t":"b"},{"id":1,"t":"A"},{"id":4,"t":"d"}])"));
+    QCoreApplication::processEvents();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    const auto after = rows();
+    QCOMPARE(after.size(), 3);
+    QVERIFY(!one && !two); // destroyed: new objects are new rows
+    QCOMPARE(after.value(QStringLiteral("row-1"))->property("label").toString(), QStringLiteral("A"));
+    QVERIFY(after.contains(QStringLiteral("row-4")));
+    QVERIFY(!after.contains(QStringLiteral("row-3")));
+    const QList<QQuickItem *> order = after.value(QStringLiteral("row-1"))->parentItem()->childItems();
+    QVERIFY(order.indexOf(after.value(QStringLiteral("row-2"))) < order.indexOf(after.value(QStringLiteral("row-1"))));
 }
 
 void QmlCssTests::layoutCountsChildVisits()
@@ -4740,7 +4801,7 @@ struct VirtualScene {
         window.setColor(Qt::white);
     }
 
-    QString mount(bool virtualize, const QVariantList &rows, const char *delegate = nullptr)
+    QString mount(bool virtualize, const QVariantList &rows, const char *delegate = nullptr, const char *key = nullptr)
     {
         static const char *const kDefaultDelegate = R"(
                         CssRect { cssClass: ["row"]; cssPrimitive: "div"
@@ -4763,6 +4824,8 @@ struct VirtualScene {
                 // setRows() stores a C++ list (a sequence, re-converted on every read): own it as a JS array.
                 function adopt() { rows = rows.slice() }
                 function truncate(n) { rows = rows.slice(0, n) }
+                // A refetch: every element a NEW object with the same content (C23: all new rows by default).
+                function refetch() { rows = rows.map((e) => Object.assign({}, e)) }
                 function swapRows(a, b) { const r = rows.slice(); const t = r[a]; r[a] = r[b]; r[b] = t; rows = r }
                 function removeRow(i) { const r = rows.slice(); r.splice(i, 1); rows = r }
                 function setLabel(i, t) { const r = rows.slice(); r[i] = { id: r[i].id, label: t }; rows = r }
@@ -4777,7 +4840,8 @@ struct VirtualScene {
                 }
                 CssRepeater {
                     model: list.rows
-                    virtualize: )") + (virtualize ? "true" : "false") + R"(
+                    key: ")") + QByteArray(key ? key : "") + R"("
+                    virtualize: )" + (virtualize ? "true" : "false") + R"(
                     delegate: Component {)" + (delegate ? delegate : kDefaultDelegate) + R"(
                     }
                 }
@@ -4963,7 +5027,7 @@ void QmlCssTests::virtualListKeyedUpdate()
 {
     VirtualScene s(QString::fromLatin1(kVirtualCss));
     QVariantList model = makeVirtualRows(1000);
-    QVERIFY2(s.mount(true, model).isEmpty(), "mount");
+    QVERIFY2(s.mount(true, model, nullptr, "id").isEmpty(), "mount");
     const int window = s.rows().size();
     QVERIFY(window > 0 && window < 100);
 
@@ -5091,12 +5155,13 @@ struct IdentityScene {
     QQmlEngine engine;
     QScopedPointer<QObject> root;
 
-    QString mount(const QString &json)
+    // `key`: the repeater's opt-in key field (C23); none = reference identity.
+    QString mount(const QString &json, const char *key = nullptr)
     {
         engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
         engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layout);
         QQmlComponent c(&engine);
-        c.setData(R"(
+        c.setData(QByteArray(R"(
             import QtQuick
             import qmlcss
             CssRect {
@@ -5117,6 +5182,7 @@ struct IdentityScene {
                 CssRepeater {
                     id: rep
                     model: box.rows
+                    key: ")") + QByteArray(key ? key : "") + R"("
                     delegate: Component {
                         CssRect {
                             cssPrimitive: "div"
@@ -5231,11 +5297,11 @@ void QmlCssTests::repeaterIdentityFastPath()
 void QmlCssTests::repeaterNewObjectSameIdUpdates()
 {
     IdentityScene s;
-    QVERIFY2(s.mount(QString::fromLatin1(kFourRows)).isEmpty(), "mount");
+    QVERIFY2(s.mount(QString::fromLatin1(kFourRows), "id").isEmpty(), "mount");
     const QList<QQuickItem *> before = s.rows();
 
-    // C23 unchanged: a NEW object with the same id reuses the row and updates modelData in place —
-    // and it is the only element converted.
+    // C23 key="id" (opt-in): a NEW object with the same id reuses the row and updates modelData in
+    // place — and it is the only element converted.
     int base = s.logSize();
     QVERIFY(s.run("replaceAt", 1, QStringLiteral(R"({"id":2,"t":"B"})")));
     QCOMPARE(Detail::g_repeaterConversions, 1);
@@ -5257,23 +5323,102 @@ void QmlCssTests::repeaterMutatedSameObjectIsNotReread()
 {
     // Owner decision 2026-10-10 (5c), Solid web <For> semantics: an element is compared by IDENTITY. An
     // object mutated in place and re-sent in a new array is the same element — its row is not re-read.
+    // The same with and without key (C23).
+    for (const char *key : { static_cast<const char *>(nullptr), "id" }) {
+        IdentityScene s;
+        QVERIFY2(s.mount(QString::fromLatin1(kFourRows), key).isEmpty(), "mount");
+        const QList<QQuickItem *> before = s.rows();
+        QVERIFY(s.run("mutate", 1, QStringLiteral("X")));
+        QCOMPARE(Detail::g_repeaterConversions, 0);
+        QCOMPARE(s.rows(), before);
+        QCOMPARE(s.labels(), (QStringList{ QStringLiteral("a"), QStringLiteral("b"), QStringLiteral("c"), QStringLiteral("d") }));
+        // A fresh object (the immutable-update idiom) is re-read: keyed in place, by reference a new row.
+        QVERIFY(s.run("replaceAt", 1, QStringLiteral(R"({"id":2,"t":"X"})")));
+        QCOMPARE(s.labels(), (QStringList{ QStringLiteral("a"), QStringLiteral("X"), QStringLiteral("c"), QStringLiteral("d") }));
+        if (key)
+            QCOMPARE(s.rows(), before);
+        else
+            QCOMPARE(s.rows(), (QList<QQuickItem *>{ before[0], s.row(1), before[2], before[3] }));
+        QCOMPARE(s.row(1) == before[1], key != nullptr);
+    }
+}
+
+void QmlCssTests::repeaterNewObjectSameIdRecreates()
+{
+    // C23 default (Solid web): a NEW object with the same id is a NEW row — the old one is destroyed with
+    // its state; no other row is touched, nothing else is converted.
     IdentityScene s;
     QVERIFY2(s.mount(QString::fromLatin1(kFourRows)).isEmpty(), "mount");
     const QList<QQuickItem *> before = s.rows();
-    QVERIFY(s.run("mutate", 1, QStringLiteral("X")));
-    QCOMPARE(Detail::g_repeaterConversions, 0);
-    QCOMPARE(s.rows(), before);
+    QPointer<QQuickItem> old = before[1];
+    const int base = s.logSize();
+    QVERIFY(s.run("replaceAt", 1, QStringLiteral(R"({"id":2,"t":"B"})")));
+    QCOMPARE(Detail::g_repeaterConversions, 1);
+    QVERIFY(!old); // destroyed (deferred delete flushed by run())
+    QCOMPARE(s.labels(), (QStringList{ QStringLiteral("a"), QStringLiteral("B"), QStringLiteral("c"), QStringLiteral("d") }));
+    QCOMPARE(s.rows(), (QList<QQuickItem *>{ before[0], s.row(1), before[2], before[3] }));
+    QCOMPARE(s.row(1)->property("idx").toInt(), 1);
+    // Only the new row evaluated anything.
+    QStringList log = s.logSince(base);
+    log.sort();
+    QCOMPARE(log, (QStringList{ QStringLiteral("i2"), QStringLiteral("m2") }));
+
+    // EQUAL content is no exception: still a new object, still a new row.
+    QPointer<QQuickItem> third = before[2];
+    QVERIFY(s.run("replaceAt", 2, QStringLiteral(R"({"id":3,"t":"c"})")));
+    QVERIFY(!third);
+    QCOMPARE(s.labels(), (QStringList{ QStringLiteral("a"), QStringLiteral("B"), QStringLiteral("c"), QStringLiteral("d") }));
+
+    // A whole refetch (every object new): every row recreated, in order.
+    QList<QPointer<QQuickItem>> all;
+    for (QQuickItem *r : s.rows())
+        all.append(r);
+    QVERIFY(s.run("setTo", QString::fromLatin1(kFourRows)));
+    QCOMPARE(Detail::g_repeaterConversions, 4);
+    for (const QPointer<QQuickItem> &r : all)
+        QVERIFY(!r);
     QCOMPARE(s.labels(), (QStringList{ QStringLiteral("a"), QStringLiteral("b"), QStringLiteral("c"), QStringLiteral("d") }));
-    // A fresh object (the immutable-update idiom) is re-read.
-    QVERIFY(s.run("replaceAt", 1, QStringLiteral(R"({"id":2,"t":"X"})")));
-    QCOMPARE(s.labels(), (QStringList{ QStringLiteral("a"), QStringLiteral("X"), QStringLiteral("c"), QStringLiteral("d") }));
-    QCOMPARE(s.rows(), before);
+}
+
+void QmlCssTests::repeaterReferenceIdentityDuplicates()
+{
+    // C23 default: ids are not identities, so nothing is ever "duplicate" — no value fallback.
+    IdentityScene s;
+    // Distinct objects sharing an id: three rows; moving them keeps every instance, converts nothing.
+    QVERIFY2(s.mount(QStringLiteral(R"([{"id":1,"t":"a"},{"id":1,"t":"b"},{"id":2,"t":"c"}])")).isEmpty(), "mount");
+    QList<QQuickItem *> before = s.rows();
+    QCOMPARE(before.size(), 3);
+    QVERIFY(s.run("swap", 0, 1));
+    QCOMPARE(Detail::g_repeaterConversions, 0);
+    QCOMPARE(s.rows(), (QList<QQuickItem *>{ before[1], before[0], before[2] }));
+    QCOMPARE(s.labels(), (QStringList{ QStringLiteral("b"), QStringLiteral("a"), QStringLiteral("c") }));
+    QVERIFY(s.run("swap", 0, 2));
+    QCOMPARE(Detail::g_repeaterConversions, 0);
+    QCOMPARE(s.rows(), (QList<QQuickItem *>{ before[2], before[0], before[1] }));
+
+    // The SAME object twice: the first occurrence keeps its row, the second is a new one.
+    before = s.rows();
+    QVERIFY(s.run("dupFirst"));
+    QCOMPARE(s.labels(), (QStringList{ QStringLiteral("c"), QStringLiteral("c") }));
+    QCOMPARE(s.row(0), before[0]);
+    QVERIFY(s.row(1) != before[0]);
+
+    // Objects without any id are matched by reference too (found by a scan): a reorder keeps them.
+    QVERIFY(s.run("setTo", QStringLiteral(R"([{"t":"x"},{"t":"y"},{"t":"z"}])")));
+    before = s.rows();
+    QVERIFY(s.run("swap", 0, 2));
+    QCOMPARE(Detail::g_repeaterConversions, 0);
+    QCOMPARE(s.rows(), (QList<QQuickItem *>{ before[2], before[1], before[0] }));
+    QCOMPARE(s.labels(), (QStringList{ QStringLiteral("z"), QStringLiteral("y"), QStringLiteral("x") }));
+    QVERIFY(s.run("removeAt", 1));
+    QCOMPARE(s.rows(), (QList<QQuickItem *>{ before[2], before[0] }));
 }
 
 void QmlCssTests::repeaterDuplicateIdsFallBackToUnkeyed()
 {
+    // key="id" only: without a key there is nothing to be duplicate (repeaterReferenceIdentityDuplicates).
     IdentityScene s;
-    QVERIFY2(s.mount(QStringLiteral(R"([{"id":1,"t":"a"},{"id":2,"t":"b"},{"id":3,"t":"c"}])")).isEmpty(), "mount");
+    QVERIFY2(s.mount(QStringLiteral(R"([{"id":1,"t":"a"},{"id":2,"t":"b"},{"id":3,"t":"c"}])"), "id").isEmpty(), "mount");
     const QList<QQuickItem *> before = s.rows();
     QPointer<QQuickItem> one = before[0], two = before[1], three = before[2];
 
@@ -5311,8 +5456,8 @@ void QmlCssTests::repeaterDuplicateIdsFallBackToUnkeyed()
 
 void QmlCssTests::repeaterReentrantModelChangeIsDeferred()
 {
-    IdentityScene s;
-    QVERIFY2(s.mount(QString::fromLatin1(kFourRows)).isEmpty(), "mount");
+    IdentityScene s; // keyed: the probe needs a row that RECEIVES a new modelData
+    QVERIFY2(s.mount(QString::fromLatin1(kFourRows), "id").isEmpty(), "mount");
     const QList<QQuickItem *> before = s.rows();
     // Row 2's modelData write (pass 2 of the reconciliation) makes it set a new model from inside the
     // reconciliation: that one runs right after, never on top of the half-done one.
@@ -5326,7 +5471,7 @@ void QmlCssTests::repeaterReentrantModelChangeIsDeferred()
 void QmlCssTests::virtualListIdentityOps()
 {
     VirtualScene s(QString::fromLatin1(kVirtualCss));
-    QVERIFY2(s.mount(true, makeVirtualRows(1000)).isEmpty(), "mount");
+    QVERIFY2(s.mount(true, makeVirtualRows(1000), nullptr, "id").isEmpty(), "mount");
     const bool wasOn = Detail::g_phaseStats.enabled;
     Detail::g_phaseStats.enabled = true;
     Detail::g_phaseStats.buckets.clear();
@@ -5375,6 +5520,92 @@ void QmlCssTests::virtualListIdentityOps()
     verify("append");
     s.setContentY(s.maxContentY());
     verify("append, at the end");
+
+    Detail::g_phaseStats.enabled = wasOn;
+    Detail::g_phaseStats.buckets.clear();
+}
+
+void QmlCssTests::virtualListReferenceIdentity()
+{
+    // C23 default on a WINDOWED list: a new object with the same id is a new row there too. Recycling a
+    // parked item for it is fine, but nothing of the old row's state may survive (5v-2's reset).
+    VirtualScene s(QString::fromLatin1(kVirtualCss));
+    QVERIFY2(s.mount(true, makeVirtualRows(1000)).isEmpty(), "mount");
+    QVERIFY(QMetaObject::invokeMethod(s.root.data(), "adopt"));
+    const bool wasOn = Detail::g_phaseStats.enabled;
+    Detail::g_phaseStats.enabled = true;
+    takeCounts();
+    const auto verify = [&](const char *what) {
+        const QVariantList model = s.currentRows();
+        const QString bad = checkVirtualRows(s, model);
+        QVERIFY2(bad.isEmpty(), qPrintable(QStringLiteral("%1: %2").arg(QLatin1String(what), bad)));
+    };
+    // Engine hover on an updated row (index 10) and on an untouched one (index 11).
+    QPointer<QQuickItem> updated, kept;
+    int inWindow = 0;
+    for (QQuickItem *row : s.rows()) {
+        const int i = VirtualScene::indexOf(row);
+        inWindow += i % 10 == 0;
+        if (i == 10)
+            updated = row;
+        if (i == 11)
+            kept = row;
+    }
+    QVERIFY(updated && kept && inWindow > 1);
+    QVERIFY(updated->setProperty("cssEngineHover", true));
+    QVERIFY(kept->setProperty("cssEngineHover", true));
+
+    Detail::g_repeaterConversions = 0;
+    QVERIFY(s.call("updateEvery", 10));
+    QCOMPARE(Detail::g_repeaterConversions, 100);
+    CreateDestroyCounts c = takeCounts();
+    QCOMPARE(c.created, qint64(inWindow));   // created or rebound from the pool: a fresh row each
+    QCOMPARE(c.destroyed, qint64(inWindow)); // destroyed or parked
+    verify("update");
+    for (QQuickItem *row : s.rows()) {
+        const int i = VirtualScene::indexOf(row);
+        if (i == 10)
+            QCOMPARE(row->property("cssEngineHover").toBool(), false);
+        if (i == 11) {
+            QCOMPARE(row, kept.data());
+            QCOMPARE(row->property("cssEngineHover").toBool(), true);
+        }
+    }
+
+    // Swap / remove (same objects): exactly the eager identity ops — nothing converted.
+    Detail::g_repeaterConversions = 0;
+    QVERIFY(s.call("swapRows", 1, 998));
+    QCOMPARE(Detail::g_repeaterConversions, 0);
+    c = takeCounts();
+    QCOMPARE(c.created, qint64(1));
+    QCOMPARE(c.destroyed, qint64(1));
+    verify("swap");
+    QVERIFY(s.call("removeRow", 500));
+    QCOMPARE(Detail::g_repeaterConversions, 0);
+    c = takeCounts();
+    QCOMPARE(c.created, qint64(0));
+    QCOMPARE(c.destroyed, qint64(0));
+    verify("remove");
+
+    // A C++ list model (no references): matched by VALUE — fresh equal maps keep their rows, edited
+    // ones are new rows.
+    QVariantList model = s.currentRows();
+    s.setRows(model);
+    takeCounts();
+    int edited = 0;
+    for (QQuickItem *row : s.rows())
+        edited += VirtualScene::indexOf(row) % 7 == 0;
+    for (int i = 0; i < model.size(); i += 7) {
+        QVariantMap m = model.at(i).toMap();
+        m.insert(QStringLiteral("label"), QStringLiteral("edited %1").arg(i));
+        model[i] = m;
+    }
+    s.setRows(model);
+    c = takeCounts();
+    QCOMPARE(c.created, qint64(edited));
+    QCOMPARE(c.destroyed, qint64(edited));
+    const QString bad = checkVirtualRows(s, model);
+    QVERIFY2(bad.isEmpty(), qPrintable(bad));
 
     Detail::g_phaseStats.enabled = wasOn;
     Detail::g_phaseStats.buckets.clear();
@@ -5948,6 +6179,7 @@ void QmlCssTests::virtualMeasurementInvalidation()
     const int n = 600;
     VirtualScene s(QString::fromLatin1(kAutoCss));
     QVERIFY2(s.mount(true, makeAutoRows(n, [](int) { return false; })).isEmpty(), "mount");
+    QVERIFY(QMetaObject::invokeMethod(s.root.data(), "adopt")); // setLabel replaces ONE object (C23)
     QVERIFY(traverse(s) > 0);
     s.setContentY(s.contentHeight() / 2);
     QQuickItem *top = topRow(s);
@@ -6008,6 +6240,7 @@ void QmlCssTests::virtualAnchorRemoved()
     const int n = 2000;
     VirtualScene s(QString::fromLatin1(kAutoCss));
     QVERIFY2(s.mount(true, makeAutoRows(n, [](int i) { return i % 3 == 0; })).isEmpty(), "mount");
+    QVERIFY(QMetaObject::invokeMethod(s.root.data(), "adopt")); // removeRow keeps the other objects (C23)
     s.setContentY(s.contentHeight() / 2);
     QQuickItem *top = topRow(s);
     QVERIFY(top);
@@ -6029,6 +6262,31 @@ void QmlCssTests::virtualAnchorRemoved()
     QVERIFY2(qAbs(contentYOf(s) - s.maxContentY()) <= 0.5,
              qPrintable(QStringLiteral("contentY %1, end %2").arg(contentYOf(s)).arg(s.maxContentY())));
     bad = checkAutoRows(s, s.currentRows());
+    QVERIFY2(bad.isEmpty(), qPrintable(bad));
+}
+
+void QmlCssTests::virtualRefetchKeepsViewport()
+{
+    // C23 default: a refetch replaces EVERY row (all new objects) — no survivor to anchor on. The row
+    // that lands at the anchor's index takes the anchor: the viewport shows the same place.
+    const int n = 2000;
+    VirtualScene s(QString::fromLatin1(kAutoCss));
+    QVERIFY2(s.mount(true, makeAutoRows(n, [](int i) { return i % 3 == 0; })).isEmpty(), "mount");
+    QVERIFY(QMetaObject::invokeMethod(s.root.data(), "adopt"));
+    s.setContentY(s.contentHeight() / 2);
+    QQuickItem *top = topRow(s);
+    QVERIFY(top);
+    const int idx = VirtualScene::indexOf(top);
+    const QString label = VirtualScene::labelOf(top);
+    const qreal y = screenY(s, top);
+    QPointer<QQuickItem> old = top;
+    QVERIFY(QMetaObject::invokeMethod(s.root.data(), "refetch"));
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QQuickItem *now = rowLabelled(s, label);
+    QVERIFY(now);
+    QCOMPARE(VirtualScene::indexOf(now), idx);
+    QVERIFY2(qAbs(screenY(s, now) - y) <= 0.5, qPrintable(QStringLiteral("anchor row moved %1 px").arg(screenY(s, now) - y)));
+    const QString bad = checkAutoRows(s, s.currentRows());
     QVERIFY2(bad.isEmpty(), qPrintable(bad));
 }
 

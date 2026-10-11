@@ -103,6 +103,18 @@ void CssRepeater::setDelegate(QQmlComponent *c)
         rebuild();
 }
 
+void CssRepeater::setKey(const QString &k)
+{
+    if (m_key == k)
+        return;
+    m_key = k;
+    // The index holds the other field's values: rebuilt by the next reconciliation (the model has not
+    // changed, so the rows stay as they are until it does).
+    m_byKey.clear();
+    m_keyIndexValid = false;
+    emit keyChanged();
+}
+
 void CssRepeater::setVirtualize(bool v)
 {
     if (m_virtualize == v)
@@ -198,15 +210,37 @@ void CssRepeater::destroyRow(Row &row)
 
 namespace {
 
-// An entry's key when it is an object with an "id" (a JSON row from the app's model); empty
+// An entry's key when it is an object with the `field` (a JSON row from the app's model); empty
 // otherwise.
-QString keyOf(const QVariant &v)
+QString keyOf(const QVariant &v, const QString &field)
 {
     if (v.metaType().id() != QMetaType::QVariantMap)
         return {};
     const QVariantMap &m = *static_cast<const QVariantMap *>(v.constData()); // no copy
-    const auto it = m.constFind(QStringLiteral("id"));
+    const auto it = m.constFind(field);
     return it == m.cend() ? QString() : it->toString();
+}
+
+// A JS element's `field`, formatted exactly as keyOf() formats it on the element's conversion; empty
+// when the element is not an object or the field is not a string/number/bool.
+QString hintOf(const QJSValue &e, const QString &field)
+{
+    if (!e.isObject())
+        return {};
+    const QJSValue id = e.property(field);
+    if (id.isString())
+        return id.toString();
+    if (id.isNumber() || id.isBool())
+        return id.toVariant().toString();
+    return {};
+}
+
+// The "id" field: under reference identity (no `key`), an element's id is only a LOOKUP HINT for a
+// moved object — every match is confirmed by identity.
+const QString &idField()
+{
+    static const QString f = QStringLiteral("id");
+    return f;
 }
 
 } // namespace
@@ -390,7 +424,7 @@ void CssRepeater::reconcile()
     if (m_model.metaType() == QMetaType::fromType<QJSValue>()) {
         const QJSValue array = *static_cast<const QJSValue *>(m_model.constData()); // m_model may change under us
         if (array.isArray())
-            done = rebuildKeyedJs(array, &changed);
+            done = rebuildJs(array, &changed);
     }
     if (!done) {
         QElapsedTimer t;
@@ -434,15 +468,18 @@ void CssRepeater::releaseSlot(int slot)
 
 void CssRepeater::buildKeyIndex()
 {
-    // Rows left by the value-matching path carry no key: derive them from their (converted) data, first
-    // row per key wins — exactly the lookup the pre-5c keyed path rebuilt on every reconciliation. Runs
-    // once per switch from that path, never per keyed update.
+    // Runs once per switch from the value-matching path (or of `key`), never per update.
+    // Keyed: rows left by the value path carry no key — derive them from their (converted) data, first
+    // row per key wins (exactly the lookup the pre-5c keyed path rebuilt on every reconciliation).
+    // Reference identity: every row that holds a JS object, under its "id" hint (rows of the value path
+    // hold none — no element can be them).
     m_byKey.clear();
     m_byKey.reserve(m_order.size());
+    const bool keyed = !m_key.isEmpty();
     for (const int s : std::as_const(m_order)) {
         Row &r = m_pool[s];
-        r.key = keyOf(r.data);
-        if (!r.key.isEmpty() && !m_byKey.contains(r.key))
+        r.key = keyed ? keyOf(r.data, m_key) : hintOf(r.js, idField());
+        if (!r.key.isEmpty() && (!keyed || !m_byKey.contains(r.key)))
             m_byKey.insert(r.key, s);
     }
     m_keyIndexValid = true;
@@ -466,11 +503,8 @@ void CssRepeater::finishOrder(bool *changed)
         retireRow(r); // parked while windowed and the pool has room (5v-2)
         dropMeasurement(-1, r);
         m_treeDirty = true;
-        if (m_keyIndexValid && !r.key.isEmpty()) {
-            const auto it = m_byKey.constFind(r.key);
-            if (it != m_byKey.cend() && *it == s)
-                m_byKey.erase(it);
-        }
+        if (m_keyIndexValid && !r.key.isEmpty())
+            m_byKey.remove(r.key, s);
         releaseSlot(s);
         *changed = true;
     }
@@ -485,6 +519,13 @@ void CssRepeater::finishOrder(bool *changed)
         trimRecycle(0);
         m_anchorSlot = -1;
         m_treeDirty = true;
+    } else if (m_anchorRefill >= 0) {
+        const int n = int(m_order.size());
+        const int ni = std::min(m_anchorRefill, n - 1);
+        m_anchorSlot = m_order[ni];
+        m_anchorIndex = ni;
+        m_anchorPrev = ni > 0 ? m_order[ni - 1] : -1;
+        m_anchorNext = ni + 1 < n ? m_order[ni + 1] : -1;
     } else if (m_anchorSlot >= 0) {
         // The anchor row survived. Rows inserted/removed around it SHIFT it (a neighbour is still its
         // neighbour): the viewport follows it. A row MOVED away from both neighbours (a swap, a sort)
@@ -507,6 +548,7 @@ void CssRepeater::finishOrder(bool *changed)
             m_anchorSlot = -1;
         }
     }
+    m_anchorRefill = -1;
     m_winValid = false; // the laid-out window describes the old order
 }
 
@@ -535,7 +577,11 @@ void CssRepeater::anchorAfterReorder(const int *oldOrder, int oldN)
         if (pool[oldOrder[j]].gen == m_gen)
             pick = j;
     if (pick < 0) {
+        // No old row survives (a refetch under reference identity, C23: every element a new object):
+        // the row that lands at the anchor's index takes it after the swap — what was at that place on
+        // screen stays there.
         m_anchorSlot = -1;
+        m_anchorRefill = ai;
         return;
     }
     m_anchorOffset -= slotTop(pick) - slotTop(ai);
@@ -543,18 +589,24 @@ void CssRepeater::anchorAfterReorder(const int *oldOrder, int oldN)
     m_anchorPrev = m_anchorNext = -2; // replaced, not moved: no reorder test after the swap
 }
 
-bool CssRepeater::rebuildKeyedJs(const QJSValue &array, bool *changed)
+bool CssRepeater::rebuildJs(const QJSValue &array, bool *changed)
 {
-    // KEYED when every element is an object with a distinct "id" (keyOf's rule on its conversion), same
-    // predicate as the value path. Rows are matched by IDENTITY first (Solid web <For>): an element that
-    // is the very object its row last received is that row, untouched — no conversion, no context write
-    // (an object mutated in place and re-sent is NOT re-read: owner decision 2026-10-10). Only a new
-    // object is converted (one toVariant) and matched by its id; a matched row gets it as modelData in
-    // place (C23), an unmatched id is a new row.
+    // Rows are matched by IDENTITY first (Solid web <For>): an element that is the very value its row
+    // last received is that row, untouched — no conversion, no context write (an object mutated in place
+    // and re-sent is NOT re-read: owner decision 2026-10-10, 5c). What a NEW object is depends on `key`
+    // (C23, owner decision 2026-10-11):
+    //  - no `key` (the default, Solid web): a new row, even when it carries an existing row's id — that
+    //    row, unclaimed, is destroyed with its state. An element's "id" is only the lookup hint that
+    //    finds a MOVED object in O(1) (confirmed by identity; distinct objects may share an id); an
+    //    element without one (a primitive, an id-less object) is looked for among the old rows without
+    //    one. Never falls back.
+    //  - `key`: the new object is converted (one toVariant) and matched by that field; a matched row gets
+    //    it as modelData in place, an unmatched key is a new row. KEYED only when every element carries
+    //    a distinct key — otherwise nothing is changed and the caller takes the value path (pre-5c).
     //
     // Two passes so a model that turns out unkeyed half-way changes nothing: (1) claim a row slot per
-    // element (m_gen stamps; a slot claimed twice = a duplicate id), staging new modelData in the row;
-    // (2) commit modelData/index writes and destroy unclaimed rows.
+    // element (m_gen stamps; a keyed slot claimed twice = a duplicate key), staging new modelData in the
+    // row; (2) commit modelData/index writes and destroy unclaimed rows.
     const bool stats = Detail::g_phaseStats.enabled;
     QElapsedTimer t, ct;
     qint64 convNs = 0;
@@ -569,11 +621,24 @@ bool CssRepeater::rebuildKeyedJs(const QJSValue &array, bool *changed)
         m_gen = 1;
     }
     const quint32 gen = m_gen;
+    const bool byKey = !m_key.isEmpty();
+    const QString &field = byKey ? m_key : idField();
+    if (!m_keyIndexValid)
+        buildKeyIndex();
     const int oldN = int(m_order.size());
     // Raw pointers in the O(n) loops (QList's operator[] re-checks detach per access). `pool` is
     // re-fetched after allocSlot(), the only call that can grow m_pool.
     const int *const oldOrder = m_order.constData();
     Row *pool = m_pool.data();
+    // Reference identity: old rows that only a scan can find (no "id" hint) and are still unclaimed —
+    // while there are none, an element without a hint is new without looking.
+    int unhinted = 0;
+    if (!byKey) {
+        for (int k = 0; k < oldN; ++k) {
+            const Row &r = pool[oldOrder[k]];
+            unhinted += r.key.isEmpty() && !r.js.isUndefined();
+        }
+    }
     m_next.resize(n); // capacity kept across reconciliations: no allocation in the steady state
     int *const next = m_next.data();
     int filled = 0;
@@ -585,52 +650,82 @@ bool CssRepeater::rebuildKeyedJs(const QJSValue &array, bool *changed)
     for (int i = 0; i < n; ++i) {
         QJSValue e = array.property(quint32(i));
         int slot = -1;
-        int byFastKey = -1; // the row the element's id names, when that lookup ran
+        int byFastKey = -1; // the row the element's key names, when that lookup ran (keyed)
         QString fastKey;
-        // Aligned: the same object as the next old row (an update/append/remove leaves almost all so).
+        // Aligned: the same element as the next old row (an update/append/remove leaves almost all so).
+        // Keyed rows compare objects only (a primitive is unkeyed); an undefined element is never a row's.
         if (j < oldN) {
             const Row &r = pool[oldOrder[j]];
-            if (r.js.isObject() && e.strictlyEquals(r.js))
+            if (r.gen != gen && (byKey ? r.js.isObject() : !r.js.isUndefined()) && e.strictlyEquals(r.js))
                 slot = oldOrder[j];
         }
-        // Moved: the same object elsewhere — its row found through its id, confirmed by identity.
-        if (slot < 0 && e.isObject()) {
-            const QJSValue id = e.property(QStringLiteral("id"));
-            if (id.isString())
-                fastKey = id.toString();
-            else if (id.isNumber() || id.isBool())
-                fastKey = id.toVariant().toString(); // keyOf's formatting of the converted value
+        // Moved: the same object elsewhere — its row found through its key/hint, confirmed by identity.
+        if (slot < 0) {
+            fastKey = hintOf(e, field);
             if (!fastKey.isEmpty()) {
-                if (!m_keyIndexValid)
-                    buildKeyIndex();
-                const auto it = m_byKey.constFind(fastKey);
-                if (it != m_byKey.cend()) {
-                    byFastKey = *it;
-                    if (pool[*it].js.isObject() && e.strictlyEquals(pool[*it].js))
-                        slot = *it;
+                if (byKey) {
+                    const auto it = m_byKey.constFind(fastKey);
+                    if (it != m_byKey.cend()) {
+                        byFastKey = *it;
+                        if (pool[*it].js.isObject() && e.strictlyEquals(pool[*it].js))
+                            slot = *it;
+                    }
+                } else {
+                    for (auto it = m_byKey.constFind(fastKey); it != m_byKey.cend() && it.key() == fastKey; ++it) {
+                        const Row &r = pool[*it];
+                        if (r.gen != gen && e.strictlyEquals(r.js)) {
+                            slot = *it;
+                            break;
+                        }
+                    }
+                }
+            } else if (!byKey && unhinted > 0 && !e.isUndefined()) {
+                for (int k = 0; k < oldN; ++k) {
+                    const Row &r = pool[oldOrder[k]];
+                    if (r.gen != gen && r.key.isEmpty() && !r.js.isUndefined() && e.strictlyEquals(r.js)) {
+                        slot = oldOrder[k];
+                        break;
+                    }
                 }
             }
         }
         if (slot >= 0) {
-            if (pool[slot].gen == gen) { // the same object twice: a duplicate id
+            if (pool[slot].gen == gen) { // keyed: the same object twice is a duplicate key
                 keyed = false;
                 break;
             }
-        } else {
-            // A new object: convert it once; its key is keyOf's, on the conversion.
+            if (!byKey && pool[slot].key.isEmpty())
+                --unhinted;
+        } else if (!byKey) {
+            // Reference identity: a new element is a new row.
             if (stats)
                 ct.start();
             QVariant v = e.toVariant();
             ++Detail::g_repeaterConversions;
             if (stats)
                 convNs += ct.nsecsElapsed();
-            const QString k = keyOf(v);
+            slot = allocSlot();
+            pool = m_pool.data();
+            Row &r = pool[slot];
+            r.data = std::move(v);
+            r.key = fastKey;
+            r.js = std::move(e);
+            r.pos = -1;
+            if (!fastKey.isEmpty())
+                m_byKey.insert(fastKey, slot);
+        } else {
+            // Keyed, a new object: convert it once; its key is keyOf's, on the conversion.
+            if (stats)
+                ct.start();
+            QVariant v = e.toVariant();
+            ++Detail::g_repeaterConversions;
+            if (stats)
+                convNs += ct.nsecsElapsed();
+            const QString k = keyOf(v, m_key);
             if (k.isEmpty()) {
                 keyed = false;
                 break;
             }
-            if (!m_keyIndexValid)
-                buildKeyIndex();
             int found = -1;
             if (k == fastKey) { // the lookup above already ran with this very key
                 found = byFastKey;
@@ -667,12 +762,13 @@ bool CssRepeater::rebuildKeyedJs(const QJSValue &array, bool *changed)
     }
 
     if (!keyed) {
-        // Undo pass 1: new rows go, staged values are dropped; the value path then runs as before 5c.
+        // Undo pass 1 (keyed only): new rows go, staged values are dropped; the value path then runs as
+        // before 5c.
         for (int i = 0; i < filled; ++i) {
             const int s = next[i];
             Row &r = pool[s];
             if (r.pos < 0) {
-                m_byKey.remove(r.key);
+                m_byKey.remove(r.key, s);
                 releaseSlot(s);
             } else if (r.hasIncoming) {
                 r.incoming = QVariant();
@@ -728,22 +824,22 @@ bool CssRepeater::rebuildKeyedJs(const QJSValue &array, bool *changed)
 
 void CssRepeater::rebuildFromList(const QVariantList &data, bool *changed)
 {
-    // The value path (pre-5c behaviour, unchanged): C++ lists, integer models, QStringList, and JS arrays
-    // that are not keyed. KEYED when every entry is an object with a distinct "id": rows match by id in
-    // O(n), and a surviving row whose content changed gets the new value as its modelData IN PLACE. A model
-    // rebuilt from fresh JSON (every object new, most of them equal, some edited) keeps every delegate
-    // instead of re-creating the edited ones — and skips the O(n²) value matching. Otherwise rows match by
-    // VALUE, stable first match.
+    // The value path: C++ lists, integer models, QStringList, an empty JS array, and JS arrays that are
+    // not keyed under `key`. KEYED when `key` is set (C23: opt-in) and every entry is an object with a
+    // distinct value of it: rows match by key in O(n), and a surviving row whose content changed gets the
+    // new value as its modelData IN PLACE. Otherwise rows match by VALUE (these models carry no
+    // references; a value is its identity), stable first match — the row expected next first, so an
+    // unchanged/appended/shifted list is O(n).
     QElapsedTimer t;
     if (Detail::g_phaseStats.enabled)
         t.start();
     QStringList keys;
     keys.reserve(data.size());
-    bool keyed = !data.isEmpty();
-    {
+    bool keyed = !data.isEmpty() && !m_key.isEmpty();
+    if (keyed) {
         QSet<QString> seen;
         for (const QVariant &d : data) {
-            const QString k = keyOf(d);
+            const QString k = keyOf(d, m_key);
             if (k.isEmpty() || seen.contains(k)) { keyed = false; break; }
             seen.insert(k);
             keys.append(k);
@@ -761,13 +857,15 @@ void CssRepeater::rebuildFromList(const QVariantList &data, bool *changed)
     QHash<QString, int> byKey;
     if (keyed) {
         for (const int s : std::as_const(m_order)) {
-            const QString k = keyOf(m_pool[s].data);
+            const QString k = keyOf(m_pool[s].data, m_key);
             if (!k.isEmpty() && !byKey.contains(k))
                 byKey.insert(k, s);
         }
     }
     m_next.clear();
     m_next.reserve(data.size());
+    const int oldN = int(m_order.size());
+    int j = 0; // the old position expected next (unkeyed)
     if (Detail::g_phaseStats.enabled) {
         // Key building + byKey: one sample for the whole up-front pass (the survivor scan below
         // adds its own, per data entry).
@@ -783,7 +881,13 @@ void CssRepeater::rebuildFromList(const QVariantList &data, bool *changed)
                 found = *it;
         } else {
             // Reconcile by VALUE, stable first-match: surviving entries keep their delegate.
-            for (const int s : std::as_const(m_order)) {
+            if (j < oldN) {
+                const int s = m_order.at(j);
+                if (m_pool[s].gen != gen && m_pool[s].data == data.at(i))
+                    found = s;
+            }
+            for (int k = 0; found < 0 && k < oldN; ++k) {
+                const int s = m_order.at(k);
                 if (m_pool[s].gen != gen && m_pool[s].data == data.at(i)) {
                     found = s;
                     break;
@@ -795,6 +899,7 @@ void CssRepeater::rebuildFromList(const QVariantList &data, bool *changed)
         if (found >= 0) {
             Row &row = m_pool[found];
             row.gen = gen;
+            j = row.pos + 1; // its old position: the next old row is expected next
             row.js = QJSValue();
             row.key.clear();
             if (keyed && row.data != data.at(i)) {

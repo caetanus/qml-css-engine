@@ -124,9 +124,11 @@ private slots:
     // CssRepeater is KEYED (Solid's <For>): a reorder MOVES the existing delegates
     // (same instances, re-stacked); only added entries create, removed ones destroy.
     void cssRepeaterReordersWithoutRecreating();
-    // Objects with an "id" match by it: a model rebuilt from fresh JSON keeps every delegate,
-    // and a row whose content changed is updated in place (modelData), not re-created.
+    // key: "id" (C23 opt-in): objects match by it — a model rebuilt from fresh JSON keeps every
+    // delegate, and a row whose content changed is updated in place (modelData), not re-created.
     void cssRepeaterKeysObjectsById();
+    // No key (C23 default, Solid web): a fresh JSON.parse is all new objects — every row is recreated.
+    void cssRepeaterMatchesObjectsByReference();
 
     // Shape x Rectangle policy: rectangle-safe styles compose a cheap QQuickRectangle; a
     // reapply that needs Shape features swaps the composition, and back.
@@ -253,16 +255,19 @@ private slots:
     void virtualListFallsBackEager();
 
     // Step 5c: identity-first incremental reconciliation. Unchanged elements (the SAME JS object) cost
-    // no conversion and no context write; a new object with the same id still updates in place (C23);
-    // an object mutated in place is not re-read (owner decision, Solid web semantics); duplicate ids
-    // fall back to unkeyed value matching exactly as before.
+    // no conversion and no context write; an object mutated in place is not re-read (owner decision,
+    // Solid web semantics). C23: a new object with the same id is a NEW row by default, and updates its
+    // row in place only under key: "id" (where duplicate keys fall back to value matching as before).
     void repeaterIdentityFastPath();
     void repeaterNewObjectSameIdUpdates();
+    void repeaterNewObjectSameIdRecreates();
+    void repeaterReferenceIdentityDuplicates();
     void repeaterMutatedSameObjectIsNotReread();
     void repeaterDuplicateIdsFallBackToUnkeyed();
     // A model set from inside a reconciliation (a row reacting to its new modelData) runs after it.
     void repeaterReentrantModelChangeIsDeferred();
     void virtualListIdentityOps();
+    void virtualListReferenceIdentity();
     void repeaterKeyedOpsBench();
 
     // Step 5v-2: rows leaving the virtual window are parked in a BOUNDED pool and rebound to rows
@@ -284,6 +289,7 @@ private slots:
     void virtualAutoHeightPixelParity();
     void virtualMeasurementInvalidation();
     void virtualAnchorRemoved();
+    void virtualRefetchKeepsViewport();
     void virtualFixedPitchStaysExact();
 
     // Correctness round after the scrolling-list gate: (A) a row parked while an ANCESTOR's identity
