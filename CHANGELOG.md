@@ -5,21 +5,24 @@ and breaking API moves are called out per entry.
 
 ## Unreleased
 
-### Added
-- **CSS custom properties**: `--name: value` and `var(--name[, fallback])`, inherited along the
-  selector-context chain (memoised on `CssContextNode`, per rule generation), `:root` / `html` as
-  the root environment, resolved where declared, invalid-at-computed-value declarations dropped.
-  Substituted before the resolved map is memoised/pushed. Custom-property names keep their case
-  (other property names still fold to lower case). See docs/css-support.md.
-
-## Unreleased (hardening pass, 2026-07-04)
+## 0.2.0 - 2026-10-11
 
 ### Breaking
+- **License: LGPL-3.0-only** (was unlicensed); `NOTICE` added for the code derived from Qt's
+  `QQuickText` (the literal port in `csstextlayout`).
 - **All public C++ types moved into `namespace QmlCss`** (`CssTheme`,
   `CssLayoutEngine`, the components). Qualify or `using namespace QmlCss;`.
   QML module names (`import qmlcss 1.0`) are unchanged.
 
 ### Added
+- **`CssRepeater.key`**: `<For>` row identity contract (C23) — reference identity by default
+  (matches Solid-on-web), opt-in reuse-by-id via `key`. See the engine's repeater test suite
+  (`for-identity`, `for-identity-virtual`).
+- **CSS custom properties**: `--name: value` and `var(--name[, fallback])`, inherited along the
+  selector-context chain (memoised on `CssContextNode`, per rule generation), `:root` / `html` as
+  the root environment, resolved where declared, invalid-at-computed-value declarations dropped.
+  Substituted before the resolved map is memoised/pushed. Custom-property names keep their case
+  (other property names still fold to lower case). See docs/css-support.md.
 - **CMake support for packaging/consumers**: a mirrored `CMakeLists.txt`
   (static lib + tests + install/export: `find_package(qml-css-engine)` →
   `QmlCssEngine::QmlCssEngine`), a generated `qml-css-engine.pc` from the

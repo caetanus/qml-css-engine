@@ -1,7 +1,7 @@
 project(
   'qml-css-engine',
   'cpp',
-  version: '0.1.0',
+  version: '0.2.0',
   license: 'LGPL-3.0-only',
   license_files: ['LICENSE', 'NOTICE', 'LICENSES/LGPL-3.0-only.txt', 'LICENSES/GPL-3.0-only.txt'],
   default_options: [
