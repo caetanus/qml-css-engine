@@ -305,4 +305,14 @@ private slots:
     // every text, implicit-size/visibility changes still relayout the parent, `:focus` still restyles, and a
     // follower or source destroyed mid-propagation is skipped/never touched.
     void slimItemsKeepSemantics();
+
+    // A box's OWN definite (px) `height`/`width` is its implicit size, even though it has no CSS
+    // parent to apply it (a ListView delegate root: the Flickable positions it off implicitHeight,
+    // never calling layoutFlex's place()). Content shorter/narrower than the declared size must not
+    // shrink it; `auto`/`%` stay content-derived (no container to resolve the percentage against here).
+    void cssRectDefiniteSizeWinsOverContentImplicit();
+    // End-to-end: a real QtQuick ListView whose delegate root is a CssRect styled only by a class
+    // (no explicit height/width binding in QML, exactly as the transpiler emits <VirtualList>) ends
+    // up at the CSS height, not the text's content height.
+    void listViewDelegateHonoursCssHeight();
 };

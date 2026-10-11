@@ -768,8 +768,25 @@ void CssLayoutEngine::layout(QQuickItem *root, QQuickItem *content)
         contentW = std::max(contentW, fw);
         contentH = std::max(contentH, fh);
     }
-    const double iw = contentW + pad[1] + pad[3] + bor[1] + bor[3];
-    const double ih = contentH + pad[0] + pad[2] + bor[0] + bor[2];
+    double iw = contentW + pad[1] + pad[3] + bor[1] + bor[3];
+    double ih = contentH + pad[0] + pad[2] + bor[0] + bor[2];
+    // A box's OWN definite (px) width/height is its authored size — it wins over the shrink-to-fit
+    // content size, exactly like a flex child's explicit size wins over its implicitWidth/Height in
+    // layoutFlex() above. This is what a box with no CSS parent needs: a ListView delegate root is
+    // positioned by the Flickable off implicitWidth/Height (place() above is never called on it — no
+    // parent flex/grid pass runs for it), so THIS is the only place that can publish its CSS height.
+    // `auto`/%/calc stay content-derived: there is no container here to resolve a percentage against
+    // (unlike a flex child, which has its parent's cw/ch to resolve against in layoutFlex()).
+    if (rootStyle.width.kind == CssLength::Number) {
+        double dw = rootStyle.width.value;
+        if (!rootStyle.borderBox) dw += pad[1] + pad[3] + bor[1] + bor[3];
+        iw = clampSize(rootStyle, rootStyle.minWidth, rootStyle.maxWidth, dw, std::nan(""));
+    }
+    if (rootStyle.height.kind == CssLength::Number) {
+        double dh = rootStyle.height.value;
+        if (!rootStyle.borderBox) dh += pad[0] + pad[2] + bor[0] + bor[2];
+        ih = clampSize(rootStyle, rootStyle.minHeight, rootStyle.maxHeight, dh, std::nan(""));
+    }
     if (std::abs(root->implicitWidth() - iw) > 0.5) root->setImplicitWidth(iw);
     if (std::abs(root->implicitHeight() - ih) > 0.5) root->setImplicitHeight(ih);
 

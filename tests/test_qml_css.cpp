@@ -6403,3 +6403,102 @@ void QmlCssTests::slimItemsKeepSemantics()
     delete row;
     QCOMPARE(theme.registeredCount(), registered - 2); // the row and `a`
 }
+
+// A box with no CSS parent (a plain Item standing in for a ListView's Flickable, which positions
+// delegates off their implicitHeight and never runs layoutFlex's place()) must still take its OWN
+// definite `height: 54px` / `width: 120px` as its implicit size — not shrink to its shorter/narrower
+// text content. Neither has an explicit height/width binding in QML (exactly how the transpiler
+// emits a <VirtualList> row), so QQuickItem::setImplicitHeight/Width falls through to the actual
+// height/width (heightValid()/widthValid() are false): this is the mechanism a ListView delegate
+// relies on for its row height.
+void QmlCssTests::cssRectDefiniteSizeWinsOverContentImplicit()
+{
+    CssTheme theme;
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        Item {
+            width: 400; height: 300
+            CssRect {
+                objectName: "row"
+                cssPrimitive: ""
+                style: ({ "height": "54px", "width": "120px" })
+                CssText { text: "B" }
+            }
+        }
+    )", QUrl());
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+    QQuickWindow window;
+    qobject_cast<QQuickItem *>(root.data())->setParentItem(window.contentItem());
+    QCoreApplication::processEvents();
+
+    auto *row = root->findChild<QQuickItem *>(QStringLiteral("row"));
+    QVERIFY(row);
+    // A single short glyph's content box is nowhere near 54x120 — if this ever fails because the
+    // content box grew past it, raise the CSS size in this test, don't weaken the assertion.
+    QCOMPARE(row->implicitHeight(), 54.0);
+    QCOMPARE(row->implicitWidth(), 120.0);
+    QCOMPARE(row->height(), 54.0);
+    QCOMPARE(row->width(), 120.0);
+}
+
+// End-to-end: a real QtQuick ListView whose delegate root is a CssRect styled only by a class (no
+// explicit height/width binding in QML, matching what the transpiler emits for <VirtualList>) lands
+// its rows at the CSS height, not the text's content height — the actual repro this guards.
+void QmlCssTests::listViewDelegateHonoursCssHeight()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(".row { height: 54px; }"));
+    CssLayoutEngine layoutEngine(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layoutEngine);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import qmlcss
+        ListView {
+            width: 300; height: 400
+            model: 3
+            delegate: Component {
+                CssRect {
+                    objectName: "row"
+                    cssPrimitive: "div"
+                    cssClass: ["row"]
+                    width: ListView.view ? ListView.view.width : 0
+                    CssText { text: "x" }
+                }
+            }
+        }
+    )", QUrl());
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+    QQuickWindow window;
+    window.resize(300, 400);
+    auto *view = qobject_cast<QQuickItem *>(root.data());
+    view->setParentItem(window.contentItem());
+    window.show();
+    QCoreApplication::processEvents();
+
+    // Delegate rows are NOT QObject children of the Flickable's contentItem (CssRect's "slim
+    // items" design keeps the QQuickItem tree as the only parent-child bookkeeping) — walk the
+    // QQuickItem tree itself, not QObject::findChildren().
+    QList<QQuickItem *> rows;
+    std::function<void(QQuickItem *)> collect = [&](QQuickItem *it) {
+        if (it->objectName() == QLatin1String("row"))
+            rows.append(it);
+        for (QQuickItem *c : it->childItems())
+            collect(c);
+    };
+    collect(view);
+    QVERIFY2(!rows.isEmpty(), "no delegate rows materialized");
+    QCOMPARE(rows.size(), 3);
+    for (QQuickItem *row : rows)
+        QCOMPARE(row->height(), 54.0);
+}
