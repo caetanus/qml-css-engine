@@ -16,6 +16,72 @@
 
 namespace QmlCss {
 
+// Shared Controls-free desktop scrollbar for CSS containers and external Flickables.
+// The minimum thumb size shortens travel: position and drag use the same range.
+inline QQuickItem *composeScrollBar(QQuickItem *flick)
+{
+    if (!flick || !qmlEngine(flick))
+        return nullptr;
+    auto *comp = QmlCss::cachedComponent(qmlEngine(flick), QStringLiteral("css-scroll-bar"), R"(
+import QtQuick
+    Rectangle {
+        id: sbTrack
+        required property var flick
+        objectName: "cssScrollTrack"
+        readonly property real maxY: Math.max(0, flick.contentHeight - flick.height)
+        z: 1000
+        x: flick.width - width
+        y: 0
+        width: 12
+        height: flick.height
+        color: "transparent"
+        visible: flick.contentHeight > flick.height + 1
+        MouseArea {
+            anchors.fill: parent
+            onPressed: (m) => {
+                if (m.y < sbThumb.y) flick.contentY = Math.max(0, flick.contentY - flick.height * 0.9)
+                else if (m.y > sbThumb.y + sbThumb.height) flick.contentY = Math.min(sbTrack.maxY, flick.contentY + flick.height * 0.9)
+            }
+        }
+        Rectangle {
+            id: sbThumb
+            objectName: "cssScrollThumb"
+            x: 3
+            width: 6
+            radius: 3
+            color: thumbArea.pressed ? "#99000000" : (thumbArea.containsMouse ? "#77000000" : "#55000000")
+            height: Math.min(sbTrack.height, Math.max(24, flick.visibleArea.heightRatio * sbTrack.height))
+            y: sbTrack.maxY > 0 ? Math.max(0, Math.min(1, flick.contentY / sbTrack.maxY)) * (sbTrack.height - height) : 0
+            MouseArea {
+                id: thumbArea
+                anchors.fill: parent
+                hoverEnabled: true
+                preventStealing: true
+                property real __grab: 0
+                onPressed: (m) => __grab = m.y
+                onPositionChanged: (m) => {
+                    if (!pressed) return
+                    var maxY = sbTrack.height - sbThumb.height
+                    if (maxY <= 0) return
+                    var ny = sbThumb.y + (m.y - __grab)
+                    var frac = Math.max(0, Math.min(ny / maxY, 1))
+                    flick.contentY = frac * sbTrack.maxY
+                }
+            }
+        }
+    }
+)");
+    auto *bar = qobject_cast<QQuickItem *>(comp->createWithInitialProperties(
+        {{QStringLiteral("flick"), QVariant::fromValue(flick)}}, qmlContext(flick)));
+    if (!bar) {
+        qWarning("css scroll: failed to compose scrollbar: %s", qPrintable(comp->errorString()));
+        return nullptr;
+    }
+    bar->setParent(flick);
+    bar->setParentItem(flick);
+    return bar;
+}
+
 // Compose the scroll Flickable, parent it under `owner`, and move `contentHolder` into its
 // contentItem. Returns the Flickable (or nullptr on failure).
 inline QQuickItem *composeScrollFlickable(QQuickItem *owner, QQuickItem *contentHolder)
@@ -58,51 +124,6 @@ inline QQuickItem *composeScrollFlickable(QQuickItem *owner, QQuickItem *content
         "            else if (bottom > flick.contentY + flick.height) flick.contentY = Math.min(flick.__maxY, bottom - flick.height + 8)\n"
         "        }\n"
         "    }\n"
-        // Controls-free desktop scrollbar on the VIEWPORT layer (parent: flick keeps it out of the
-        // reparented content). Persistent while content overflows; the thumb is draggable and the
-        // track pages toward a click. Thumb y is a one-way binding off visibleArea (no feedback loop).
-        "    Rectangle {\n"
-        "        id: sbTrack\n"
-        "        parent: flick\n"
-        "        x: flick.width - width\n"
-        "        y: 0\n"
-        "        width: 12\n"
-        "        height: flick.height\n"
-        "        color: \"transparent\"\n"
-        "        visible: flick.contentHeight > flick.height + 1\n"
-        "        MouseArea {\n"
-        "            anchors.fill: parent\n"
-        "            onPressed: (m) => {\n"
-        "                if (m.y < sbThumb.y) flick.contentY = Math.max(0, flick.contentY - flick.height * 0.9)\n"
-        "                else if (m.y > sbThumb.y + sbThumb.height) flick.contentY = Math.min(flick.__maxY, flick.contentY + flick.height * 0.9)\n"
-        "            }\n"
-        "        }\n"
-        "        Rectangle {\n"
-        "            id: sbThumb\n"
-        "            x: 3\n"
-        "            width: 6\n"
-        "            radius: 3\n"
-        "            color: thumbArea.pressed ? \"#99000000\" : (thumbArea.containsMouse ? \"#77000000\" : \"#55000000\")\n"
-        "            height: Math.max(24, flick.visibleArea.heightRatio * sbTrack.height)\n"
-        "            y: flick.visibleArea.yPosition * sbTrack.height\n"
-        "            MouseArea {\n"
-        "                id: thumbArea\n"
-        "                anchors.fill: parent\n"
-        "                hoverEnabled: true\n"
-        "                preventStealing: true\n"
-        "                property real __grab: 0\n"
-        "                onPressed: (m) => __grab = m.y\n"
-        "                onPositionChanged: (m) => {\n"
-        "                    if (!pressed) return\n"
-        "                    var maxY = sbTrack.height - sbThumb.height\n"
-        "                    if (maxY <= 0) return\n"
-        "                    var ny = sbThumb.y + (m.y - __grab)\n"
-        "                    var frac = Math.max(0, Math.min(ny / maxY, 1))\n"
-        "                    flick.contentY = frac * flick.__maxY\n"
-        "                }\n"
-        "            }\n"
-        "        }\n"
-        "    }\n"
         "}");
     QObject *o = comp->create(qmlContext(owner));
     QQuickItem *flick = qobject_cast<QQuickItem *>(o);
@@ -116,6 +137,7 @@ inline QQuickItem *composeScrollFlickable(QQuickItem *owner, QQuickItem *content
     flick->setParentItem(owner);
     QQuickItem *contentItem = flick->property("contentItem").value<QQuickItem *>();
     contentHolder->setParentItem(contentItem ? contentItem : flick);
+    composeScrollBar(flick);
     return flick;
 }
 
