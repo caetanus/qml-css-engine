@@ -787,8 +787,25 @@ void CssLayoutEngine::layout(QQuickItem *root, QQuickItem *content)
         if (!rootStyle.borderBox) dh += pad[0] + pad[2] + bor[0] + bor[2];
         ih = clampSize(rootStyle, rootStyle.minHeight, rootStyle.maxHeight, dh, std::nan(""));
     }
-    if (std::abs(root->implicitWidth() - iw) > 0.5) root->setImplicitWidth(iw);
-    if (std::abs(root->implicitHeight() - ih) > 0.5) root->setImplicitHeight(ih);
+    // Publish iw/ih — but setImplicitWidth/Height's own fallback write (when width/heightValid()
+    // is false) bypasses QQuickItem::setWidth/Height directly (it never marks widthValid()/
+    // heightValid()), so it fires on EVERY relayout of this box, not just a one-time "no explicit
+    // size yet" settle. That races a covering `transition: width`/`height` — and a parent's own
+    // flex pass, which DOES animate this same box via place()/animateGeometry() — and can snap
+    // straight to the target, defeating the transition (a ListView delegate root has no such
+    // parent pass, which is exactly why this publish exists at all — see the width/height-is-
+    // definite-size change above). Route through animateGeometry() FIRST, exactly like place()
+    // does for a flex child: a covering, complete transition animates into iw/ih itself (standalone
+    // or racing the parent harmlessly — animateGeometry no-ops when already heading there); only
+    // fall back to the raw implicit-size write when no transition applies (preserves the ListView
+    // bypass-to-width/height mechanism, which relies on it).
+    auto *box = qobject_cast<CssRect *>(root);
+    if (std::abs(root->implicitWidth() - iw) > 0.5
+        && (!box || std::abs(root->width() - iw) <= 0.5 || !box->animateGeometry(QLatin1String("width"), iw)))
+        root->setImplicitWidth(iw);
+    if (std::abs(root->implicitHeight() - ih) > 0.5
+        && (!box || std::abs(root->height() - ih) <= 0.5 || !box->animateGeometry(QLatin1String("height"), ih)))
+        root->setImplicitHeight(ih);
 
     // Vertical extent of what this pass placed — the scroll contentHeight source (never
     // QQuickItem::childrenRect(), see cssscroll.h). O(children), same walk the pass already did.
