@@ -10,7 +10,47 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Qml Quick Network)
 # Private Qt, all in csstext.cpp: it reads the inherited LayoutMirroring (QQuickItemPrivate). Library-private.
 # QuickPrivate pulls GuiPrivate transitively, so that's covered too.
-find_package(Qt6 REQUIRED COMPONENTS QuickPrivate)
+#
+# find_package(Qt6 COMPONENTS QuickPrivate) only succeeds where the distro ships
+# Qt6QuickPrivateConfig.cmake. Arch does; Debian does NOT: qt6-declarative-dev and
+# qt6-declarative-private-dev install the private HEADERS (verified via each package's
+# file list on packages.debian.org, trixie, Qt 6.8.2) but zero *.cmake files for any
+# "*Private" component — a Debian packaging gap, not a Qt-version issue (CI failure:
+# "Could NOT find Qt6QuickPrivate ... Expected Config file at
+# .../cmake/Qt6QuickPrivate/Qt6QuickPrivateConfig.cmake does NOT exist"). The engine's
+# meson build never hit this because meson's qt6 module does not use a CMake "Private"
+# component at all — it derives the private include directory purely from a path
+# convention (mesonbuild/dependencies/qt.py, _qt_get_private_includes): the module's
+# public include root + "/Qt<Module>/<Qt version>/Qt<Module>/private". Mirror that
+# convention here as a fallback so the CMake build works both where the official
+# component exists (Arch) and where only the headers do (Debian).
+find_package(Qt6 QUIET COMPONENTS QuickPrivate)
+if(NOT TARGET Qt6::QuickPrivate)
+    get_target_property(_qt6_quick_include_dirs Qt6::Quick INTERFACE_INCLUDE_DIRECTORIES)
+    set(_qt6_quick_private_include_dir "")
+    foreach(_dir IN LISTS _qt6_quick_include_dirs)
+        if(_dir MATCHES "^\\$<.*>$")
+            continue() # unevaluated generator expression (e.g. BUILD_INTERFACE on a non-existent future path); skip
+        endif()
+        if(EXISTS "${_dir}/QtQuick/${Qt6Quick_VERSION}/QtQuick/private")
+            set(_qt6_quick_private_include_dir "${_dir}/QtQuick/${Qt6Quick_VERSION}/QtQuick/private")
+            break()
+        endif()
+        get_filename_component(_dirname "${_dir}" NAME)
+        if(_dirname STREQUAL "QtQuick" AND EXISTS "${_dir}/${Qt6Quick_VERSION}/QtQuick/private")
+            set(_qt6_quick_private_include_dir "${_dir}/${Qt6Quick_VERSION}/QtQuick/private")
+            break()
+        endif()
+    endforeach()
+    if(_qt6_quick_private_include_dir STREQUAL "")
+        message(FATAL_ERROR "Qt6 Quick private headers not found under any of: ${_qt6_quick_include_dirs} "
+            "(looked for <dir>/QtQuick/${Qt6Quick_VERSION}/QtQuick/private); install the distro's Qt6 "
+            "declarative private-headers package (e.g. qt6-declarative-private-dev on Debian).")
+    endif()
+    add_library(Qt6::QuickPrivate INTERFACE IMPORTED)
+    target_include_directories(Qt6::QuickPrivate INTERFACE "${_qt6_quick_private_include_dir}")
+    target_link_libraries(Qt6::QuickPrivate INTERFACE Qt6::Quick Qt6::Gui Qt6::Qml)
+endif()
 qt_standard_project_setup()
 
 # Source list mirrored from meson.build (qml_css_engine_sources).
