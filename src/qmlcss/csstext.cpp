@@ -1,3 +1,7 @@
+// Copyright (C) 2026 Marcelo A Caetano
+// Portions derived from Qt (qquicktext.cpp): Copyright (C) 2016 The Qt Company Ltd.
+// SPDX-License-Identifier: LGPL-3.0-only
+
 #include "qmlcss/componentcache.h"
 #include "qmlcss/csstext.h"
 

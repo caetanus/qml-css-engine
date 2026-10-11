@@ -63,3 +63,9 @@ Provide two context properties — `cssTheme` (a `CssTheme`) and `cssLayout`
 
 Full documentation under `docs/`: overview & performance architecture, CSS support
 matrix, component reference, C++ API, integration guide.
+
+## License
+
+LGPL-3.0-only — see [LICENSE](LICENSE) and [LICENSES/](LICENSES/). Part of the text layout is
+derived from Qt's `QQuickText` (Copyright (C) The Qt Company Ltd., used under LGPL-3.0-only); see
+[NOTICE](NOTICE).

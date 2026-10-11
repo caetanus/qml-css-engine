@@ -1,0 +1,16 @@
+Third-party code in qml-css-engine
+==================================
+
+Qt (https://www.qt.io/) — qtdeclarative, src/quick/items/qquicktext.cpp
+  Copyright (C) 2016 The Qt Company Ltd.
+  Licensed under LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only;
+  used here under LGPL-3.0-only.
+
+  Derived code (a port of QQuickText's plain-text layout, kept line-for-line comparable so its
+  output can be tested against QQuickText itself):
+    src/qmlcss/csstextlayout.h
+    src/qmlcss/csstextlayout.cpp
+    src/qmlcss/csstext.cpp  (CssText::updatePaintNode, after QQuickText::updatePaintNode)
+
+The engine links against Qt (QtCore, QtGui, QtQml, QtQuick and private Qt Quick headers), which is
+available under the LGPL-3.0; applications using this engine must meet Qt's own license terms.

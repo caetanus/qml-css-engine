@@ -1,0 +1,13 @@
+qml-css-engine
+Copyright (C) 2026 Marcelo A Caetano
+
+This library is free software: you can redistribute it and/or modify it under the terms of the
+GNU Lesser General Public License version 3 (LGPL-3.0-only), as published by the Free Software
+Foundation. The license text is in LICENSES/LGPL-3.0-only.txt; it supplements the GNU General
+Public License version 3, in LICENSES/GPL-3.0-only.txt.
+
+This library is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without
+even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the licenses
+for more details.
+
+Portions of this library are derived from Qt; see NOTICE.

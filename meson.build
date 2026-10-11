@@ -2,7 +2,8 @@ project(
   'qml-css-engine',
   'cpp',
   version: '0.1.0',
-  license: 'MIT',
+  license: 'LGPL-3.0-only',
+  license_files: ['LICENSE', 'NOTICE', 'LICENSES/LGPL-3.0-only.txt', 'LICENSES/GPL-3.0-only.txt'],
   default_options: [
     'cpp_std=c++20',
     'warning_level=2',
