@@ -246,7 +246,8 @@ Item {
         }
         }
     }
-
+)QML" // MSVC caps a single string literal at 16 KB (C2026): split in two, same text
+R"QML(
     // --- the fill (solid colour or linear gradient). Alpha rides on opacity. Lazy: most
     // boxes are layout-only (transparent) and skip the whole path/gradient machinery. -----
     readonly property bool hasFill: (r.solid.a > 0) || r.hasGradient
