@@ -30,12 +30,14 @@ if host_machine.system() == 'darwin'
             '(csstext.cpp\'s QQuickItemPrivate read) will likely fail to find its headers.')
   else
     # See the matching comment in the app's meson.build for why this searches rather than
-    # guesses the subpath, and why the script always exits 0 (an empty result for one module is
-    # not a configure error here -- it is handled by the warning below).
+    # guesses the subpath, why it emits both the module's private-header dir AND its parent (two
+    # #include spellings Qt and this project both use), and why the script always exits 0 (an
+    # empty result for one module is not a configure error here -- it is handled by the warning
+    # below).
     mac_private_find = run_command('sh', '-c',
       'for m in QtCore QtGui QtQml QtQmlModels QtQuick QtQuickTemplates2; do ' +
       'p=$(find "$1/$m.framework" -type d -name private 2>/dev/null | head -1); ' +
-      'if [ -n "$p" ]; then dirname "$p"; fi; done; exit 0',
+      'if [ -n "$p" ]; then d=$(dirname "$p"); printf "%s\n" "$d"; dirname "$d"; fi; done; exit 0',
       '--', mac_fw_dir, check: true)
     mac_private_dirs = mac_private_find.stdout().strip().split('\n')
     mac_private_args = []
