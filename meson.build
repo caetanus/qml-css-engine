@@ -12,6 +12,42 @@ project(
 
 qt6 = import('qt6')
 
+# macOS: meson's qt6 module computes a Qt .framework's private-header include dir as
+# "<Module>.framework/Headers/<version>" (mesonbuild/dependencies/qt.py, QtExtraFrameworkDependency
+# .get_compile_args) — that path never exists. Qt's real mac layout keeps private headers under a
+# SEPARATE "<Module>.framework/PrivateHeaders/" tree, so `private_headers: true` below would
+# silently get a non-existent -I dir and fail to find QQuickItemPrivate. Work around it by finding
+# the real directory on disk (search rather than guess the exact subpath, which is Qt-packaging-
+# dependent) and injecting it ourselves. The consuming app (solid-qml-native)'s own meson.build
+# carries an identical block — this is a separate meson project/scope, so it can't be shared —
+# and its scripts/ci-macos.sh exports QT_MAC_FRAMEWORKS_DIR (the "…/lib" dir the .frameworks live
+# in) for both to search under.
+mac_qt_private_dep = declare_dependency()
+if host_machine.system() == 'darwin'
+  mac_fw_dir = run_command('sh', '-c', 'printf %s "${QT_MAC_FRAMEWORKS_DIR:-}"', check: true).stdout().strip()
+  if mac_fw_dir == ''
+    warning('QT_MAC_FRAMEWORKS_DIR is unset on macOS: the engine\'s private-header dependency ' +
+            '(csstext.cpp\'s QQuickItemPrivate read) will likely fail to find its headers.')
+  else
+    mac_private_dirs = run_command('sh', '-c',
+      'for m in QtCore QtGui QtQml QtQmlModels QtQuick QtQuickTemplates2; do ' +
+      'd=$(find "$1" -type d -path "*/$m.framework/PrivateHeaders/*/$m" 2>/dev/null | head -1); ' +
+      '[ -n "$d" ] && printf "%s\n" "$d"; done',
+      '--', mac_fw_dir, check: true).stdout().strip().split('\n')
+    mac_private_args = []
+    foreach d : mac_private_dirs
+      if d != ''
+        mac_private_args += ['-I' + d]
+      endif
+    endforeach
+    if mac_private_args.length() == 0
+      warning('No Qt PrivateHeaders found under ' + mac_fw_dir + ' — the private-header dependency ' +
+              'will likely fail to compile.')
+    endif
+    mac_qt_private_dep = declare_dependency(compile_args: mac_private_args)
+  endif
+endif
+
 qt6_dep = dependency(
   'qt6',
   modules: ['Core', 'Gui', 'Qml', 'Quick', 'Network'],
@@ -81,7 +117,10 @@ qml_css_engine_include = include_directories('src')
 # Private Qt, all in csstext.cpp: it reads the LayoutMirroring a composed label would inherit
 # (QQuickItemPrivate). CssTextLayout elides through public API only. Private to the library: no installed
 # header includes it. (QuickPrivate pulls GuiPrivate transitively, so that's covered too.)
-qt6_quick_private_dep = dependency('qt6', modules: ['Core', 'Gui', 'Qml', 'Quick'], private_headers: true)
+qt6_quick_private_dep = declare_dependency(dependencies: [
+  dependency('qt6', modules: ['Core', 'Gui', 'Qml', 'Quick'], private_headers: host_machine.system() != 'darwin'),
+  mac_qt_private_dep,
+])
 
 qml_css_engine_lib = static_library(
   'qmlcssengine',
