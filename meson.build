@@ -157,7 +157,7 @@ text_test = executable(
   files('tests/test_text.cpp'),
   text_test_moc,
   dependencies: [qml_css_engine_dep, qt6_test_dep, qt6_quick_private_dep],
-  cpp_args: ['-DSQ_TEST_DATA_DIR="' + (meson.current_source_dir() / 'tests' / 'data') + '"'],
+  cpp_args: ['-DSQ_TEST_DATA_DIR="' + (meson.current_source_dir() / 'tests' / 'data').replace('\\', '/') + '"'], # '/': a C string literal (Windows paths)
 )
 test('text', text_test, env: ['QT_QPA_PLATFORM=offscreen'])
 endif
