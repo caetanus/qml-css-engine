@@ -29,17 +29,22 @@ if host_machine.system() == 'darwin'
     warning('QT_MAC_FRAMEWORKS_DIR is unset on macOS: the engine\'s private-header dependency ' +
             '(csstext.cpp\'s QQuickItemPrivate read) will likely fail to find its headers.')
   else
-    mac_private_dirs = run_command('sh', '-c',
+    # See the matching comment in the app's meson.build for why this searches rather than
+    # guesses the subpath, and why the script always exits 0 (an empty result for one module is
+    # not a configure error here -- it is handled by the warning below).
+    mac_private_find = run_command('sh', '-c',
       'for m in QtCore QtGui QtQml QtQmlModels QtQuick QtQuickTemplates2; do ' +
-      'd=$(find "$1" -type d -path "*/$m.framework/PrivateHeaders/*/$m" 2>/dev/null | head -1); ' +
-      '[ -n "$d" ] && printf "%s\n" "$d"; done',
-      '--', mac_fw_dir, check: true).stdout().strip().split('\n')
+      'p=$(find "$1/$m.framework" -type d -name private 2>/dev/null | head -1); ' +
+      'if [ -n "$p" ]; then dirname "$p"; fi; done; exit 0',
+      '--', mac_fw_dir, check: true)
+    mac_private_dirs = mac_private_find.stdout().strip().split('\n')
     mac_private_args = []
     foreach d : mac_private_dirs
       if d != ''
         mac_private_args += ['-I' + d]
       endif
     endforeach
+    message('mac_qt_private_dep: found private-header dirs under ' + mac_fw_dir + ': ' + ' '.join(mac_private_dirs))
     if mac_private_args.length() == 0
       warning('No Qt PrivateHeaders found under ' + mac_fw_dir + ' — the private-header dependency ' +
               'will likely fail to compile.')
