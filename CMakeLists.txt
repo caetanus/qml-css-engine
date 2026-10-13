@@ -77,6 +77,7 @@ set(QML_CSS_ENGINE_SOURCES
     src/qmlcss/cssdropshadow.cpp
     src/qmlcss/csskeyframes.cpp
     src/qmlcss/cssicon.cpp
+    src/qmlcss/themeiconprovider.cpp
     src/qmlcss/cssfilllayer.cpp
     src/qmlcss/cssitem.cpp
     src/qmlcss/contrast.cpp

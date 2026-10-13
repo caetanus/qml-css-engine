@@ -18,6 +18,7 @@
 #include "cssrect.h"
 #include "csstext.h"
 #include "csstheme.h"
+#include "themeiconprovider.h"
 
 #include <QQmlEngine>
 
@@ -40,6 +41,15 @@ inline void registerTypes()
     qmlRegisterType<CssRepeater>("qmlcss", 1, 0, "CssRepeater");
     qmlRegisterSingletonType<Contrast>("qmlcss", 1, 0, "Contrast",
         [](QQmlEngine *, QJSEngine *) -> QObject * { return new Contrast(); });
+}
+
+// Per-ENGINE (an image provider belongs to one QQmlEngine, unlike the process-global type
+// registrations above) — call once per engine, after construction. Completes CssIcon's
+// `image://themeicon/<name>|<hexcolor>` resolution; see themeiconprovider.h for what it does and
+// does not do (no desktop-specific icon-theme-NAME selection — that's the caller's job).
+inline void registerImageProviders(QQmlEngine *engine)
+{
+    engine->addImageProvider(QStringLiteral("themeicon"), new ThemeIconProvider());
 }
 
 } // namespace QmlCss
