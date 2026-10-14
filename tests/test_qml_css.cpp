@@ -20,6 +20,7 @@
 #include <QQmlContext>
 #include <QQmlEngine>
 #include <QQuickItem>
+#include <QQmlProperty>
 #include <QQuickWindow>
 #include <QSignalSpy>
 #include <QTest>
@@ -6759,4 +6760,132 @@ void QmlCssTests::listViewDelegateHonoursCssHeight()
     QCOMPARE(rows.size(), 3);
     for (QQuickItem *row : rows)
         QCOMPARE(row->height(), 54.0);
+}
+
+// --- rotateX + transform-origin ---------------------------------------------------------------
+
+static QObject *rotationXOf(QQuickItem *item)
+{
+    for (QObject *o : item->children())
+        if (QByteArray(o->metaObject()->className()).contains("QQuickRotation"))
+            return o;
+    return nullptr;
+}
+
+void QmlCssTests::cssRectRotateXAndOrigin()
+{
+    CssTheme theme;
+    CssLayoutEngine layout(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layout);
+    QQmlComponent comp(&engine);
+    comp.setData("import QtQuick\nimport qmlcss\nCssRect { width: 100; height: 40 }", QUrl());
+
+    // A box without either property pays nothing: no Rotation, the centre pivot.
+    {
+        QScopedPointer<QObject> obj(comp.create());
+        auto *rect = qobject_cast<CssRect *>(obj.data());
+        QVERIFY2(rect, qPrintable(comp.errorString()));
+        rect->setProperty("style", QVariantMap{{QStringLiteral("background-color"), QStringLiteral("#ff0000")},
+                                               {QStringLiteral("transform"), QStringLiteral("rotate(10deg)")}});
+        QVERIFY(!rotationXOf(rect));
+        QCOMPARE(rect->transformOrigin(), QQuickItem::Center);
+    }
+    // rotateX + transform-origin: top — a Rotation about X pivoting on the top edge; rotate/scale
+    // pivot there too (the item's transformOrigin).
+    {
+        QScopedPointer<QObject> obj(comp.create());
+        auto *rect = qobject_cast<CssRect *>(obj.data());
+        QVERIFY(rect);
+        rect->setProperty("style", QVariantMap{{QStringLiteral("transform"), QStringLiteral("rotateX(60deg)")},
+                                               {QStringLiteral("transform-origin"), QStringLiteral("top")}});
+        QObject *rx = rotationXOf(rect);
+        QVERIFY(rx);
+        QCOMPARE(rx->property("angle").toDouble(), 60.0);
+        QCOMPARE(QQmlProperty::read(rx, QStringLiteral("origin.y")).toDouble(), 0.0);
+        QCOMPARE(QQmlProperty::read(rx, QStringLiteral("origin.x")).toDouble(), 50.0);
+        QCOMPARE(rect->transformOrigin(), QQuickItem::Top);
+        // the pivot follows the size
+        rect->setWidth(300);
+        QCOMPARE(QQmlProperty::read(rx, QStringLiteral("origin.x")).toDouble(), 150.0);
+        // "bottom right", "left top" (vertical keyword first), percentages
+        rect->setProperty("style", QVariantMap{{QStringLiteral("transform"), QStringLiteral("rotateX(60deg)")},
+                                               {QStringLiteral("transform-origin"), QStringLiteral("right bottom")}});
+        QCOMPARE(rect->transformOrigin(), QQuickItem::BottomRight);
+        QCOMPARE(QQmlProperty::read(rx, QStringLiteral("origin.y")).toDouble(), 40.0);
+        rect->setProperty("style", QVariantMap{{QStringLiteral("transform-origin"), QStringLiteral("top left")}});
+        QCOMPARE(rect->transformOrigin(), QQuickItem::TopLeft);
+        QCOMPARE(rx->property("angle").toDouble(), 0.0);   // the transform went: flat again
+        rect->setProperty("style", QVariantMap{{QStringLiteral("transform-origin"), QStringLiteral("50% 100%")}});
+        QCOMPARE(rect->transformOrigin(), QQuickItem::Bottom);
+        // the property removed: back to the centre
+        rect->setProperty("style", QVariantMap{});
+        QCOMPARE(rect->transformOrigin(), QQuickItem::Center);
+    }
+}
+
+void QmlCssTests::cssRectRotateXKeyframes()
+{
+    CssTheme theme;
+    theme.loadFromString(QStringLiteral(
+        "@keyframes fold { from { transform: rotateX(-90deg); } to { transform: rotateX(0deg); } }"));
+    CssLayoutEngine layout(&theme);
+    const QVariantList stops = layout.buildAnimStops(theme.keyframes(QStringLiteral("fold")));
+    QCOMPARE(stops.size(), 2);
+    QCOMPARE(stops.first().toMap().value(QStringLiteral("rotateX")).toDouble(), -90.0);
+
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layout);
+    QQmlComponent comp(&engine);
+    comp.setData("import QtQuick\nimport qmlcss\nCssRect { width: 100; height: 40 }", QUrl());
+    QScopedPointer<QObject> obj(comp.create());
+    auto *rect = qobject_cast<CssRect *>(obj.data());
+    QVERIFY2(rect, qPrintable(comp.errorString()));
+    rect->setProperty("style", QVariantMap{{QStringLiteral("animation"), QStringLiteral("fold 300ms linear 1")},
+                                           {QStringLiteral("transform-origin"), QStringLiteral("top")}});
+    QObject *rx = rotationXOf(rect);
+    QVERIFY(rx);
+    // The first frame is the first keyframe — folded — not the flat box.
+    QCOMPARE(rx->property("angle").toDouble(), -90.0);
+    // ... and it unfolds to flat.
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(rx->property("angle").toDouble()) < 0.5, 3000);
+}
+
+// Seen: a red box folded 70deg about X fills the band under its pivot only (cos 70deg ~ 0.34 of its
+// height): pivot at the top keeps its top edge, pivot at the centre keeps its middle.
+void QmlCssTests::cssRectRotateXRenders()
+{
+    CssTheme theme;
+    CssLayoutEngine layout(&theme);
+    QQmlEngine engine;
+    engine.rootContext()->setContextProperty(QStringLiteral("cssTheme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("cssLayout"), &layout);
+    auto shot = [&](const QString &origin) -> QImage {
+        QQmlComponent comp(&engine);
+        comp.setData("import QtQuick\nimport QtQuick.Window\nimport qmlcss\n"
+                     "Window { width: 200; height: 200; visible: true; color: \"white\";"
+                     " CssRect { objectName: \"box\"; y: 50; width: 200; height: 100 } }", QUrl());
+        QScopedPointer<QObject> obj(comp.create());
+        auto *win = qobject_cast<QQuickWindow *>(obj.data());
+        if (!win)
+            return {};
+        auto *box = win->findChild<CssRect *>(QStringLiteral("box"));
+        QVariantMap st{{QStringLiteral("background-color"), QStringLiteral("#ff0000")},
+                       {QStringLiteral("transform"), QStringLiteral("rotateX(70deg)")}};
+        if (!origin.isEmpty())
+            st.insert(QStringLiteral("transform-origin"), origin);
+        box->setProperty("style", st);
+        QTest::qWait(50);
+        return win->grabWindow().convertToFormat(QImage::Format_ARGB32);
+    };
+    auto red = [](const QImage &im, int x, int y) { const QColor c = im.pixelColor(x, y); return c.red() > 200 && c.green() < 80; };
+    const QImage top = shot(QStringLiteral("top"));
+    QVERIFY(!top.isNull());
+    QVERIFY2(red(top, 100, 53), "top pivot: the top edge stays");
+    QVERIFY2(!red(top, 100, 140), "top pivot: the folded box no longer reaches its bottom");
+    const QImage mid = shot(QString());
+    QVERIFY2(!red(mid, 100, 53), "centre pivot: the top edge moved in");
+    QVERIFY2(red(mid, 100, 100), "centre pivot: the middle stays");
 }

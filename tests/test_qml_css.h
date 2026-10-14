@@ -62,6 +62,9 @@ private slots:
 
     // C++ CssRect @keyframes animation driver — live NumberAnimation on animTick.
     void cssRectCppKeyframesDriverLive();
+    void cssRectRotateXAndOrigin();
+    void cssRectRotateXKeyframes();
+    void cssRectRotateXRenders();
 
     // C++ CssIcon — composition translation of CssIcon.qml.
     void cssIconCppComposesImageAndEffect();

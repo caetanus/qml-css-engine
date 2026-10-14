@@ -559,6 +559,7 @@ QVariantMap CssTheme::parseTransform(const QString &cssValue) const
 {
     QVariantMap result{
         {QStringLiteral("rotate"), 0.0},
+        {QStringLiteral("rotateX"), 0.0},
         {QStringLiteral("scale"), 1.0},
         {QStringLiteral("scaleX"), 1.0},
         {QStringLiteral("scaleY"), 1.0},
@@ -595,8 +596,11 @@ QVariantMap CssTheme::parseTransform(const QString &cssValue) const
         if (args.isEmpty()) {
             continue;
         }
-        if (fn == QLatin1String("rotate")) {
+        if (fn == QLatin1String("rotate") || fn == QLatin1String("rotatez")) {
             result.insert(QStringLiteral("rotate"), angleDeg(args.at(0)));
+        } else if (fn == QLatin1String("rotatex")) {
+            // A 3D turn about the horizontal axis, seen in perspective (CssRect: a QtQuick Rotation).
+            result.insert(QStringLiteral("rotateX"), angleDeg(args.at(0)));
         } else if (fn == QLatin1String("scale")) {
             const double sx = firstNumber(args.at(0), 1.0);
             const double sy = args.size() >= 2 ? firstNumber(args.at(1), sx) : sx;

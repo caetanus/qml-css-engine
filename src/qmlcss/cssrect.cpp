@@ -782,6 +782,7 @@ void CssRect::setAnimTick(qreal v)
     x.animScale = a->scale + (b->scale - a->scale) * t;
     x.animTx = a->tx + (b->tx - a->tx) * t;
     x.animTy = a->ty + (b->ty - a->ty) * t;
+    x.animRotX = a->rotX + (b->rotX - a->rotX) * t;
     emit animChanged();
     applyTransform();
 }
@@ -1158,6 +1159,47 @@ void CssRect::applyStaticTransformAndAnim()
         x.staticScale = tf.contains(QStringLiteral("scale")) ? tf.value(QStringLiteral("scale")).toReal() : 1.0;
         x.staticTx = tf.contains(QStringLiteral("translateX")) ? tf.value(QStringLiteral("translateX")).toReal() : 0.0;
         x.staticTy = tf.contains(QStringLiteral("translateY")) ? tf.value(QStringLiteral("translateY")).toReal() : 0.0;
+        x.staticRotX = tf.contains(QStringLiteral("rotateX")) ? tf.value(QStringLiteral("rotateX")).toReal() : 0.0;
+    }
+
+    // --- transform-origin: keywords (left/center/right, top/center/bottom, either order) and
+    // 0%/50%/100% — the nine points QQuickItem::transformOrigin knows. Other values keep the centre. ---
+    if (has("transform-origin") || (m_extra && (m_extra->originFx != 0.5 || m_extra->originFy != 0.5))) {
+        qreal fx = 0.5, fy = 0.5;
+        const QStringList parts = str("transform-origin").simplified().toLower().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        auto frac = [](const QString &v, bool &ok) -> qreal {
+            ok = true;
+            if (v == QLatin1String("left") || v == QLatin1String("top") || v == QLatin1String("0%") || v == QLatin1String("0")) return 0.0;
+            if (v == QLatin1String("right") || v == QLatin1String("bottom") || v == QLatin1String("100%")) return 1.0;
+            if (v == QLatin1String("center") || v == QLatin1String("50%")) return 0.5;
+            ok = false;
+            return 0.5;
+        };
+        if (parts.size() == 1) {
+            bool ok;
+            const qreal f = frac(parts[0], ok);
+            if (parts[0] == QLatin1String("top") || parts[0] == QLatin1String("bottom")) fy = f;
+            else if (ok) fx = f;
+        } else if (parts.size() >= 2) {
+            // CSS: "x y", but a vertical keyword first ("top left") swaps them.
+            const bool swap = parts[0] == QLatin1String("top") || parts[0] == QLatin1String("bottom")
+                || parts[1] == QLatin1String("left") || parts[1] == QLatin1String("right");
+            bool okx, oky;
+            const qreal a = frac(parts[0], okx), b = frac(parts[1], oky);
+            fx = swap ? b : a;
+            fy = swap ? a : b;
+        }
+        Extra &x = ensureExtra();
+        x.originFx = fx;
+        x.originFy = fy;
+        static const QQuickItem::TransformOrigin grid[3][3] = {
+            { QQuickItem::TopLeft, QQuickItem::Top, QQuickItem::TopRight },
+            { QQuickItem::Left, QQuickItem::Center, QQuickItem::Right },
+            { QQuickItem::BottomLeft, QQuickItem::Bottom, QQuickItem::BottomRight },
+        };
+        setTransformOrigin(grid[int(fy * 2 + 0.5)][int(fx * 2 + 0.5)]);
+        if (x.rotationX)
+            updateRotationXOrigin();
     }
 
     // --- @keyframes animation driver ---
@@ -1199,7 +1241,18 @@ void CssRect::applyStaticTransformAndAnim()
                                      m.value(QStringLiteral("rotate")).toDouble(),
                                      m.value(QStringLiteral("scale"), 1.0).toDouble(),
                                      m.value(QStringLiteral("tx")).toDouble(),
-                                     m.value(QStringLiteral("ty")).toDouble() });
+                                     m.value(QStringLiteral("ty")).toDouble(),
+                                     m.value(QStringLiteral("rotateX")).toDouble() });
+        }
+        // The first frame shows the first keyframe, not the untransformed box (a fold starting at
+        // -90deg would flash open for one frame before the first tick).
+        if (m_animActive && !x.animStopsFast.isEmpty()) {
+            const AnimStop &f = x.animStopsFast.first();
+            x.animRotate = f.rotate;
+            x.animScale = f.scale;
+            x.animTx = f.tx;
+            x.animTy = f.ty;
+            x.animRotX = f.rotX;
         }
     } else {
         m_animActive = false;
@@ -1258,6 +1311,11 @@ void CssRect::applyTransform()
     const Extra &x = *m_extra;
     setRotation(m_animActive ? x.animRotate : x.staticRotate);
     setScale(m_animActive ? x.animScale : x.staticScale);
+    const qreal rotX = m_animActive ? x.animRotX : x.staticRotX;
+    if (!x.rotationX && rotX != 0.0)
+        ensureRotationX(); // lazy: only boxes that turn about X
+    if (x.rotationX)
+        x.rotationX->setProperty("angle", rotX);
     const qreal wantTx = m_animActive ? x.animTx : x.staticTx;
     const qreal wantTy = m_animActive ? x.animTy : x.staticTy;
     if (!x.translate && (wantTx != 0.0 || wantTy != 0.0))
@@ -1424,8 +1482,11 @@ void CssRect::geometryChange(const QRectF &newGeometry, const QRectF &oldGeometr
 {
     QQuickItem::geometryChange(newGeometry, oldGeometry);
     layoutChildren();
-    if (newGeometry.size() != oldGeometry.size())
+    if (newGeometry.size() != oldGeometry.size()) {
         requestRelayout();
+        if (m_extra && m_extra->rotationX)
+            updateRotationXOrigin();
+    }
 }
 
 qreal CssRect::targetHeight() const
@@ -1547,6 +1608,35 @@ void CssRect::ensureTranslate()
             ref.append(o);
         ensureExtra().translate = o;
     }
+}
+
+void CssRect::ensureRotationX()
+{
+    if ((m_extra && m_extra->rotationX) || !isComponentComplete())
+        return;
+    QQmlEngine *eng = qmlEngine(this);
+    if (!eng)
+        return;
+    // QtQuick's Rotation about X projects in perspective (its distanceToPlane): a fold, not a squash.
+    QQmlComponent *comp = QmlCss::cachedComponent(eng, QStringLiteral("cssrect-rotationx"),
+        "import QtQuick\nRotation { axis.x: 1; axis.y: 0; axis.z: 0 }");
+    if (QObject *o = comp->create(qmlContext(this))) {
+        o->setParent(this);
+        QQmlListReference ref(this, "transform");
+        if (ref.isValid())
+            ref.append(o);
+        ensureExtra().rotationX = o;
+        updateRotationXOrigin();
+    }
+}
+
+// The Rotation's pivot follows the box's size (transform-origin is a fraction of it).
+void CssRect::updateRotationXOrigin()
+{
+    if (!m_extra || !m_extra->rotationX)
+        return;
+    QQmlProperty(m_extra->rotationX, QStringLiteral("origin.x")).write(width() * m_extra->originFx);
+    QQmlProperty(m_extra->rotationX, QStringLiteral("origin.y")).write(height() * m_extra->originFy);
 }
 
 void CssRect::ensureAnim()

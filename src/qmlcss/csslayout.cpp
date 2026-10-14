@@ -1489,6 +1489,7 @@ QVariantList CssLayoutEngine::buildAnimStops(const QVariantList &frames) const
         QVariantMap stop;
         stop.insert(QStringLiteral("offset"), f.value(QStringLiteral("offset")));
         stop.insert(QStringLiteral("rotate"), tr.value(QStringLiteral("rotate"), 0.0));
+        stop.insert(QStringLiteral("rotateX"), tr.value(QStringLiteral("rotateX"), 0.0));
         stop.insert(QStringLiteral("scale"), tr.value(QStringLiteral("scale"), 1.0));
         stop.insert(QStringLiteral("tx"), tr.value(QStringLiteral("translateX"), 0.0));
         stop.insert(QStringLiteral("ty"), tr.value(QStringLiteral("translateY"), 0.0));
@@ -1498,6 +1499,7 @@ QVariantList CssLayoutEngine::buildAnimStops(const QVariantList &frames) const
         QVariantMap z;
         z.insert(QStringLiteral("offset"), 0.0);
         z.insert(QStringLiteral("rotate"), 0.0);
+        z.insert(QStringLiteral("rotateX"), 0.0);
         z.insert(QStringLiteral("scale"), 1.0);
         z.insert(QStringLiteral("tx"), 0.0);
         z.insert(QStringLiteral("ty"), 0.0);

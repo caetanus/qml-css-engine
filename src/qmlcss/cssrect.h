@@ -157,6 +157,8 @@ public:
     void ensureScrollable();
     // Lazy composition of the per-box extras (most boxes never need them).
     void ensureTranslate();
+    void ensureRotationX();
+    void updateRotationXOrigin();
     void ensureAnim();
     // Compose the paint subtree on demand (lean shell: layout-only boxes skip it entirely).
     void ensureRenderShell();
@@ -269,7 +271,7 @@ private:
     // box only needs once a feature is in use (renderer defaults, transforms/@keyframes, transitions,
     // scroll, the paint shells, the hover handler) lives in Extra, allocated on first use (ensureExtra)
     // and never freed before the box: zero cost for a layout-only box, one allocation for the rest.
-    struct AnimStop { double offset, rotate, scale, tx, ty; };
+    struct AnimStop { double offset, rotate, scale, tx, ty, rotX; };
     struct Extra {
         // Renderer defaults (the QML default* props, set by the CssFill shim).
         qreal radius = 0;
@@ -277,9 +279,12 @@ private:
         QColor defaultBorderColor = QColor(Qt::transparent);
         qreal defaultBorderWidth = 0;
         // Animated transform channels — written each tick by setAnimTick()/CssLayoutEngine::applyAnim().
-        qreal animRotate = 0, animScale = 1, animTx = 0, animTy = 0;
+        qreal animRotate = 0, animScale = 1, animTx = 0, animTy = 0, animRotX = 0;
         // Static (non-animated) transform resolved from `style` (rotate deg / scale / tx,ty px).
-        qreal staticRotate = 0, staticScale = 1, staticTx = 0, staticTy = 0;
+        qreal staticRotate = 0, staticScale = 1, staticTx = 0, staticTy = 0, staticRotX = 0;
+        // transform-origin, as fractions of the box (CSS default: the centre). It pivots rotate and
+        // scale (the item's transformOrigin: the nine anchor points) and rotateX (the Rotation's origin).
+        qreal originFx = 0.5, originFy = 0.5;
         // @keyframes driver: the normalised position (QML `property real animTick`), the stops
         // (buildAnimStops output) and the same stops pre-parsed for the per-frame tick (the QVariantMap
         // form costs allocations EVERY frame at 60fps), and the REAL NumberAnimation on animTick (0→1).
@@ -288,6 +293,7 @@ private:
         QList<AnimStop> animStopsFast;
         QPointer<QObject> anim;
         QPointer<QObject> translate; // the QtQuick Translate in our transform list
+        QPointer<QObject> rotationX; // the QtQuick Rotation about X (rotateX), created on first use
         // CSS transition (parsed from `transition` at style apply; m_transMs stays inline).
         int transEasing = 1; // QEasingCurve::InOutQuad set at parse; int to avoid the header dep
         QString transProp;

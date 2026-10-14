@@ -347,6 +347,17 @@ void CssThemeTests::loadCssAppliesClassOnlyTargets()
     QCOMPARE(stub.m_style.value(QStringLiteral("color")).toString(), QStringLiteral("#abcdef"));
 }
 
+void CssThemeTests::parsesRotateX()
+{
+    CssTheme theme;
+    QVariantMap t = theme.parseTransform(QStringLiteral("rotateX(-90deg) translateY(4px)"));
+    QCOMPARE(t.value(QStringLiteral("rotateX")).toDouble(), -90.0);
+    QCOMPARE(t.value(QStringLiteral("translateY")).toDouble(), 4.0);
+    QCOMPARE(t.value(QStringLiteral("rotate")).toDouble(), 0.0);   // rotateX is not the 2D rotate
+    QCOMPARE(theme.parseTransform(QStringLiteral("rotateX(0.25turn)")).value(QStringLiteral("rotateX")).toDouble(), 90.0);
+    QCOMPARE(theme.parseTransform(QStringLiteral("rotate(30deg)")).value(QStringLiteral("rotateX")).toDouble(), 0.0);
+}
+
 void CssThemeTests::parsesKeyframesAndAnimation()
 {
     CssTheme theme;

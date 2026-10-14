@@ -63,5 +63,6 @@ private slots:
     void loadCssAppliesReappliesAndPrunes();
     void loadCssAppliesClassOnlyTargets();
     void parsesKeyframesAndAnimation();
+    void parsesRotateX();
     void appliesArrayCssClassFromQJSValue();
 };
