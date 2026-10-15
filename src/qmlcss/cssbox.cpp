@@ -2,6 +2,12 @@
 
 #include "csstheme.h"
 #include "csstheme_p.h" // cssVariantToStringList (internal declaration; cssbox.cpp lives beside it)
+#include "cssvar.h"
+
+#include <QJSValue>
+#include <QSet>
+
+#include <cmath>
 
 #include <QtQuick/private/qquickitem_p.h>
 #include <QtQuick/private/qquickitemchangelistener_p.h>
@@ -212,7 +218,224 @@ bool CssBox::hasCssIdentity() const
 {
     if (!m_cssId.isEmpty() || !m_cssPart.isEmpty() || !m_cssPrimitive.isEmpty())
         return true;
-    return !m_classList.isEmpty();
+    // An inline style alone is enough to be styled (nothing else would resolve it).
+    return !m_classList.isEmpty() || m_inline;
+}
+
+// --- inline style ------------------------------------------------------------------------------------------
+
+namespace {
+
+// React DOM's unitless properties (kebab-case): a bare number there is NOT a length, so it gets no `px`.
+bool isUnitlessProperty(const QString &prop)
+{
+    static const QSet<QString> unitless = {
+        QStringLiteral("animation-iteration-count"), QStringLiteral("aspect-ratio"),
+        QStringLiteral("border-image-outset"), QStringLiteral("border-image-slice"),
+        QStringLiteral("border-image-width"), QStringLiteral("column-count"), QStringLiteral("columns"),
+        QStringLiteral("flex"), QStringLiteral("flex-grow"), QStringLiteral("flex-shrink"),
+        QStringLiteral("flex-order"), QStringLiteral("flex-positive"), QStringLiteral("flex-negative"),
+        QStringLiteral("grid-area"), QStringLiteral("grid-row"), QStringLiteral("grid-row-end"),
+        QStringLiteral("grid-row-span"), QStringLiteral("grid-row-start"), QStringLiteral("grid-column"),
+        QStringLiteral("grid-column-end"), QStringLiteral("grid-column-span"), QStringLiteral("grid-column-start"),
+        QStringLiteral("font-weight"), QStringLiteral("line-clamp"), QStringLiteral("line-height"),
+        QStringLiteral("opacity"), QStringLiteral("order"), QStringLiteral("orphans"), QStringLiteral("scale"),
+        QStringLiteral("tab-size"), QStringLiteral("widows"), QStringLiteral("z-index"), QStringLiteral("zoom"),
+        QStringLiteral("fill-opacity"), QStringLiteral("flood-opacity"), QStringLiteral("stop-opacity"),
+        QStringLiteral("stroke-dasharray"), QStringLiteral("stroke-dashoffset"),
+        QStringLiteral("stroke-miterlimit"), QStringLiteral("stroke-opacity"), QStringLiteral("stroke-width"),
+    };
+    return unitless.contains(prop);
+}
+
+// `backgroundColor` -> `background-color`, `WebkitTransform` -> `-webkit-transform`, `msTransform` ->
+// `-ms-transform` (React DOM's rule). Kebab-case and custom properties pass through.
+QString kebabProperty(const QString &key)
+{
+    if (key.startsWith(QLatin1String("--")))
+        return key;
+    QString out;
+    out.reserve(key.size() + 4);
+    if (key.startsWith(QLatin1String("ms")) && key.size() > 2 && key.at(2).isUpper())
+        out += QLatin1Char('-');
+    for (const QChar c : key) {
+        if (c.isUpper()) {
+            out += QLatin1Char('-');
+            out += c.toLower();
+        } else {
+            out += c;
+        }
+    }
+    return Detail::normalizeDeclarationProperty(out);
+}
+
+// The longhands a shorthand resets. An inline shorthand must beat a stylesheet longhand (the web resets
+// the longhands), but the consumers prefer a longhand over its shorthand whatever their origin — so the
+// overlay erases the cascaded longhands first.
+const QStringList *longhandsOf(const QString &prop)
+{
+    static const QHash<QString, QStringList> table = [] {
+        QHash<QString, QStringList> t;
+        const QStringList sides = {QStringLiteral("top"), QStringLiteral("right"), QStringLiteral("bottom"),
+                                   QStringLiteral("left")};
+        auto sided = [&](const QString &prefix, const QString &suffix) {
+            QStringList l;
+            for (const QString &s : sides)
+                l << prefix + s + suffix;
+            return l;
+        };
+        t.insert(QStringLiteral("padding"), sided(QStringLiteral("padding-"), QString()));
+        t.insert(QStringLiteral("margin"), sided(QStringLiteral("margin-"), QString()));
+        t.insert(QStringLiteral("inset"), sides);
+        t.insert(QStringLiteral("border-width"), sided(QStringLiteral("border-"), QStringLiteral("-width")));
+        t.insert(QStringLiteral("border-style"), sided(QStringLiteral("border-"), QStringLiteral("-style")));
+        t.insert(QStringLiteral("border-color"), sided(QStringLiteral("border-"), QStringLiteral("-color")));
+        QStringList border = {QStringLiteral("border-width"), QStringLiteral("border-style"),
+                              QStringLiteral("border-color")};
+        for (const QString &s : sides) {
+            const QString side = QStringLiteral("border-") + s;
+            const QStringList parts = {side + QStringLiteral("-width"), side + QStringLiteral("-style"),
+                                       side + QStringLiteral("-color")};
+            t.insert(side, parts);
+            border << side << parts;
+        }
+        t.insert(QStringLiteral("border"), border);
+        t.insert(QStringLiteral("border-radius"),
+                 {QStringLiteral("border-top-left-radius"), QStringLiteral("border-top-right-radius"),
+                  QStringLiteral("border-bottom-right-radius"), QStringLiteral("border-bottom-left-radius")});
+        t.insert(QStringLiteral("background"),
+                 {QStringLiteral("background-color"), QStringLiteral("background-image"),
+                  QStringLiteral("background-position"), QStringLiteral("background-size"),
+                  QStringLiteral("background-repeat"), QStringLiteral("background-attachment"),
+                  QStringLiteral("background-clip"), QStringLiteral("background-origin")});
+        t.insert(QStringLiteral("flex"),
+                 {QStringLiteral("flex-grow"), QStringLiteral("flex-shrink"), QStringLiteral("flex-basis")});
+        t.insert(QStringLiteral("flex-flow"), {QStringLiteral("flex-direction"), QStringLiteral("flex-wrap")});
+        t.insert(QStringLiteral("gap"), {QStringLiteral("row-gap"), QStringLiteral("column-gap")});
+        t.insert(QStringLiteral("overflow"), {QStringLiteral("overflow-x"), QStringLiteral("overflow-y")});
+        t.insert(QStringLiteral("font"),
+                 {QStringLiteral("font-family"), QStringLiteral("font-size"), QStringLiteral("font-weight"),
+                  QStringLiteral("font-style"), QStringLiteral("font-variant"), QStringLiteral("line-height")});
+        t.insert(QStringLiteral("outline"),
+                 {QStringLiteral("outline-width"), QStringLiteral("outline-style"), QStringLiteral("outline-color")});
+        t.insert(QStringLiteral("text-decoration"),
+                 {QStringLiteral("text-decoration-line"), QStringLiteral("text-decoration-color"),
+                  QStringLiteral("text-decoration-style")});
+        t.insert(QStringLiteral("transition"),
+                 {QStringLiteral("transition-property"), QStringLiteral("transition-duration"),
+                  QStringLiteral("transition-timing-function"), QStringLiteral("transition-delay")});
+        t.insert(QStringLiteral("animation"),
+                 {QStringLiteral("animation-name"), QStringLiteral("animation-duration"),
+                  QStringLiteral("animation-timing-function"), QStringLiteral("animation-delay"),
+                  QStringLiteral("animation-iteration-count"), QStringLiteral("animation-direction"),
+                  QStringLiteral("animation-fill-mode")});
+        t.insert(QStringLiteral("grid-template"),
+                 {QStringLiteral("grid-template-rows"), QStringLiteral("grid-template-columns"),
+                  QStringLiteral("grid-template-areas")});
+        t.insert(QStringLiteral("place-items"), {QStringLiteral("align-items"), QStringLiteral("justify-items")});
+        t.insert(QStringLiteral("place-content"),
+                 {QStringLiteral("align-content"), QStringLiteral("justify-content")});
+        t.insert(QStringLiteral("place-self"), {QStringLiteral("align-self"), QStringLiteral("justify-self")});
+        return t;
+    }();
+    const auto it = table.constFind(prop);
+    return it == table.constEnd() ? nullptr : &*it;
+}
+
+// One map value as a declaration value, or a null QString when the entry declares nothing (null,
+// undefined, false, empty — React DOM drops those).
+QString inlineValueString(const QString &prop, const QVariant &v)
+{
+    switch (v.typeId()) {
+    case QMetaType::Int: case QMetaType::UInt: case QMetaType::LongLong: case QMetaType::ULongLong:
+    case QMetaType::Double: case QMetaType::Float: {
+        const double d = v.toDouble();
+        if (!std::isfinite(d))
+            return QString();
+        QString n = d == std::floor(d) && std::abs(d) < 1e15 ? QString::number(qint64(d))
+                                                            : QString::number(d, 'g', 15);
+        if (d != 0 && !CssVar::isCustomProperty(prop) && !isUnitlessProperty(prop))
+            n += QLatin1String("px");
+        return n;
+    }
+    case QMetaType::Bool:
+    case QMetaType::UnknownType:
+    case QMetaType::Nullptr:
+        return QString();
+    default:
+        break;
+    }
+    const QString s = v.toString();
+    if (s.trimmed().isEmpty())
+        return QString();
+    return Detail::normalizeDeclarationValue(prop, s);
+}
+
+} // namespace
+
+QVariant CssBox::inlineStyle() const
+{
+    return m_inline ? QVariant(m_inline->decls) : QVariant(QVariantMap());
+}
+
+void CssBox::setInlineStyle(const QVariant &in)
+{
+    QVariant v = in;
+    if (v.metaType() == QMetaType::fromType<QJSValue>())
+        v = v.value<QJSValue>().toVariant();
+
+    QVariantMap decls;
+    if (v.typeId() == QMetaType::QString) {
+        // The stylesheet's own declaration parser: identical normalisation (folding, colour keywords).
+        // `!important` is accepted and ignored — an inline declaration already wins.
+        const QVariantMap parsed = Detail::parseDeclarationBlock(v.toString());
+        for (auto it = parsed.constBegin(); it != parsed.constEnd(); ++it)
+            if (!it.value().toString().isEmpty())
+                decls.insert(it.key(), it.value());
+    } else if (v.canConvert<QVariantMap>() && v.typeId() != QMetaType::UnknownType) {
+        const QVariantMap map = v.toMap();
+        for (auto it = map.constBegin(); it != map.constEnd(); ++it) {
+            const QString prop = kebabProperty(it.key());
+            if (prop.isEmpty())
+                continue;
+            const QString value = inlineValueString(prop, it.value());
+            if (!value.isNull())
+                decls.insert(prop, value);
+        }
+    }
+
+    const bool had = bool(m_inline);
+    if (decls.isEmpty() ? !had : (had && m_inline->decls == decls))
+        return; // a re-bind producing the same declarations: no restyle
+
+    if (decls.isEmpty()) {
+        m_inline.reset();
+    } else {
+        auto next = std::make_unique<CssInlineStyle>();
+        for (auto it = decls.constBegin(); it != decls.constEnd(); ++it) {
+            if (const QStringList *longhands = longhandsOf(it.key()))
+                for (const QString &l : *longhands)
+                    if (!decls.contains(l))
+                        next->shadowedLonghands << l;
+            if (!next->usesVars)
+                next->usesVars = CssVar::isCustomProperty(it.key()) || CssVar::hasReference(it.value().toString());
+        }
+        next->decls = std::move(decls);
+        m_inline = std::move(next);
+    }
+    emit inlineStyleChanged();
+    if (had != bool(m_inline))
+        emit hasCssIdentityChanged();
+
+    // Only THIS box re-applies: an inline style changes no identity, so neither the context node nor any
+    // descendant's selector match moves (inherited text values follow through the usual propagation).
+    if (m_theme && isComponentComplete()) {
+        m_theme->applyInlineStyle(this);
+        if (!window())
+            m_scenelessResolve = true; // as identityChanged: healed on scene join
+    } else {
+        maybeLoadCss();
+    }
 }
 
 void CssBox::setCssId(const QString &v)

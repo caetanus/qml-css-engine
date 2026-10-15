@@ -9,6 +9,8 @@
 #include <QVariant>
 #include <QVariantMap>
 
+#include <memory>
+
 namespace QmlCss {
 
 class CssTheme;
@@ -18,6 +20,15 @@ class CssTheme;
 struct CssInheritedText {
     QString color, fontFamily, fontSize, fontWeight, lineHeight, letterSpacing, textTransform, textAlign;
     friend bool operator==(const CssInheritedText &, const CssInheritedText &) = default;
+};
+
+// A box's inline `style` (the web's style="…" attribute), normalised once per write. Overlaid on the
+// cascade's resolved map in CssTheme::applyCssTo, after :hover/:focus, right before the push — never
+// memoised on the context node (two boxes of one identity may carry different inline styles).
+struct CssInlineStyle {
+    QVariantMap decls;               // kebab-case property -> normalised string value
+    QStringList shadowedLonghands;   // cascade longhands an inline shorthand resets (`padding` -> `padding-left`…)
+    bool usesVars = false;           // a var() reference or a custom property: substituted at apply time
 };
 
 // The typed home of a CSS element's identity and resolved style. Every engine type that can be
@@ -37,6 +48,11 @@ class CssBox : public QQuickItem {
     Q_PROPERTY(QString cssPrimitive READ cssPrimitive WRITE setCssPrimitive NOTIFY cssPrimitiveChanged)
     Q_PROPERTY(QString cssPart READ cssPart WRITE setCssPart NOTIFY cssPartChanged)
     Q_PROPERTY(bool hasCssIdentity READ hasCssIdentity NOTIFY hasCssIdentityChanged)
+    // The element's inline style: a map (kebab- or camelCase keys; a number on a length property means
+    // px, as in React DOM) or a declaration string ("color: red; padding: 4px 8px"). Wins over every
+    // stylesheet rule, :hover included. Read back as the normalised map. Unlike `style` (the cascade's
+    // OUTPUT, overwritten by every apply), this is an INPUT.
+    Q_PROPERTY(QVariant inlineStyle READ inlineStyle WRITE setInlineStyle NOTIFY inlineStyleChanged)
 
 public:
     QString cssId() const { return m_cssId; }
@@ -52,6 +68,10 @@ public:
     QString cssPart() const { return m_cssPart; }
     void setCssPart(const QString &v);
     bool hasCssIdentity() const;
+    QVariant inlineStyle() const;
+    void setInlineStyle(const QVariant &v);
+    // Null when the box has no inline style: the apply path pays this one pointer test.
+    const CssInlineStyle *inlineStyleData() const { return m_inline.get(); }
 
     // Typed views, converted ONCE per write (the QML-facing values stay QVariant lists/strings).
     const QStringList &classList() const { return m_classList; }
@@ -118,6 +138,7 @@ signals:
     void cssPrimitiveChanged();
     void cssPartChanged();
     void hasCssIdentityChanged();
+    void inlineStyleChanged();
 
 protected:
     CssBox(const QString &defaultPrimitive, QQuickItem *parent);
@@ -194,6 +215,8 @@ private:
     QStringList m_alternateIdList;
     mutable QVariantMap m_layoutParsedFrom;
     mutable QExplicitlySharedDataPointer<CssLayoutStyle> m_layoutStyle;
+    // Allocated only by a non-empty inline style: one pointer per box otherwise.
+    std::unique_ptr<CssInlineStyle> m_inline;
 };
 
 } // namespace QmlCss

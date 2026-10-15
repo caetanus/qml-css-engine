@@ -5,6 +5,15 @@ and breaking API moves are called out per entry.
 
 ## Unreleased
 
+### Added
+- **`CssBox.inlineStyle`**: an element's inline style (the web's `style` attribute), separate from
+  `style` (the cascade's output). Accepts a map (kebab- or camelCase keys, numbers on length
+  properties become `px`) or a declaration string (the stylesheet parser's normalisation). Overlaid
+  after the cascade and `:hover`/`:focus`, never memoised on the shared context node; `var()` works;
+  an inline shorthand resets the stylesheet's longhands; a change re-applies only that box. A box
+  without one pays a single pointer test per apply. Known gap: a stylesheet `!important` does not
+  beat an inline declaration, and inline custom properties are not inherited by descendants.
+
 ## 0.2.0 - 2026-10-11
 
 ### Breaking

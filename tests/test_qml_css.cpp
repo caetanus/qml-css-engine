@@ -6889,3 +6889,227 @@ void QmlCssTests::cssRectRotateXRenders()
     QVERIFY2(!red(mid, 100, 53), "centre pivot: the top edge moved in");
     QVERIFY2(red(mid, 100, 100), "centre pivot: the middle stays");
 }
+
+// --- inline style --------------------------------------------------------------------------------------------
+
+namespace {
+QString styleOf(QObject *o, const char *key)
+{
+    return o->property("style").toMap().value(QLatin1String(key)).toString();
+}
+} // namespace
+
+void QmlCssTests::inlineStyleBeatsClassAndHover()
+{
+    IdentityFixture f(QStringLiteral(
+        ".card { background-color: #ffffff; color: #000001; } "
+        ".card:hover { background-color: #ff0000; color: #ff0001; } "
+        "#hero.card { background-color: #0000ff; }"),
+        "CssRect { cssId: \"hero\"; cssClass: [\"card\"]; width: 10; height: 10;"
+        " inlineStyle: ({ \"background-color\": \"#00ff00\" }) }");
+    QVERIFY2(f.object, qPrintable(f.error));
+    // Beats a class AND an id+class rule.
+    QCOMPARE(f.style("background-color"), QStringLiteral("#00ff00"));
+    QCOMPARE(f.style("color"), QStringLiteral("#000001"));
+    QVERIFY(f.object->property("cssHoverStyled").toBool());
+    // Beats :hover; what the inline style does not declare still follows :hover.
+    QVERIFY(f.object->setProperty("cssEngineHover", true));
+    QCOMPARE(f.style("background-color"), QStringLiteral("#00ff00"));
+    QCOMPARE(f.style("color"), QStringLiteral("#ff0001"));
+    QVERIFY(f.object->setProperty("cssEngineHover", false));
+    QCOMPARE(f.style("color"), QStringLiteral("#000001"));
+}
+
+void QmlCssTests::inlineStyleStringAndMapNormalise()
+{
+    IdentityFixture f(QStringLiteral(".a { color: #123456; }"),
+                      "CssRect { cssClass: [\"a\"]; width: 10; height: 10;"
+                      " inlineStyle: \"Background-Color: transparent; padding: 4px 8px; color: red !important\" }");
+    QVERIFY2(f.object, qPrintable(f.error));
+    // The stylesheet's own declaration parser: folded name, colour keyword folded, !important stripped.
+    QCOMPARE(f.style("background-color"), QStringLiteral("#00000000"));
+    QCOMPARE(f.style("padding"), QStringLiteral("4px 8px"));
+    QCOMPARE(f.style("color"), QStringLiteral("red"));
+    QCOMPARE(f.object->property("inlineStyle").toMap().value(QStringLiteral("padding")).toString(),
+             QStringLiteral("4px 8px"));
+
+    // A map: camelCase keys, numbers on length properties get px, unitless ones do not, a vendor prefix
+    // keeps its dash, null/empty/false entries declare nothing.
+    QVariantMap m;
+    m.insert(QStringLiteral("backgroundColor"), QStringLiteral("transparent"));
+    m.insert(QStringLiteral("width"), 40);
+    m.insert(QStringLiteral("marginTop"), 2.5);
+    m.insert(QStringLiteral("opacity"), 0.5);
+    m.insert(QStringLiteral("flexGrow"), 2);
+    m.insert(QStringLiteral("zIndex"), 3);
+    m.insert(QStringLiteral("height"), 0);
+    m.insert(QStringLiteral("WebkitTransform"), QStringLiteral("none"));
+    m.insert(QStringLiteral("color"), QVariant());
+    m.insert(QStringLiteral("border"), QString());
+    m.insert(QStringLiteral("visibility"), false);
+    QVERIFY(f.object->setProperty("inlineStyle", m));
+    const QVariantMap in = f.object->property("inlineStyle").toMap();
+    QCOMPARE(in.value(QStringLiteral("background-color")).toString(), QStringLiteral("#00000000"));
+    QCOMPARE(in.value(QStringLiteral("width")).toString(), QStringLiteral("40px"));
+    QCOMPARE(in.value(QStringLiteral("margin-top")).toString(), QStringLiteral("2.5px"));
+    QCOMPARE(in.value(QStringLiteral("opacity")).toString(), QStringLiteral("0.5"));
+    QCOMPARE(in.value(QStringLiteral("flex-grow")).toString(), QStringLiteral("2"));
+    QCOMPARE(in.value(QStringLiteral("z-index")).toString(), QStringLiteral("3"));
+    QCOMPARE(in.value(QStringLiteral("height")).toString(), QStringLiteral("0"));
+    QCOMPARE(in.value(QStringLiteral("-webkit-transform")).toString(), QStringLiteral("none"));
+    QVERIFY(!in.contains(QStringLiteral("color")));
+    QVERIFY(!in.contains(QStringLiteral("border")));
+    QVERIFY(!in.contains(QStringLiteral("visibility")));
+    // The cascade's colour is back: the string's `color: red` is gone with it.
+    QCOMPARE(f.style("color"), QStringLiteral("#123456"));
+    QCOMPARE(f.style("width"), QStringLiteral("40px"));
+
+    // From QML: a JS object literal reaches the same normalisation.
+    QQmlComponent c(&f.engine);
+    c.setData("import QtQuick\nimport qmlcss\nCssRect { width: 10; height: 10;"
+              " inlineStyle: ({ paddingLeft: 6, lineHeight: 1.5 }) }", QUrl());
+    QScopedPointer<QObject> o(c.create());
+    QVERIFY2(o, qPrintable(c.errorString()));
+    QCOMPARE(styleOf(o.data(), "padding-left"), QStringLiteral("6px"));
+    QCOMPARE(styleOf(o.data(), "line-height"), QStringLiteral("1.5"));
+}
+
+void QmlCssTests::inlineStyleResolvesVars()
+{
+    IdentityFixture f(QStringLiteral(":root { --accent: #123456; } .a { --local: #654321; }"),
+                      "CssRect { cssClass: [\"a\"]; width: 10; height: 10;"
+                      " inlineStyle: ({ \"color\": \"var(--accent)\", \"background-color\": \"var(--local)\","
+                      " \"--mine\": \"#111111\", \"border-color\": \"var(--mine)\","
+                      " \"outline-color\": \"var(--nope, #222222)\" }) }");
+    QVERIFY2(f.object, qPrintable(f.error));
+    QCOMPARE(f.style("color"), QStringLiteral("#123456"));
+    QCOMPARE(f.style("background-color"), QStringLiteral("#654321"));
+    QCOMPARE(f.style("border-color"), QStringLiteral("#111111"));
+    QCOMPARE(f.style("outline-color"), QStringLiteral("#222222"));
+    // Custom properties are consumed, as the cascade's are.
+    QVERIFY(!f.object->property("style").toMap().contains(QStringLiteral("--mine")));
+
+    // A sheet without any custom property still resolves an inline var() fallback.
+    IdentityFixture g(QStringLiteral(".b { color: #000000; }"),
+                      "CssRect { cssClass: [\"b\"]; width: 10; height: 10;"
+                      " inlineStyle: \"color: var(--x, #abcdef)\" }");
+    QVERIFY2(g.object, qPrintable(g.error));
+    QCOMPARE(g.style("color"), QStringLiteral("#abcdef"));
+}
+
+void QmlCssTests::inlineStyleRelayouts()
+{
+    IdentityFixture f(QStringLiteral(
+        ".row { display: flex; flex-direction: row; width: 200px; height: 20px; } "
+        ".cell { width: 10px; height: 10px; }"),
+        "CssRect { cssClass: [\"row\"]\n"
+        "  CssRect { objectName: \"a\"; cssClass: [\"cell\"] }\n"
+        "  CssRect { objectName: \"b\"; cssClass: [\"cell\"] }\n"
+        "}");
+    QVERIFY2(f.object, qPrintable(f.error));
+    auto *a = f.object->findChild<QQuickItem *>(QStringLiteral("a"));
+    auto *b = f.object->findChild<QQuickItem *>(QStringLiteral("b"));
+    QVERIFY(a && b);
+    QTRY_COMPARE_WITH_TIMEOUT(b->x(), 10.0, 2000);
+    QVERIFY(a->setProperty("inlineStyle", QVariantMap{{QStringLiteral("width"), 40},
+                                                       {QStringLiteral("marginRight"), 5}}));
+    QTRY_COMPARE_WITH_TIMEOUT(a->width(), 40.0, 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(b->x(), 45.0, 2000);
+    // And back: clearing the inline style relays out to the class's size.
+    QVERIFY(a->setProperty("inlineStyle", QVariant()));
+    QTRY_COMPARE_WITH_TIMEOUT(a->width(), 10.0, 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(b->x(), 10.0, 2000);
+}
+
+void QmlCssTests::inlineStyleDoesNotPolluteIdentityCache()
+{
+    IdentityFixture f(QStringLiteral(".sw { background-color: #ffffff; width: 10px; height: 10px; }"),
+                      "Item {\n"
+                      "  CssRect { objectName: \"r\"; cssClass: [\"sw\"]; inlineStyle: ({ background: \"#ff0000\" }) }\n"
+                      "  CssRect { objectName: \"g\"; cssClass: [\"sw\"]; inlineStyle: ({ background: \"#00ff00\" }) }\n"
+                      "  CssRect { objectName: \"p\"; cssClass: [\"sw\"] }\n"
+                      "}");
+    QVERIFY2(f.object, qPrintable(f.error));
+    auto *r = f.object->findChild<CssBox *>(QStringLiteral("r"));
+    auto *g = f.object->findChild<CssBox *>(QStringLiteral("g"));
+    auto *p = f.object->findChild<CssBox *>(QStringLiteral("p"));
+    QVERIFY(r && g && p);
+    // One identity, one interned context node — and three different results.
+    QCOMPARE(r->contextNodeForTest(), g->contextNodeForTest());
+    QCOMPARE(r->contextNodeForTest(), p->contextNodeForTest());
+    QCOMPARE(styleOf(r, "background"), QStringLiteral("#ff0000"));
+    QCOMPARE(styleOf(g, "background"), QStringLiteral("#00ff00"));
+    QVERIFY(!p->styleMap().contains(QStringLiteral("background")));
+    // The inline `background` shorthand reset the class's background-color on r and g only.
+    QVERIFY(!r->styleMap().contains(QStringLiteral("background-color")));
+    QCOMPARE(styleOf(p, "background-color"), QStringLiteral("#ffffff"));
+    // The node's memo holds the cascade only.
+    for (const QVariantMap &memo : std::as_const(r->contextNodeForTest()->ownResolves))
+        QVERIFY(!memo.contains(QStringLiteral("background")));
+    // A box without an inline style shares the memo's map (no copy, no overlay).
+    bool shared = false;
+    for (const QVariantMap &memo : std::as_const(p->contextNodeForTest()->ownResolves))
+        shared = shared || p->styleMap().isSharedWith(memo);
+    QVERIFY(shared);
+}
+
+void QmlCssTests::inlineStyleClearRestoresCascade()
+{
+    IdentityFixture f(QStringLiteral(".a { background-color: #111111; }"),
+                      "CssRect { cssClass: [\"a\"]; width: 10; height: 10;"
+                      " inlineStyle: \"background-color: #222222; opacity: 0.5\" }");
+    QVERIFY2(f.object, qPrintable(f.error));
+    QCOMPARE(f.style("background-color"), QStringLiteral("#222222"));
+    QCOMPARE(f.style("opacity"), QStringLiteral("0.5"));
+    for (const QVariant &empty : {QVariant(QString()), QVariant(QVariantMap()), QVariant()}) {
+        QVERIFY(f.object->setProperty("inlineStyle", QStringLiteral("background-color: #333333")));
+        QCOMPARE(f.style("background-color"), QStringLiteral("#333333"));
+        QVERIFY(f.object->setProperty("inlineStyle", empty));
+        QCOMPARE(f.style("background-color"), QStringLiteral("#111111"));
+        QVERIFY(!f.object->property("style").toMap().contains(QStringLiteral("opacity")));
+        QVERIFY(f.object->property("inlineStyle").toMap().isEmpty());
+        QVERIFY(!qobject_cast<CssBox *>(f.object.data())->inlineStyleData());
+    }
+    // A box whose only styling is its inline style: clearing it drops the style too.
+    IdentityFixture g(QString(), "CssRect { cssPrimitive: \"\"; width: 10; height: 10;"
+                                 " inlineStyle: \"background-color: #444444\" }");
+    QVERIFY2(g.object, qPrintable(g.error));
+    QCOMPARE(g.style("background-color"), QStringLiteral("#444444"));
+    QVERIFY(g.object->setProperty("inlineStyle", QString()));
+    QVERIFY(g.style("background-color").isEmpty());
+}
+
+void QmlCssTests::inlineStyleShorthandResetsLonghands()
+{
+    IdentityFixture f(QStringLiteral(".a { padding-left: 10px; border-top-width: 3px; flex-grow: 2; }"),
+                      "CssRect { cssClass: [\"a\"]; width: 10; height: 10;"
+                      " inlineStyle: \"padding: 0; border-width: 1px; flex-shrink: 0\" }");
+    QVERIFY2(f.object, qPrintable(f.error));
+    const QVariantMap s = f.object->property("style").toMap();
+    QVERIFY(!s.contains(QStringLiteral("padding-left")));
+    QVERIFY(!s.contains(QStringLiteral("border-top-width")));
+    QCOMPARE(s.value(QStringLiteral("padding")).toString(), QStringLiteral("0"));
+    // A longhand resets nothing: the class's flex-grow stays beside the inline flex-shrink.
+    QCOMPARE(s.value(QStringLiteral("flex-grow")).toString(), QStringLiteral("2"));
+    QCOMPARE(s.value(QStringLiteral("flex-shrink")).toString(), QStringLiteral("0"));
+}
+
+void QmlCssTests::inlineStyleChangeAppliesOnlyThatBox()
+{
+    IdentityFixture f(QStringLiteral(".p .c { color: #010101; } .p { color: #020202; }"),
+                      "CssRect { cssClass: [\"p\"]; width: 10; height: 10\n"
+                      "  CssRect { objectName: \"c1\"; cssClass: [\"c\"] }\n"
+                      "  CssRect { objectName: \"c2\"; cssClass: [\"c\"] }\n"
+                      "}");
+    QVERIFY2(f.object, qPrintable(f.error));
+    const int applies = appliesDuring([&] {
+        f.object->setProperty("inlineStyle", QVariantMap{{QStringLiteral("color"), QStringLiteral("#030303")}});
+    });
+    QCOMPARE(applies, 1);
+    QCOMPARE(f.style("color"), QStringLiteral("#030303"));
+    // Rebinding an equal map is free.
+    const int again = appliesDuring([&] {
+        f.object->setProperty("inlineStyle", QVariantMap{{QStringLiteral("color"), QStringLiteral("#030303")}});
+    });
+    QCOMPARE(again, 0);
+}

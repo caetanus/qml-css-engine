@@ -180,6 +180,11 @@ FullSelectorParse parseFullSelector(const QString &fullSelector);
 bool ancestorSelectorMatches(const CssSimpleSelector &sel, const CssAncestorInfo &info);
 bool ancestorChainMatches(const QList<CssSimpleSelector> &required, const QList<CssAncestorInfo> &chain);
 QVariantMap parseDeclarationBlock(const QString &block, QVariantMap *importantOut = nullptr);
+// One declaration's property name / value as parseDeclarationBlock normalises them (case folding,
+// `!important` stripped and flagged, colour keywords Qt cannot parse folded). Shared with the inline
+// `style` of a CssBox so both paths produce identical values.
+QString normalizeDeclarationProperty(const QString &rawProp);
+QString normalizeDeclarationValue(const QString &prop, QString val, bool *important = nullptr);
 QVariantList parseKeyframeBlock(const QString &block);
 QString extractKeyframes(const QString &css, QHash<QString, QVariantList> &out);
 CssFontFace parseFontFace(const QString &body);

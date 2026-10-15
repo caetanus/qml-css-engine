@@ -324,4 +324,18 @@ private slots:
     // (no explicit height/width binding in QML, exactly as the transpiler emits <VirtualList>) ends
     // up at the CSS height, not the text's content height.
     void listViewDelegateHonoursCssHeight();
+
+    // Inline `style` (CssBox::inlineStyle): an INPUT overlaid on the cascade's output. Wins over a class
+    // and :hover; a declaration string and a (camelCase / numeric) map normalise like a stylesheet; var()
+    // resolves against the box's environment; a layout property relays out; two boxes of one identity
+    // keep their own inline styles (the node memo stays the cascade's); clearing restores the cascade;
+    // an inline shorthand resets the stylesheet's longhands; a change re-applies that box only.
+    void inlineStyleBeatsClassAndHover();
+    void inlineStyleStringAndMapNormalise();
+    void inlineStyleResolvesVars();
+    void inlineStyleRelayouts();
+    void inlineStyleDoesNotPolluteIdentityCache();
+    void inlineStyleClearRestoresCascade();
+    void inlineStyleShorthandResetsLonghands();
+    void inlineStyleChangeAppliesOnlyThatBox();
 };

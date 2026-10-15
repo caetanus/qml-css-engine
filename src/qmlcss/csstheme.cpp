@@ -463,6 +463,14 @@ void CssTheme::applyCssTo(QObject *target) const
     // (gradient/box-shadow/bevel with the alpha-fix a plain Rectangle cannot do). Typed for a
     // CssBox (one virtual call into its own setStyle, no by-name property dispatch); by name only
     // for a foreign item.
+    // The inline style (style="…") over the whole cascade, :hover/:focus included — AFTER the node's
+    // memo was filled, so two boxes of one identity never share an inline overlay. One pointer test
+    // for a box without one.
+    if (box) {
+        if (const CssInlineStyle *in = box->inlineStyleData())
+            overlayInlineStyle(style, *in, node.data());
+    }
+
     const qint64 tp = g_applyStats.enabled ? t.nsecsElapsed() : 0;
     if (box)
         box->applyResolvedStyle(style);
@@ -542,6 +550,20 @@ void CssTheme::restyle(CssBox *box)
         return;
     }
     restyleTarget(box);
+}
+
+void CssTheme::applyInlineStyle(CssBox *box)
+{
+    if (!box)
+        return;
+    if (!m_registered.contains(box)) {
+        if (box->hasCssIdentity())
+            loadCss(box);
+        return;
+    }
+    if (g_applyStats.enabled) ++g_applyStats.fromSender;
+    const LayoutBatchGuard batch(m_layoutEngine);
+    applyCssTo(box);
 }
 
 void CssTheme::restyleTarget(QObject *target)
@@ -765,6 +787,24 @@ QVariantMap CssTheme::resolvePartRaw(const QString &id, const QString &part, con
                                      const QString &pseudoElement) const
 {
     return resolveExactRaw(id, classes, pseudoElement, part);
+}
+
+void CssTheme::overlayInlineStyle(QVariantMap &style, const CssInlineStyle &in, const CssContextNode *node) const
+{
+    // An inline shorthand resets the longhands a stylesheet set (the consumers would prefer them).
+    for (const QString &l : in.shadowedLonghands)
+        style.remove(l);
+    if (!in.usesVars) {
+        for (auto it = in.decls.constBegin(); it != in.decls.constEnd(); ++it)
+            style.insert(it.key(), it.value());
+        return;
+    }
+    // var() against the box's own environment (its ancestors' and its own stylesheet custom properties)
+    // plus the inline custom properties; those are consumed here, as the cascade's are.
+    QVariantMap decls = in.decls;
+    CssVar::substitute(decls, CssVar::overlay(varsOf(node), decls));
+    for (auto it = decls.constBegin(); it != decls.constEnd(); ++it)
+        style.insert(it.key(), it.value());
 }
 
 // --- custom properties -------------------------------------------------------------------------------------

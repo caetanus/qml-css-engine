@@ -326,6 +326,47 @@ bool ancestorChainMatches(const QList<CssSimpleSelector> &required, const QList<
     return true;
 }
 
+QString normalizeDeclarationProperty(const QString &rawProp)
+{
+    // Custom property names are case-sensitive (`--Accent` and `--accent` differ); the rest folds.
+    const QString prop = rawProp.trimmed();
+    return prop.startsWith(QLatin1String("--")) ? prop : prop.toLower();
+}
+
+QString normalizeDeclarationValue(const QString &prop, QString val, bool *important)
+{
+    val = val.trimmed();
+    // CSS `!important`: strip a trailing `!important` (optional space) and flag it,
+    // so the cascade can let it win over higher-specificity non-important rules.
+    {
+        const int bang = val.toLower().lastIndexOf(QLatin1String("!important"));
+        if (bang >= 0 && val.mid(bang + 10).trimmed().isEmpty()) {
+            val = val.left(bang).trimmed();
+            if (important)
+                *important = true;
+        }
+    }
+    // Normalize CSS color keywords that Qt cannot parse to an explicit
+    // fully-transparent hex, in the engine, so every consumer gets a usable
+    // value — a raw QML `color:` binding or a Canvas fillStyle, not just
+    // parseColor(). Qt's QColor rejects `transparent`/`none`/`inherit` on those
+    // raw paths and falls back to black; `#00000000` reads as transparent black
+    // under both Qt's #AARRGGBB and CSS's #RRGGBBAA. Whole-value only: a gradient
+    // keeps its inner `transparent` stop (parseGradient routes it through
+    // parseColor) and substrings inside url()/font-family are never touched.
+    // `transparent` is always a colour keyword so it normalizes on any property;
+    // `none`/`inherit` mean "absent" on non-colour shorthands (border/box-shadow),
+    // so they only fold on colour properties.
+    const QString low = val.toLower();
+    const bool colorProp = prop.endsWith(QLatin1String("color"))
+        || prop == QLatin1String("fill")
+        || prop == QLatin1String("background");
+    if (low == QLatin1String("transparent")
+        || (colorProp && (low == QLatin1String("none") || low == QLatin1String("inherit"))))
+        val = QStringLiteral("#00000000");
+    return val;
+}
+
 QVariantMap parseDeclarationBlock(const QString &block, QVariantMap *importantOut)
 {
     QVariantMap props;
@@ -337,38 +378,9 @@ QVariantMap parseDeclarationBlock(const QString &block, QVariantMap *importantOu
         const QString decl = block.mid(i, end - i).trimmed();
         const int colon = decl.indexOf(QLatin1Char(':'));
         if (colon > 0) {
-            // Custom property names are case-sensitive (`--Accent` and `--accent` differ); the rest folds.
-            const QString rawProp = decl.left(colon).trimmed();
-            const QString prop = rawProp.startsWith(QLatin1String("--")) ? rawProp : rawProp.toLower();
-            QString val = decl.mid(colon + 1).trimmed();
-            // CSS `!important`: strip a trailing `!important` (optional space) and flag it,
-            // so the cascade can let it win over higher-specificity non-important rules.
+            const QString prop = normalizeDeclarationProperty(decl.left(colon));
             bool important = false;
-            {
-                const int bang = val.toLower().lastIndexOf(QLatin1String("!important"));
-                if (bang >= 0 && val.mid(bang + 10).trimmed().isEmpty()) {
-                    val = val.left(bang).trimmed();
-                    important = true;
-                }
-            }
-            // Normalize CSS color keywords that Qt cannot parse to an explicit
-            // fully-transparent hex, in the engine, so every consumer gets a usable
-            // value — a raw QML `color:` binding or a Canvas fillStyle, not just
-            // parseColor(). Qt's QColor rejects `transparent`/`none`/`inherit` on those
-            // raw paths and falls back to black; `#00000000` reads as transparent black
-            // under both Qt's #AARRGGBB and CSS's #RRGGBBAA. Whole-value only: a gradient
-            // keeps its inner `transparent` stop (parseGradient routes it through
-            // parseColor) and substrings inside url()/font-family are never touched.
-            // `transparent` is always a colour keyword so it normalizes on any property;
-            // `none`/`inherit` mean "absent" on non-colour shorthands (border/box-shadow),
-            // so they only fold on colour properties.
-            const QString low = val.toLower();
-            const bool colorProp = prop.endsWith(QLatin1String("color"))
-                || prop == QLatin1String("fill")
-                || prop == QLatin1String("background");
-            if (low == QLatin1String("transparent")
-                || (colorProp && (low == QLatin1String("none") || low == QLatin1String("inherit"))))
-                val = QStringLiteral("#00000000");
+            const QString val = normalizeDeclarationValue(prop, decl.mid(colon + 1), &important);
             if (!prop.isEmpty()) {
                 props.insert(prop, val);
                 if (important && importantOut != nullptr)

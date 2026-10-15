@@ -24,8 +24,9 @@ identity properties. `CssTheme::loadCss()` reads them to resolve and push styles
 | `cssPrimitive` | `string` | component-specific | Tells the engine which CSS→QML mapping to use (`"rect"`, `"text"`, `"item"`) |
 | `cssPart` | `string` | `""` | Named sub-part (`"graph"`, `"item"`, …); resolves only rules that require this class, excluding the bare `#id` base |
 | `style` | `var` | `{}` | **Written by the engine.** Do not bind — the engine owns this property |
+| `inlineStyle` | `var` | `{}` | The element's inline style (the web's `style="…"`), on every `CssBox` (`CssRect`, `CssFill`, `CssText`, `CssHr`, `CssImage`, `CssItem`). A map (kebab- or camelCase keys; a number on a length property means `px`, as in React DOM) or a declaration string parsed by the stylesheet's own parser. Overlaid on the cascade (after `:hover`/`:focus`) on every apply: it beats every stylesheet rule, and an inline shorthand resets the stylesheet's longhands. `var()` resolves against the element's environment. A change re-applies only that element. Read back as the normalised map |
 
-An element is registered with the engine when `cssId`, `cssPart`, or `cssClass` is
+An element is registered with the engine when `cssId`, `cssPart`, `cssClass` or `inlineStyle` is
 non-empty. Elements used as plain renderers (no CSS identity) simply skip registration.
 
 ---

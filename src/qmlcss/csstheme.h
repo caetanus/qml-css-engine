@@ -20,6 +20,7 @@ class CssBox;
 class CssText;
 class CssLayoutEngine;
 struct CssContextNode;
+struct CssInlineStyle;
 
 struct CssSimpleSelector {
     bool universal = false;
@@ -238,6 +239,9 @@ public:
     // box's notify signals, so a write resolves once, not once per path. A box not yet registered
     // (it had no identity when it completed) is registered and applied once it has one, like loadCss.
     void restyle(CssBox *box);
+    // A CssBox's inline style changed: re-apply THAT box only (an inline style moves no identity, so no
+    // descendant's selector match changes). Registers + applies a box not styled yet, like restyle().
+    void applyInlineStyle(CssBox *box);
 
     // A CSS "prelude" prepended (lowest priority) to the layered stylesheet on every load.
     // It carries config-derived defaults translated to CSS — e.g. a group's drawer
@@ -362,6 +366,9 @@ private:
     // Read the target's identity properties, resolve, and push the style onto it (the
     // actual "apply the rules" step). Re-reads the object's current cssClass each time.
     void applyCssTo(QObject *target) const;
+    // applyCssTo's last step for a box with an inline style: overlay it on the resolved map (var()
+    // resolved against `node`'s environment). Never touches the node's memo.
+    void overlayInlineStyle(QVariantMap &style, const CssInlineStyle &in, const CssContextNode *node) const;
     // reapplyForSender/restyle body: re-apply `target` and its registered visual descendants.
     void restyleTarget(QObject *target);
     // Reverse slot: re-push to every live registered target on (re)load; prune the dead.
